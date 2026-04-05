@@ -104,9 +104,14 @@ function CheckInContent() {
   const [newVehicleType, setNewVehicleType] = useState<"BOBTAIL" | "TRUCK_TRAILER">("TRUCK_TRAILER");
   const [newNickname, setNewNickname] = useState("");
 
-  // Prefill from /scan page's localStorage (phone-identified driver)
+  // Prefill from /scan: first check URL ?prefillPhone=, then localStorage
   useEffect(() => {
     if (existingDriverId || isDemo) return;
+    const urlPhone = searchParams.get("prefillPhone");
+    if (urlPhone) {
+      setPhone(urlPhone);
+      return;
+    }
     try {
       const raw = localStorage.getItem("parking_driver");
       if (!raw) return;
@@ -114,7 +119,7 @@ function CheckInContent() {
       if (d.name) setName(d.name);
       if (d.phone) setPhone(d.phone);
     } catch {}
-  }, [existingDriverId, isDemo]);
+  }, [existingDriverId, isDemo, searchParams]);
 
   useEffect(() => {
     if (!isDemo) {
@@ -235,6 +240,8 @@ function CheckInContent() {
 
       localStorage.setItem("driverId", driver.id);
       localStorage.setItem("driverInfo", JSON.stringify({ name, email, phone }));
+      // Save for /scan recognition on future scans from this device
+      localStorage.setItem("parking_driver", JSON.stringify({ id: driver.id, name, phone }));
 
       let vehicleId = selectedVehicleId;
 

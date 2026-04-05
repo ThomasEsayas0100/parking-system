@@ -7,11 +7,11 @@ import { useRouter } from "next/navigation";
 // Types
 // ---------------------------------------------------------------------------
 type State =
-  | "identifying"   // enter phone
-  | "naming"        // phone not found → enter name
+  | "identifying"   // enter phone (first time on this device)
   | "checking"      // API in flight
   | "gate_open"     // active session found → gate triggered
-  | "no_session";   // driver found but no active session
+  | "no_session"    // driver found but no active session
+  | "new_driver";   // phone not found → send to /checkin to register
 
 type Driver = { id: string; name: string; phone: string };
 
@@ -43,11 +43,9 @@ export default function ScanPage() {
   const [state, setState] = useState<State>("checking");
   const [driver, setDriver] = useState<Driver | null>(null);
   const [phone, setPhone] = useState("");
-  const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [openedAt, setOpenedAt] = useState("");
   const phoneRef = useRef<HTMLInputElement>(null);
-  const nameRef = useRef<HTMLInputElement>(null);
 
   // On mount: check localStorage
   useEffect(() => {
@@ -64,13 +62,16 @@ export default function ScanPage() {
   // Side effects per state
   useEffect(() => {
     if (state === "identifying") setTimeout(() => phoneRef.current?.focus(), 120);
-    if (state === "naming") setTimeout(() => nameRef.current?.focus(), 120);
     if (state === "gate_open") {
       const t = setTimeout(() => router.push("/"), 8000);
       return () => clearTimeout(t);
     }
     if (state === "no_session") {
-      const t = setTimeout(() => router.push("/checkin"), 4000);
+      const t = setTimeout(() => router.push("/checkin"), 3500);
+      return () => clearTimeout(t);
+    }
+    if (state === "new_driver") {
+      const t = setTimeout(() => router.push(`/checkin?prefillPhone=${encodeURIComponent(phone.replace(/\D/g, ""))}`), 3500);
       return () => clearTimeout(t);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -108,21 +109,22 @@ export default function ScanPage() {
 
   async function submitPhone() {
     setError("");
-    const cleaned = phone.replace(/\s/g, "");
-    if (cleaned.length < 7) { setError("Enter a valid phone number"); return; }
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length < 7) { setError("Enter a valid phone number"); return; }
     setState("checking");
     try {
-      const res = await fetch("/api/driver-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: cleaned }),
-      });
+      const res = await fetch(`/api/drivers?phone=${digits}`);
       const data = await res.json();
-      if (data.needsName) {
-        setState("naming");
+      if (!data.driver) {
+        // New device, new phone → send to /checkin to register
+        setState("new_driver");
         return;
       }
-      const d: Driver = data.driver;
+      const d: Driver = {
+        id: data.driver.id,
+        name: data.driver.name,
+        phone: data.driver.phone,
+      };
       setDriver(d);
       saveDriver(d);
       await checkSession(d);
@@ -132,33 +134,10 @@ export default function ScanPage() {
     }
   }
 
-  async function submitName() {
-    setError("");
-    if (name.trim().length < 2) { setError("Enter your full name"); return; }
-    setState("checking");
-    const cleaned = phone.replace(/\s/g, "");
-    try {
-      const res = await fetch("/api/driver-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: cleaned, name: name.trim() }),
-      });
-      const data = await res.json();
-      const d: Driver = data.driver;
-      setDriver(d);
-      saveDriver(d);
-      setState("no_session");
-    } catch {
-      setError("Connection error. Try again.");
-      setState("naming");
-    }
-  }
-
   function reset() {
     clearDriver();
     setDriver(null);
     setPhone("");
-    setName("");
     setError("");
     setState("identifying");
   }
@@ -170,7 +149,7 @@ export default function ScanPage() {
     checking: "Scanning...",
     gate_open: "Access Granted",
     no_session: "No Session",
-    naming: "Register",
+    new_driver: "New Account",
     identifying: "Identify",
   }[state];
 
@@ -179,7 +158,7 @@ export default function ScanPage() {
     no_session: "#FF9F0A",
     checking: "#0A84FF",
     identifying: "#0A84FF",
-    naming: "#0A84FF",
+    new_driver: "#BF5AF2",
   }[state];
 
   // ---------------------------------------------------------------------------
@@ -339,33 +318,20 @@ export default function ScanPage() {
             </>
           )}
 
-          {/* ── NAMING ── */}
-          {state === "naming" && (
+          {/* ── NEW DRIVER ── */}
+          {state === "new_driver" && (
             <>
-              <div className="sr-circle" style={{ borderColor: "rgba(10,132,255,0.4)", background: "rgba(10,132,255,0.05)" }}>
-                <span className="sr-icon" style={{ fontSize: 36 }}>👤</span>
+              <div className="sr-circle" style={{ borderColor: "rgba(191,90,242,0.5)", background: "rgba(191,90,242,0.06)" }}>
+                <span className="sr-icon" style={{ fontSize: 34, color: "#BF5AF2" }}>✦</span>
               </div>
-              <p className="sr-label" style={{ color: "#0A84FF" }}>First Visit</p>
-              <h1 className="sr-heading">What&apos;s your name?</h1>
-              <p className="sr-sub">We&apos;ll remember you next time.</p>
-              <div className="sr-chip">
-                <div>
-                  <p className="sr-chip-label">Phone</p>
-                  <p className="sr-chip-val">{phone}</p>
-                </div>
-                <button className="sr-chip-btn" onClick={() => setState("identifying")}>Change</button>
-              </div>
-              <input
-                ref={nameRef}
-                className="sr-input"
-                type="text"
-                placeholder="Full name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitName()}
-              />
-              <p className="sr-error">{error}</p>
-              <button className="sr-btn" onClick={submitName}>Register →</button>
+              <p className="sr-label" style={{ color: "#BF5AF2" }}>First Time Here</p>
+              <h1 className="sr-heading">Let&apos;s get you set up</h1>
+              <p className="sr-sub">
+                We don&apos;t recognize <b style={{ color: "rgba(255,255,255,0.75)" }}>{phone}</b> yet.<br />
+                Redirecting to check-in…
+              </p>
+              <div className="sr-notme"><button onClick={() => setState("identifying")}>Wrong number?</button></div>
+              <div className="sr-progress" style={{ background: "#BF5AF2", animationDuration: "3.5s" }} />
             </>
           )}
 

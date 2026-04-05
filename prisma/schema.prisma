@@ -43,7 +43,7 @@ enum AuditAction {
 model Driver {
   id        String    @id @default(uuid())
   name      String
-  email     String    @unique
+  email     String
   phone     String    @unique
   vehicles  Vehicle[]
   sessions  Session[]
