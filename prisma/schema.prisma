@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum VehicleType {
+  BOBTAIL
+  TRUCK_TRAILER
+}
+
+enum SpotStatus {
+  AVAILABLE
+  OCCUPIED
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
+  OVERSTAY
+}
+
+enum PaymentType {
+  CHECKIN
+  EXTENSION
+  OVERSTAY
+}
+
+enum AuditAction {
+  CHECKIN
+  CHECKOUT
+  EXTEND
+  OVERSTAY_START
+  OVERSTAY_PAYMENT
+  GATE_OPEN
+  SPOT_ASSIGNED
+  SPOT_FREED
+}
+
+model Driver {
+  id        String    @id @default(uuid())
+  name      String
+  email     String    @unique
+  phone     String    @unique
+  vehicles  Vehicle[]
+  sessions  Session[]
+  auditLogs AuditLog[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Vehicle {
+  id           String      @id @default(uuid())
+  driverId     String
+  driver       Driver      @relation(fields: [driverId], references: [id])
+  unitNumber   String?
+  licensePlate String?
+  type         VehicleType
+  nickname     String?
+  sessions     Session[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([driverId, unitNumber])
+  @@unique([driverId, licensePlate])
+}
+
+model Spot {
+  id        String      @id @default(uuid())
+  label     String      @unique
+  type      VehicleType
+  status    SpotStatus  @default(AVAILABLE)
+  sessions  Session[]
+  auditLogs AuditLog[]
+}
+
+model Session {
+  id           String        @id @default(uuid())
+  spotId       String
+  spot         Spot          @relation(fields: [spotId], references: [id])
+  driverId     String
+  driver       Driver        @relation(fields: [driverId], references: [id])
+  vehicleId    String
+  vehicle      Vehicle       @relation(fields: [vehicleId], references: [id])
+  startedAt    DateTime      @default(now())
+  expectedEnd  DateTime
+  endedAt      DateTime?
+  status       SessionStatus @default(ACTIVE)
+  reminderSent Boolean       @default(false)
+  payments     Payment[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Payment {
+  id              String      @id @default(uuid())
+  sessionId       String
+  session         Session     @relation(fields: [sessionId], references: [id])
+  type            PaymentType
+  stripePaymentId String
+  amount          Float
+  hours           Float?
+  createdAt       DateTime    @default(now())
+}
+
+model AuditLog {
+  id        String      @id @default(uuid())
+  action    AuditAction
+  sessionId String?
+  session   Session?    @relation(fields: [sessionId], references: [id])
+  driverId  String?
+  driver    Driver?     @relation(fields: [driverId], references: [id])
+  vehicleId String?
+  vehicle   Vehicle?    @relation(fields: [vehicleId], references: [id])
+  spotId    String?
+  spot      Spot?       @relation(fields: [spotId], references: [id])
+  details   String?
+  createdAt DateTime    @default(now())
+}
+
+model Settings {
+  id                    String  @id @default("default")
+  hourlyRateBobtail     Float   @default(10.0)
+  hourlyRateTruck       Float   @default(15.0)
+  overstayRateBobtail   Float   @default(20.0)
+  overstayRateTruck     Float   @default(25.0)
+  gracePeriodMinutes    Int     @default(15)
+  reminderMinutesBefore Int     @default(60)
+  totalSpotsBobtail     Int     @default(45)
+  totalSpotsTruck       Int     @default(100)
+  managerEmail          String  @default("")
+  managerPhone          String  @default("")
+}

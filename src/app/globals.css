@@ -1,26 +1,63 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #F5F3EE;
+  --bg-card: #FFFFFF;
+  --fg: #1A1A1A;
+  --fg-muted: #6B6B6B;
+  --fg-subtle: #9A9A9A;
+  --accent: #D4500A;
+  --accent-hover: #B8440A;
+  --accent-light: #FFF1EB;
+  --border: #E0DDD6;
+  --border-focus: #D4500A;
+  --success: #2D7A3A;
+  --error: #C93B3B;
+  --input-bg: #FAFAF8;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-body: var(--font-body);
+  --font-display: var(--font-display);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Demo mode: assigned spot animations ---- */
+
+/* Blink the assigned spot fill */
+.spot-assigned-blink {
+  animation: spotBlink 1s ease-in-out infinite;
+}
+
+@keyframes spotBlink {
+  0%, 100% { fill-opacity: 1; }
+  50%       { fill-opacity: 0.45; }
+}
+
+/* Expanding ring pulse */
+.spot-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: spotRing 1.8s ease-out forwards;
+}
+
+@keyframes spotRing {
+  0%   { transform: scale(1);    opacity: 0.7; }
+  100% { transform: scale(2.2);  opacity: 0; }
+}
+
+/* Banner pulsing dot */
+.demo-ping {
+  animation: demoPing 1.4s ease-out infinite;
+}
+
+@keyframes demoPing {
+  0%   { transform: scale(0.8); opacity: 0.8; }
+  100% { transform: scale(2.2); opacity: 0; }
 }

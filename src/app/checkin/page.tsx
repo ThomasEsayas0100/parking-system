@@ -1,0 +1,775 @@
+"use client";
+
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import defaultState from "@/components/lot-editor/defaultState.json";
+
+type Settings = {
+  hourlyRateBobtail: number;
+  hourlyRateTruck: number;
+};
+
+type Vehicle = {
+  id: string;
+  unitNumber: string | null;
+  licensePlate: string | null;
+  type: "BOBTAIL" | "TRUCK_TRAILER";
+  nickname: string | null;
+};
+
+export default function CheckInPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg)" }}>
+          <div className="animate-pulse" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
+            <p className="text-2xl font-semibold tracking-wide uppercase">Loading...</p>
+            <p className="text-sm mt-1" style={{ color: "var(--fg-subtle)" }}>Cargando...</p>
+          </div>
+        </div>
+      }
+    >
+      <CheckInContent />
+    </Suspense>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Bilingual label helper                                             */
+/* ------------------------------------------------------------------ */
+function Label({ en, es, htmlFor }: { en: string; es: string; htmlFor?: string }) {
+  return (
+    <label htmlFor={htmlFor} className="block mb-1.5">
+      <span className="text-[15px] font-semibold tracking-wide uppercase" style={{ color: "var(--fg)", fontFamily: "var(--font-display)" }}>
+        {en}
+      </span>
+      <span className="ml-2 text-[12px] font-normal" style={{ color: "var(--fg-subtle)" }}>
+        {es}
+      </span>
+    </label>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Shared input styles                                                */
+/* ------------------------------------------------------------------ */
+const inputClass =
+  "w-full px-4 py-3.5 rounded-lg text-[16px] font-medium outline-none transition-all duration-150 border-2 placeholder:font-normal";
+const inputStyle = {
+  background: "var(--input-bg)",
+  color: "var(--fg)",
+  borderColor: "var(--border)",
+};
+
+/* ------------------------------------------------------------------ */
+/*  Pick a random spot from localStorage (or default state fallback)  */
+/* ------------------------------------------------------------------ */
+function pickDemoSpot(vehicleType: "BOBTAIL" | "TRUCK_TRAILER"): string | null {
+  try {
+    const raw = localStorage.getItem("lot-editor-state");
+    const state = raw
+      ? (JSON.parse(raw) as { spots: Record<string, { id: string; type: string }> })
+      : (defaultState as { spots: Record<string, { id: string; type: string }> });
+    const spots = Object.values(state.spots).filter((s) => s.type === vehicleType);
+    if (!spots.length) return null;
+    return spots[Math.floor(Math.random() * spots.length)].id;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main form                                                          */
+/* ------------------------------------------------------------------ */
+function CheckInContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const existingDriverId = searchParams.get("driverId");
+  const isDemo = searchParams.get("demo") === "1";
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState(isDemo ? "demo@example.com" : "");
+  const [phone, setPhone] = useState(isDemo ? "555-0100" : "");
+  const [hours, setHours] = useState(4);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Vehicle state
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [selectedVehicleId, setSelectedVehicleId] = useState("");
+  const [addingVehicle, setAddingVehicle] = useState(false);
+  const [newUnitNumber, setNewUnitNumber] = useState("");
+  const [newPlate, setNewPlate] = useState("");
+  const [newVehicleType, setNewVehicleType] = useState<"BOBTAIL" | "TRUCK_TRAILER">("TRUCK_TRAILER");
+  const [newNickname, setNewNickname] = useState("");
+
+  // Prefill from /scan page's localStorage (phone-identified driver)
+  useEffect(() => {
+    if (existingDriverId || isDemo) return;
+    try {
+      const raw = localStorage.getItem("parking_driver");
+      if (!raw) return;
+      const d = JSON.parse(raw) as { name?: string; phone?: string };
+      if (d.name) setName(d.name);
+      if (d.phone) setPhone(d.phone);
+    } catch {}
+  }, [existingDriverId, isDemo]);
+
+  useEffect(() => {
+    if (!isDemo) {
+      fetch("/api/settings")
+        .then((r) => r.json())
+        .then((d) => setSettings(d.settings));
+    } else {
+      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18 });
+    }
+
+    if (existingDriverId) {
+      const saved = localStorage.getItem("driverInfo");
+      if (saved) {
+        const info = JSON.parse(saved);
+        setName(info.name || "");
+        if (!isDemo) {
+          setEmail(info.email || "");
+          setPhone(info.phone || "");
+        }
+      }
+
+      if (!isDemo) {
+        fetch(`/api/vehicles?driverId=${existingDriverId}`)
+          .then((r) => r.json())
+          .then((d) => {
+            if (d.vehicles?.length) {
+              setVehicles(d.vehicles);
+              if (d.vehicles.length === 1) setSelectedVehicleId(d.vehicles[0].id);
+            } else {
+              setAddingVehicle(true);
+            }
+          })
+          .catch(() => setAddingVehicle(true));
+      } else {
+        setAddingVehicle(true);
+      }
+    } else {
+      setAddingVehicle(true);
+    }
+  }, [existingDriverId, isDemo]);
+
+  const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
+  const vehicleType = selectedVehicle?.type || newVehicleType;
+
+  const hourlyRate = settings
+    ? vehicleType === "BOBTAIL"
+      ? settings.hourlyRateBobtail
+      : settings.hourlyRateTruck
+    : 0;
+
+  const totalAmount = hourlyRate * hours;
+
+  /* ---------------------------------------------------------------- */
+  /*  Demo submit — no API calls, pick spot from localStorage         */
+  /* ---------------------------------------------------------------- */
+  async function handleDemoSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+
+    if (!name.trim()) {
+      setError("Name is required / Se requiere nombre");
+      return;
+    }
+    if (addingVehicle && !newUnitNumber && !newPlate) {
+      setError("Truck # or license plate required / Se requiere # de camión o placa");
+      return;
+    }
+
+    setLoading(true);
+
+    // Simulate spot search
+    await new Promise((r) => setTimeout(r, 1400));
+
+    const spotId = pickDemoSpot(vehicleType);
+    if (!spotId) {
+      setError("No spots available. Make sure the lot has spots in the editor.");
+      setLoading(false);
+      return;
+    }
+
+    const vehicleLabel = newUnitNumber
+      ? `#${newUnitNumber}`
+      : newPlate || "Unknown";
+
+    const params = new URLSearchParams({
+      spotId,
+      name: name.trim(),
+      vehicle: vehicleLabel,
+      type: vehicleType,
+      hours: String(hours),
+    });
+
+    router.push(`/spot-assigned?${params.toString()}`);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /*  Real submit                                                      */
+  /* ---------------------------------------------------------------- */
+  async function handleRealSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+
+    try {
+      const driverRes = await fetch("/api/drivers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, phone }),
+      });
+      const { driver } = await driverRes.json();
+
+      if (!driver) {
+        setError("Failed to register driver / No se pudo registrar");
+        setLoading(false);
+        return;
+      }
+
+      localStorage.setItem("driverId", driver.id);
+      localStorage.setItem("driverInfo", JSON.stringify({ name, email, phone }));
+
+      let vehicleId = selectedVehicleId;
+
+      if (addingVehicle || !vehicleId) {
+        if (!newUnitNumber && !newPlate) {
+          setError("Truck # or license plate is required / Se requiere # de camión o placa");
+          setLoading(false);
+          return;
+        }
+        const vehRes = await fetch("/api/vehicles", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            driverId: driver.id,
+            unitNumber: newUnitNumber || undefined,
+            licensePlate: newPlate || undefined,
+            type: newVehicleType,
+            nickname: newNickname || undefined,
+          }),
+        });
+        const { vehicle } = await vehRes.json();
+        if (!vehicle) {
+          setError("Failed to register vehicle / No se pudo registrar el vehículo");
+          setLoading(false);
+          return;
+        }
+        vehicleId = vehicle.id;
+      }
+
+      const payRes = await fetch("/api/payments/create-intent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount: totalAmount,
+          description: `Parking: ${vehicleType} for ${hours}h`,
+        }),
+      });
+      const { paymentIntentId } = await payRes.json();
+
+      const sessionRes = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driverId: driver.id,
+          vehicleId,
+          hours,
+          paymentId: paymentIntentId,
+        }),
+      });
+      const sessionData = await sessionRes.json();
+
+      if (!sessionRes.ok) {
+        setError(sessionData.error || "Failed to create session");
+        setLoading(false);
+        return;
+      }
+
+      router.push(`/confirmation?sessionId=${sessionData.session.id}`);
+    } catch {
+      setError("Something went wrong. Please try again. / Algo salió mal.");
+      setLoading(false);
+    }
+  }
+
+  const handleSubmit = isDemo ? handleDemoSubmit : handleRealSubmit;
+
+  return (
+    <div className="min-h-screen" style={{ background: "var(--bg)" }}>
+      {/* Header bar */}
+      <div
+        className="sticky top-0 z-10 px-5 py-4 border-b"
+        style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+      >
+        <div className="flex items-center gap-3">
+          <h1
+            className="text-2xl font-extrabold tracking-wider uppercase"
+            style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}
+          >
+            Check In
+          </h1>
+          {isDemo && (
+            <span
+              className="px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-widest uppercase"
+              style={{ background: "#0A84FF22", color: "#0A84FF", border: "1px solid #0A84FF44" }}
+            >
+              Demo
+            </span>
+          )}
+        </div>
+        <p className="text-xs mt-0.5" style={{ color: "var(--fg-subtle)" }}>
+          {isDemo ? "Demo mode — no payment required · Modo demo" : "Registro de entrada"}
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="max-w-lg mx-auto px-5 py-6 space-y-5">
+
+        {/* ---- DRIVER INFO ---- */}
+        <section
+          className="rounded-xl p-5 space-y-4 border"
+          style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold text-white"
+              style={{ background: "var(--accent)", fontFamily: "var(--font-display)" }}
+            >
+              1
+            </div>
+            <h2
+              className="text-lg font-bold tracking-wide uppercase"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Driver Info
+            </h2>
+            <span className="text-xs" style={{ color: "var(--fg-subtle)" }}>
+              Información del conductor
+            </span>
+          </div>
+
+          <div>
+            <Label en="Full Name" es="Nombre completo" htmlFor="name" />
+            <input
+              id="name"
+              type="text"
+              className={inputClass}
+              style={inputStyle}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="John Smith"
+              required
+              autoComplete="name"
+              onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+              onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+            />
+          </div>
+
+          {!isDemo && (
+            <>
+              <div>
+                <Label en="Email" es="Correo electrónico" htmlFor="email" />
+                <input
+                  id="email"
+                  type="email"
+                  className={inputClass}
+                  style={inputStyle}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="driver@email.com"
+                  required
+                  autoComplete="email"
+                  onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                />
+              </div>
+
+              <div>
+                <Label en="Phone" es="Teléfono" htmlFor="phone" />
+                <input
+                  id="phone"
+                  type="tel"
+                  className={inputClass}
+                  style={inputStyle}
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="(555) 123-4567"
+                  required
+                  autoComplete="tel"
+                  onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                />
+              </div>
+            </>
+          )}
+        </section>
+
+        {/* ---- VEHICLE ---- */}
+        <section
+          className="rounded-xl p-5 space-y-4 border"
+          style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold text-white"
+              style={{ background: "var(--accent)", fontFamily: "var(--font-display)" }}
+            >
+              2
+            </div>
+            <h2
+              className="text-lg font-bold tracking-wide uppercase"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Vehicle
+            </h2>
+            <span className="text-xs" style={{ color: "var(--fg-subtle)" }}>
+              Vehículo
+            </span>
+          </div>
+
+          {/* Returning driver — vehicle picker */}
+          {vehicles.length > 0 && !addingVehicle && (
+            <div className="space-y-3">
+              {vehicles.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => setSelectedVehicleId(v.id)}
+                  className="w-full text-left px-4 py-3.5 rounded-lg border-2 transition-all duration-150 flex items-center justify-between"
+                  style={{
+                    background: selectedVehicleId === v.id ? "var(--accent-light)" : "var(--input-bg)",
+                    borderColor: selectedVehicleId === v.id ? "var(--accent)" : "var(--border)",
+                  }}
+                >
+                  <div>
+                    <span className="text-[15px] font-bold tracking-wider uppercase" style={{ fontFamily: "var(--font-display)" }}>
+                      {v.unitNumber ? `#${v.unitNumber}` : v.licensePlate}
+                    </span>
+                    {v.unitNumber && v.licensePlate && (
+                      <span className="ml-2 text-[13px]" style={{ color: "var(--fg-muted)" }}>
+                        {v.licensePlate}
+                      </span>
+                    )}
+                    <span className="ml-2 text-[13px]" style={{ color: "var(--fg-muted)" }}>
+                      {v.type === "BOBTAIL" ? "Bobtail" : "Truck / Trailer"}
+                    </span>
+                    {v.nickname && (
+                      <span className="ml-2 text-[12px] italic" style={{ color: "var(--fg-subtle)" }}>
+                        {v.nickname}
+                      </span>
+                    )}
+                  </div>
+                  {selectedVehicleId === v.id && (
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                      <circle cx="10" cy="10" r="10" fill="var(--accent)" />
+                      <path d="M6 10l3 3 5-6" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setAddingVehicle(true)}
+                className="w-full text-center py-3 rounded-lg border-2 border-dashed text-sm font-semibold transition-colors duration-150"
+                style={{ borderColor: "var(--border)", color: "var(--fg-muted)" }}
+              >
+                + Add New Vehicle / Agregar vehículo nuevo
+              </button>
+            </div>
+          )}
+
+          {/* New vehicle form */}
+          {addingVehicle && (
+            <div className="space-y-4">
+              {vehicles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setAddingVehicle(false)}
+                  className="text-sm font-semibold underline"
+                  style={{ color: "var(--accent)" }}
+                >
+                  ← Use saved vehicle / Usar vehículo guardado
+                </button>
+              )}
+
+              {/* Vehicle type */}
+              <div>
+                <Label en="Vehicle Type" es="Tipo de vehículo" />
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setNewVehicleType("TRUCK_TRAILER")}
+                    className="rounded-lg border-2 p-4 text-center transition-all duration-150"
+                    style={{
+                      background: newVehicleType === "TRUCK_TRAILER" ? "var(--accent-light)" : "var(--input-bg)",
+                      borderColor: newVehicleType === "TRUCK_TRAILER" ? "var(--accent)" : "var(--border)",
+                    }}
+                  >
+                    <div className="text-3xl mb-1">🚛</div>
+                    <div className="text-[14px] font-bold tracking-wide uppercase" style={{ fontFamily: "var(--font-display)" }}>
+                      Truck & Trailer
+                    </div>
+                    <div className="text-[11px] mt-0.5" style={{ color: "var(--fg-subtle)" }}>
+                      Camión con remolque
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewVehicleType("BOBTAIL")}
+                    className="rounded-lg border-2 p-4 text-center transition-all duration-150"
+                    style={{
+                      background: newVehicleType === "BOBTAIL" ? "var(--accent-light)" : "var(--input-bg)",
+                      borderColor: newVehicleType === "BOBTAIL" ? "var(--accent)" : "var(--border)",
+                    }}
+                  >
+                    <div className="text-3xl mb-1">🚚</div>
+                    <div className="text-[14px] font-bold tracking-wide uppercase" style={{ fontFamily: "var(--font-display)" }}>
+                      Bobtail
+                    </div>
+                    <div className="text-[11px] mt-0.5" style={{ color: "var(--fg-subtle)" }}>
+                      Solo cabina
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Truck # */}
+              <div>
+                <Label en="Truck #" es="Número de camión" htmlFor="unitNumber" />
+                <input
+                  id="unitNumber"
+                  type="text"
+                  className={`${inputClass} uppercase tracking-widest`}
+                  style={{ ...inputStyle, fontFamily: "var(--font-display)", fontSize: "18px", letterSpacing: "0.15em" }}
+                  value={newUnitNumber}
+                  onChange={(e) => setNewUnitNumber(e.target.value.toUpperCase())}
+                  placeholder="4821"
+                  autoCapitalize="characters"
+                  onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                />
+              </div>
+
+              {/* License Plate */}
+              <div>
+                <Label en="License Plate" es="Placa" htmlFor="plate" />
+                <input
+                  id="plate"
+                  type="text"
+                  className={`${inputClass} uppercase tracking-widest`}
+                  style={{ ...inputStyle, fontFamily: "var(--font-display)", fontSize: "18px", letterSpacing: "0.15em" }}
+                  value={newPlate}
+                  onChange={(e) => setNewPlate(e.target.value.toUpperCase())}
+                  placeholder="ABC 1234"
+                  autoCapitalize="characters"
+                  onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                  onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                />
+              </div>
+
+              <p className="text-[12px] -mt-2" style={{ color: "var(--fg-subtle)" }}>
+                At least one required / Se requiere al menos uno
+              </p>
+
+              {!isDemo && (
+                <div>
+                  <Label en="Nickname" es="Apodo (opcional)" htmlFor="nickname" />
+                  <input
+                    id="nickname"
+                    type="text"
+                    className={inputClass}
+                    style={inputStyle}
+                    value={newNickname}
+                    onChange={(e) => setNewNickname(e.target.value)}
+                    placeholder="e.g. Blue Kenworth"
+                    onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                    onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* ---- PARKING DURATION ---- */}
+        <section
+          className="rounded-xl p-5 space-y-4 border"
+          style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold text-white"
+              style={{ background: "var(--accent)", fontFamily: "var(--font-display)" }}
+            >
+              3
+            </div>
+            <h2
+              className="text-lg font-bold tracking-wide uppercase"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Duration
+            </h2>
+            <span className="text-xs" style={{ color: "var(--fg-subtle)" }}>
+              Duración
+            </span>
+          </div>
+
+          <div>
+            <Label en="Hours" es="Horas" />
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => setHours(Math.max(1, hours - 1))}
+                className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
+                style={{
+                  borderColor: "var(--border)",
+                  color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                  background: "var(--input-bg)",
+                  fontFamily: "var(--font-display)",
+                }}
+              >
+                −
+              </button>
+              <div className="flex-1 text-center">
+                <span className="text-5xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
+                  {hours}
+                </span>
+                <span className="text-lg ml-1 font-semibold" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
+                  hr{hours !== 1 ? "s" : ""}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHours(Math.min(72, hours + 1))}
+                className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
+                style={{
+                  borderColor: "var(--border)",
+                  color: hours >= 72 ? "var(--fg-subtle)" : "var(--fg)",
+                  background: "var(--input-bg)",
+                  fontFamily: "var(--font-display)",
+                }}
+              >
+                +
+              </button>
+            </div>
+            <div className="flex gap-2 mt-3">
+              {[2, 4, 8, 12, 24].map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => setHours(h)}
+                  className="flex-1 py-2 rounded-md border text-sm font-semibold transition-all duration-150"
+                  style={{
+                    borderColor: hours === h ? "var(--accent)" : "var(--border)",
+                    background: hours === h ? "var(--accent-light)" : "transparent",
+                    color: hours === h ? "var(--accent)" : "var(--fg-muted)",
+                    fontFamily: "var(--font-display)",
+                  }}
+                >
+                  {h}h
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ---- PRICE SUMMARY + SUBMIT ---- */}
+        <section
+          className="rounded-xl p-5 border"
+          style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+        >
+          <div className="flex justify-between items-baseline mb-1">
+            <span className="text-sm font-medium" style={{ color: "var(--fg-muted)" }}>
+              Rate / Tarifa
+            </span>
+            <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
+              ${hourlyRate.toFixed(2)}/hr
+            </span>
+          </div>
+          <div className="flex justify-between items-baseline mb-1">
+            <span className="text-sm font-medium" style={{ color: "var(--fg-muted)" }}>
+              Duration / Duración
+            </span>
+            <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
+              {hours} hr{hours !== 1 ? "s" : ""}
+            </span>
+          </div>
+          <div
+            className="border-t pt-3 mt-3 flex justify-between items-baseline"
+            style={{ borderColor: "var(--border)" }}
+          >
+            <span className="text-base font-bold" style={{ fontFamily: "var(--font-display)" }}>
+              Total
+            </span>
+            {isDemo ? (
+              <span
+                className="text-xl font-bold"
+                style={{ fontFamily: "var(--font-display)", color: "#0A84FF" }}
+              >
+                Demo — no charge
+              </span>
+            ) : (
+              <span className="text-3xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
+                ${totalAmount.toFixed(2)}
+              </span>
+            )}
+          </div>
+        </section>
+
+        {/* Error */}
+        {error && (
+          <div
+            className="rounded-lg px-4 py-3 text-sm font-medium border"
+            style={{ background: "#FEF2F2", borderColor: "#FECACA", color: "var(--error)" }}
+          >
+            {error}
+          </div>
+        )}
+
+        {/* Submit button */}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full py-4 rounded-xl text-lg font-bold tracking-wider uppercase text-white transition-all duration-150 active:scale-[0.98]"
+          style={{
+            background: loading
+              ? "var(--fg-subtle)"
+              : isDemo
+              ? "#0A84FF"
+              : "var(--accent)",
+            fontFamily: "var(--font-display)",
+            boxShadow: loading
+              ? "none"
+              : isDemo
+              ? "0 4px 12px rgba(10, 132, 255, 0.35)"
+              : "0 4px 12px rgba(212, 80, 10, 0.3)",
+          }}
+        >
+          {loading ? (
+            <span className="flex items-center justify-center gap-2">
+              <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" />
+              </svg>
+              {isDemo ? "Finding your spot..." : "Processing..."}
+            </span>
+          ) : isDemo ? (
+            "Find My Spot →"
+          ) : (
+            <>Pay ${totalAmount.toFixed(2)} &amp; Check In</>
+          )}
+        </button>
+
+        <p className="text-center text-xs pb-6" style={{ color: "var(--fg-subtle)" }}>
+          {isDemo
+            ? "A spot will be assigned on the lot map / Se asignará un lugar en el mapa"
+            : `Pagar $${totalAmount.toFixed(2)} y registrar entrada`}
+        </p>
+      </form>
+    </div>
+  );
+}
