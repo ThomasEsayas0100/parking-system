@@ -12,7 +12,12 @@ const DriverAuthSchema = z.object({
 // If not found and name provided, create them.
 // If not found and no name, return needsName: true.
 export const POST = handler({ body: DriverAuthSchema }, async ({ body }) => {
-  const { phone, name } = body;
+  // Normalize to digits-only so "555-123-4567" and "5551234567" map to the same driver
+  const phone = body.phone.replace(/\D/g, "");
+  if (phone.length < 7) {
+    return json({ driver: null, created: false, needsName: false, error: "Invalid phone" }, { status: 400 });
+  }
+  const { name } = body;
 
   const existing = await prisma.driver.findFirst({ where: { phone } });
   if (existing) {
@@ -23,8 +28,7 @@ export const POST = handler({ body: DriverAuthSchema }, async ({ body }) => {
     return json({ driver: null, created: false, needsName: true });
   }
 
-  // Generate a placeholder email from phone so the unique constraint is satisfied
-  const email = `driver-${phone.replace(/\D/g, "")}@scan.local`;
+  const email = `driver-${phone}@scan.local`;
 
   const driver = await prisma.driver.create({
     data: { name, phone, email },

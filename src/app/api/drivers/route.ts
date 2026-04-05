@@ -24,26 +24,54 @@ export const GET = handler(
   },
 );
 
-// POST: create or update a driver
+// POST: create or update a driver.
+// Matches first by phone (for scan-flow drivers upgrading from placeholder email),
+// then by email. Creates a new record if neither exists.
 export const POST = handler(
   { body: DriverUpsertSchema },
   async ({ body }) => {
     const { name, email, phone } = body;
 
-    // Phone must also be unique — if someone else has this phone with a different email, fail
-    const phoneConflict = await prisma.driver.findFirst({
-      where: { phone, NOT: { email } },
-    });
-    if (phoneConflict) {
-      throw badRequest("Phone number already in use by another account");
+    // 1) Phone match takes priority (covers the /scan → /checkin upgrade path)
+    const byPhone = await prisma.driver.findFirst({ where: { phone } });
+    if (byPhone) {
+      // Make sure the new email isn't already owned by a DIFFERENT driver
+      if (byPhone.email !== email) {
+        const emailOwner = await prisma.driver.findFirst({
+          where: { email, NOT: { id: byPhone.id } },
+        });
+        if (emailOwner) {
+          throw badRequest("Email already in use by another account");
+        }
+      }
+      const driver = await prisma.driver.update({
+        where: { id: byPhone.id },
+        data: { name, email },
+      });
+      return json({ driver });
     }
 
-    const driver = await prisma.driver.upsert({
-      where: { email },
-      update: { name, phone },
-      create: { name, email, phone },
-    });
+    // 2) Email match (classic remember-me path)
+    const byEmail = await prisma.driver.findFirst({ where: { email } });
+    if (byEmail) {
+      // Phone must not belong to someone else
+      const phoneOwner = await prisma.driver.findFirst({
+        where: { phone, NOT: { id: byEmail.id } },
+      });
+      if (phoneOwner) {
+        throw badRequest("Phone number already in use by another account");
+      }
+      const driver = await prisma.driver.update({
+        where: { id: byEmail.id },
+        data: { name, phone },
+      });
+      return json({ driver });
+    }
 
+    // 3) Brand new driver
+    const driver = await prisma.driver.create({
+      data: { name, email, phone },
+    });
     return json({ driver }, { status: 201 });
   },
 );

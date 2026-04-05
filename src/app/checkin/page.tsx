@@ -224,10 +224,11 @@ function CheckInContent() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, phone }),
       });
-      const { driver } = await driverRes.json();
+      const driverJson = await driverRes.json();
+      const driver = driverJson.driver;
 
       if (!driver) {
-        setError("Failed to register driver / No se pudo registrar");
+        setError(driverJson.error || "Failed to register driver / No se pudo registrar");
         setLoading(false);
         return;
       }
