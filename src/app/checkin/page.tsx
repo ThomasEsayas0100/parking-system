@@ -86,6 +86,8 @@ function CheckInContent() {
   const searchParams = useSearchParams();
   const existingDriverId = searchParams.get("driverId");
   const isDemo = searchParams.get("demo") === "1";
+  const isLocked = searchParams.get("locked") === "true";
+  const isNew = searchParams.get("new") === "true";
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState(isDemo ? "demo@example.com" : "");
@@ -94,6 +96,12 @@ function CheckInContent() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Locked mode (recognized/confirmed driver)
+  const [fieldsLocked, setFieldsLocked] = useState(isLocked);
+  const [showEditWarning, setShowEditWarning] = useState(false);
+  // True while we're waiting for API verification in locked mode
+  const [verifying, setVerifying] = useState(isLocked);
 
   // Vehicle state
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -104,22 +112,53 @@ function CheckInContent() {
   const [newVehicleType, setNewVehicleType] = useState<"BOBTAIL" | "TRUCK_TRAILER">("TRUCK_TRAILER");
   const [newNickname, setNewNickname] = useState("");
 
-  // Prefill from /scan: first check URL ?prefillPhone=, then localStorage
+  // Prefill driver info — locked mode waits for API before populating anything
   useEffect(() => {
     if (existingDriverId || isDemo) return;
+
+    if (isLocked) {
+      // Read phone from localStorage only to make the API call — do NOT set any fields yet
+      let savedPhone: string | null = null;
+      let savedId: string | null = null;
+      try {
+        const raw = localStorage.getItem("parking_driver");
+        if (!raw) { router.replace("/scan"); return; }
+        const d = JSON.parse(raw) as { id?: string; phone?: string };
+        savedPhone = d.phone?.replace(/\D/g, "") || null;
+        savedId = d.id || null;
+      } catch {}
+
+      if (!savedPhone || !savedId) { router.replace("/scan"); return; }
+
+      // Verify against API — only populate fields on confirmed match
+      fetch(`/api/drivers?phone=${savedPhone}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.driver?.id === savedId) {
+            setName(data.driver.name || "");
+            setEmail(data.driver.email || "");
+            setPhone(data.driver.phone || "");
+          } else {
+            // Stale / deleted / banned — clear and send back
+            localStorage.removeItem("parking_driver");
+            router.replace("/scan");
+          }
+        })
+        .catch(() => {
+          // Network error — don't prefill anything, send back to scan
+          router.replace("/scan");
+        })
+        .finally(() => setVerifying(false));
+      return;
+    }
+
+    // URL param prefill (from scan → not_found → new driver with phone carried over)
     const urlPhone = searchParams.get("prefillPhone");
     if (urlPhone) {
       setPhone(urlPhone);
-      return;
     }
-    try {
-      const raw = localStorage.getItem("parking_driver");
-      if (!raw) return;
-      const d = JSON.parse(raw) as { name?: string; phone?: string };
-      if (d.name) setName(d.name);
-      if (d.phone) setPhone(d.phone);
-    } catch {}
-  }, [existingDriverId, isDemo, searchParams]);
+    // No localStorage prefill for unverified state
+  }, [existingDriverId, isDemo, isLocked, router, searchParams]);
 
   useEffect(() => {
     if (!isDemo) {
@@ -128,6 +167,30 @@ function CheckInContent() {
         .then((d) => setSettings(d.settings));
     } else {
       setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18 });
+    }
+
+    // Locked mode: wait until phone is populated by the verified API response,
+    // then fetch vehicles using the API-confirmed driver id (not raw localStorage)
+    if (isLocked && !isDemo) {
+      if (!phone) return; // still verifying — first useEffect will set phone once confirmed
+      fetch(`/api/drivers?phone=${phone.replace(/\D/g, "")}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data.driver?.id) { setAddingVehicle(true); return; }
+          fetch(`/api/vehicles?driverId=${data.driver.id}`)
+            .then((r) => r.json())
+            .then((vd) => {
+              if (vd.vehicles?.length) {
+                setVehicles(vd.vehicles);
+                if (vd.vehicles.length === 1) setSelectedVehicleId(vd.vehicles[0].id);
+              } else {
+                setAddingVehicle(true);
+              }
+            })
+            .catch(() => setAddingVehicle(true));
+        })
+        .catch(() => setAddingVehicle(true));
+      return;
     }
 
     if (existingDriverId) {
@@ -159,7 +222,7 @@ function CheckInContent() {
     } else {
       setAddingVehicle(true);
     }
-  }, [existingDriverId, isDemo]);
+  }, [existingDriverId, isDemo, isLocked, phone]);
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
   const vehicleType = selectedVehicle?.type || newVehicleType;
@@ -308,6 +371,21 @@ function CheckInContent() {
 
   const handleSubmit = isDemo ? handleDemoSubmit : handleRealSubmit;
 
+  // Don't render the form until API verification completes
+  if (verifying) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg)" }}>
+        <div style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)", textAlign: "center" }}>
+          <svg className="animate-spin h-6 w-6 mx-auto mb-3" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="31.4" strokeLinecap="round" opacity="0.25"/>
+            <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+          <p className="text-sm tracking-wide uppercase" style={{ color: "var(--fg-subtle)" }}>Verifying…</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen" style={{ background: "var(--bg)" }}>
       {/* Header bar */}
@@ -332,7 +410,11 @@ function CheckInContent() {
           )}
         </div>
         <p className="text-xs mt-0.5" style={{ color: "var(--fg-subtle)" }}>
-          {isDemo ? "Demo mode — no payment required · Modo demo" : "Registro de entrada"}
+          {isDemo
+            ? "Demo mode — no payment required · Modo demo"
+            : isLocked
+            ? `Welcome back${name ? `, ${name.split(" ")[0]}` : ""}. Your info is pre-filled.`
+            : "Registro de entrada"}
         </p>
       </div>
 
@@ -341,7 +423,7 @@ function CheckInContent() {
         {/* ---- DRIVER INFO ---- */}
         <section
           className="rounded-xl p-5 space-y-4 border"
-          style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+          style={{ background: "var(--bg-card)", borderColor: fieldsLocked ? "var(--border)" : "var(--border)" }}
         >
           <div className="flex items-center gap-2 mb-1">
             <div
@@ -359,7 +441,25 @@ function CheckInContent() {
             <span className="text-xs" style={{ color: "var(--fg-subtle)" }}>
               Información del conductor
             </span>
+            {fieldsLocked && !isDemo && (
+              <span
+                className="ml-auto text-[10px] px-2 py-0.5 rounded-full font-semibold tracking-widest uppercase"
+                style={{ background: "rgba(48,209,88,0.12)", color: "#30D158", border: "1px solid rgba(48,209,88,0.25)" }}
+              >
+                Saved
+              </span>
+            )}
           </div>
+
+          {/* New user convenience note */}
+          {isNew && !isDemo && (
+            <div
+              className="rounded-lg px-4 py-3 text-xs leading-relaxed"
+              style={{ background: "rgba(10,132,255,0.08)", border: "1px solid rgba(10,132,255,0.2)", color: "rgba(255,255,255,0.6)", fontFamily: "var(--font-body, sans-serif)" }}
+            >
+              Your info will be saved on this device for faster check-ins next time.
+            </div>
+          )}
 
           <div>
             <Label en="Full Name" es="Nombre completo" htmlFor="name" />
@@ -367,13 +467,19 @@ function CheckInContent() {
               id="name"
               type="text"
               className={inputClass}
-              style={inputStyle}
+              style={{
+                ...inputStyle,
+                opacity: fieldsLocked ? 0.5 : 1,
+                pointerEvents: fieldsLocked ? "none" : "auto",
+                background: fieldsLocked ? "rgba(255,255,255,0.02)" : inputStyle.background,
+              }}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="John Smith"
               required
               autoComplete="name"
-              onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+              readOnly={fieldsLocked}
+              onFocus={(e) => !fieldsLocked && (e.target.style.borderColor = "var(--border-focus)")}
               onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
             />
           </div>
@@ -386,13 +492,19 @@ function CheckInContent() {
                   id="email"
                   type="email"
                   className={inputClass}
-                  style={inputStyle}
+                  style={{
+                    ...inputStyle,
+                    opacity: fieldsLocked ? 0.5 : 1,
+                    pointerEvents: fieldsLocked ? "none" : "auto",
+                    background: fieldsLocked ? "rgba(255,255,255,0.02)" : inputStyle.background,
+                  }}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="driver@email.com"
                   required
                   autoComplete="email"
-                  onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                  readOnly={fieldsLocked}
+                  onFocus={(e) => !fieldsLocked && (e.target.style.borderColor = "var(--border-focus)")}
                   onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                 />
               </div>
@@ -403,16 +515,63 @@ function CheckInContent() {
                   id="phone"
                   type="tel"
                   className={inputClass}
-                  style={inputStyle}
+                  style={{
+                    ...inputStyle,
+                    opacity: fieldsLocked ? 0.5 : 1,
+                    pointerEvents: fieldsLocked ? "none" : "auto",
+                    background: fieldsLocked ? "rgba(255,255,255,0.02)" : inputStyle.background,
+                  }}
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="(555) 123-4567"
                   required
                   autoComplete="tel"
-                  onFocus={(e) => (e.target.style.borderColor = "var(--border-focus)")}
+                  readOnly={fieldsLocked}
+                  onFocus={(e) => !fieldsLocked && (e.target.style.borderColor = "var(--border-focus)")}
                   onBlur={(e) => (e.target.style.borderColor = "var(--border)")}
                 />
               </div>
+
+              {/* Edit / Warning UI */}
+              {fieldsLocked && !showEditWarning && (
+                <button
+                  type="button"
+                  onClick={() => setShowEditWarning(true)}
+                  className="text-xs font-semibold"
+                  style={{ color: "var(--fg-subtle)", background: "none", border: "none", cursor: "pointer", letterSpacing: "0.05em" }}
+                >
+                  Edit info
+                </button>
+              )}
+
+              {showEditWarning && (
+                <div
+                  className="rounded-lg px-4 py-3 space-y-3"
+                  style={{ background: "rgba(255,159,10,0.08)", border: "1px solid rgba(255,159,10,0.25)" }}
+                >
+                  <p className="text-xs leading-relaxed" style={{ color: "rgba(255,200,100,0.85)" }}>
+                    Editing will update your info for all future visits on this device.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setFieldsLocked(false); setShowEditWarning(false); }}
+                      className="flex-1 py-2 rounded-md text-xs font-bold tracking-wider uppercase"
+                      style={{ background: "rgba(255,159,10,0.2)", color: "#FF9F0A", border: "1px solid rgba(255,159,10,0.3)", cursor: "pointer" }}
+                    >
+                      Edit anyway
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowEditWarning(false)}
+                      className="flex-1 py-2 rounded-md text-xs font-bold tracking-wider uppercase"
+                      style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.4)", border: "1px solid rgba(255,255,255,0.1)", cursor: "pointer" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </section>
