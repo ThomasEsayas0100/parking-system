@@ -342,7 +342,13 @@ function CheckInContent() {
           description: `Parking: ${vehicleType} for ${hours}h`,
         }),
       });
-      const { paymentIntentId } = await payRes.json();
+      const payJson = await payRes.json();
+      if (!payRes.ok || !payJson.paymentIntentId) {
+        setError(payJson.error || "Payment setup failed. Please try again.");
+        setLoading(false);
+        return;
+      }
+      const { paymentIntentId } = payJson;
 
       const sessionRes = await fetch("/api/sessions", {
         method: "POST",
@@ -418,7 +424,7 @@ function CheckInContent() {
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="max-w-lg mx-auto px-5 py-6 space-y-5">
+      <form onSubmit={handleSubmit} autoComplete="off" className="max-w-lg mx-auto px-5 py-6 space-y-5">
 
         {/* ---- DRIVER INFO ---- */}
         <section
