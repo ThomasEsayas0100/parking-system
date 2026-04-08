@@ -18,7 +18,7 @@ export const GET = handler(
     if (!driver) return json({ driver: null });
 
     const activeSessions = await prisma.session.findMany({
-      where: { driverId: driver.id, status: "ACTIVE" },
+      where: { driverId: driver.id, status: { in: ["ACTIVE", "OVERSTAY"] } },
       include: { spot: true, vehicle: true },
     });
 

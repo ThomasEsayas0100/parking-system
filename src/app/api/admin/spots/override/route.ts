@@ -16,7 +16,7 @@ export const POST = handler(
       where: { id: spotId },
       include: {
         sessions: {
-          where: { status: "ACTIVE" },
+          where: { status: { in: ["ACTIVE", "OVERSTAY"] } },
           include: { driver: true, vehicle: true },
         },
       },
