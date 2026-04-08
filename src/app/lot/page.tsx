@@ -82,25 +82,25 @@ function LotPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // Build statuses from live API data
+  // Build statuses from live API data — keyed by label (bridges DB spots ↔ editor spots)
   const statuses = useMemo<Record<string, SpotStatus>>(() => {
     const map: Record<string, SpotStatus> = {};
     for (const spot of apiSpots) {
       const session = spot.sessions?.[0];
-      if (!session) map[spot.id] = "VACANT";
-      else if (session.status === "OVERSTAY") map[spot.id] = "OVERDUE";
-      else map[spot.id] = "RESERVED";
+      if (!session) map[spot.label] = "VACANT";
+      else if (session.status === "OVERSTAY") map[spot.label] = "OVERDUE";
+      else map[spot.label] = "RESERVED";
     }
     return map;
   }, [apiSpots]);
 
-  // Build detail panels from live API data
+  // Build detail panels from live API data — keyed by label
   const spotDetails = useMemo<Record<string, SpotDetail>>(() => {
     const map: Record<string, SpotDetail> = {};
     for (const spot of apiSpots) {
       const session = spot.sessions?.[0] ?? null;
-      const status = statuses[spot.id] ?? "VACANT";
-      map[spot.id] = {
+      const status = statuses[spot.label] ?? "VACANT";
+      map[spot.label] = {
         spotId: spot.id,
         spotLabel: spot.label,
         status,
@@ -428,7 +428,7 @@ function LotPage() {
 
         {/* Spot detail panel */}
         <SpotDetailPanel
-          detail={selectedSpotId ? spotDetails[selectedSpotId] ?? null : null}
+          detail={selectedSpotId ? spotDetails[allSpots.find(s => s.id === selectedSpotId)?.label ?? ""] ?? null : null}
           open={selectedSpotId !== null && !isEdit}
           onClose={() => setSelectedSpotId(null)}
         />

@@ -63,9 +63,9 @@ export default function LotMapViewer({
       {/* Extra SVG content (demo markers, etc.) */}
       {children}
 
-      {/* Spots */}
+      {/* Spots — statuses keyed by label (bridges editor spots ↔ DB spots) */}
       {spots.map((spot) => {
-        const status = statuses[spot.id] ?? "VACANT";
+        const status = statuses[spot.label] ?? statuses[spot.id] ?? "VACANT";
         const isHovered = hoveredId === spot.id;
         const isSelected = selectedSpotId === spot.id;
         const colors = STATUS_COLORS[status];
@@ -118,7 +118,7 @@ export function countStatuses(
   let vacant = 0, reserved = 0, overdue = 0, company = 0;
   for (const spot of spots) {
     if (spot.id === excludeId) continue;
-    const s = statuses[spot.id];
+    const s = statuses[spot.label] ?? statuses[spot.id];
     if (s === "RESERVED") reserved++;
     else if (s === "OVERDUE") overdue++;
     else if (s === "COMPANY") company++;

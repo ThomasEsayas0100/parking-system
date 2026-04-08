@@ -230,9 +230,9 @@ export default function AdminDashboard() {
     const map: Record<string, SpotStatus> = {};
     for (const spot of spots) {
       const session = spot.sessions?.[0];
-      if (!session) map[spot.id] = "VACANT";
-      else if (session.status === "OVERSTAY") map[spot.id] = "OVERDUE";
-      else map[spot.id] = "RESERVED";
+      if (!session) map[spot.label] = "VACANT";
+      else if (session.status === "OVERSTAY") map[spot.label] = "OVERDUE";
+      else map[spot.label] = "RESERVED";
     }
     return map;
   }, [spots]);
@@ -243,8 +243,8 @@ export default function AdminDashboard() {
     const map: Record<string, SpotDetail> = {};
     for (const spot of spots) {
       const session = spot.sessions?.[0] ?? null;
-      const status = lotStatuses[spot.id] ?? "VACANT";
-      map[spot.id] = {
+      const status = lotStatuses[spot.label] ?? "VACANT";
+      map[spot.label] = {
         spotId: spot.id,
         spotLabel: spot.label,
         status,
@@ -375,7 +375,7 @@ export default function AdminDashboard() {
               </div>
 
               <SpotDetailPanel
-                detail={selectedSpotId ? spotDetails[selectedSpotId] ?? null : null}
+                detail={selectedSpotId ? spotDetails[allSpots.find(s => s.id === selectedSpotId)?.label ?? ""] ?? null : null}
                 open={selectedSpotId !== null}
                 onClose={() => setSelectedSpotId(null)}
               />
