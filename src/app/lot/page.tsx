@@ -3,6 +3,7 @@
 import React, { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import LotMapEditor from "@/components/lot/LotMapEditor";
+import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import EditorSidebar from "@/components/lot/editor/EditorSidebar";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import { type SpotStatus, type SpotDetail } from "./demoData";
@@ -15,39 +16,12 @@ import type {
   SpotLayout,
 } from "@/types/domain";
 
-const LOT_BOUNDARY_PATH =
-  "M -5,1210 L 1005,1210 L 1005,638 L 780,522 L 640,522 L 390,302 L 390,218 C 362,230 298,170 195,92 L -5,-5 Z";
-
-// ---------------------------------------------------------------------------
-// Color helpers (status view)
-// ---------------------------------------------------------------------------
-const STATUS_COLORS: Record<SpotStatus, { fill: string; fillHover: string; stroke: string; label: string }> = {
-  VACANT:   { fill: "#12261C", fillHover: "#1A3324", stroke: "#2D7A4A", label: "rgba(255,255,255,0.5)" },
-  RESERVED: { fill: "#1A1A2E", fillHover: "#24244A", stroke: "#6366F1", label: "rgba(99,102,241,0.7)" },
-  OVERDUE:  { fill: "#2C1810", fillHover: "#3D2218", stroke: "#DC2626", label: "rgba(220,38,38,0.7)" },
-  COMPANY:  { fill: "#1C1A10", fillHover: "#2A2716", stroke: "#CA8A04", label: "rgba(202,138,4,0.7)" },
-};
-
 const ASSIGNED_COLORS = {
   fill: "#061830",
   fillHover: "#0A2040",
   stroke: "#0A84FF",
   label: "#60AAFF",
 };
-
-function spotFill(status: SpotStatus, hovered: boolean, isAssigned: boolean): string {
-  if (isAssigned) return hovered ? ASSIGNED_COLORS.fillHover : ASSIGNED_COLORS.fill;
-  const c = STATUS_COLORS[status];
-  return hovered ? c.fillHover : c.fill;
-}
-
-function spotStroke(status: SpotStatus, isAssigned: boolean): string {
-  return isAssigned ? ASSIGNED_COLORS.stroke : STATUS_COLORS[status].stroke;
-}
-
-function spotLabelFill(status: SpotStatus, isAssigned: boolean): string {
-  return isAssigned ? ASSIGNED_COLORS.label : STATUS_COLORS[status].label;
-}
 
 // ---------------------------------------------------------------------------
 // Transition duration
@@ -149,7 +123,6 @@ function LotPage() {
   }, [apiSpots, statuses]);
 
   // Status view state
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -209,18 +182,10 @@ function LotPage() {
     setMode(isEdit ? "view" : "edit");
   }, [isEdit, editor]);
 
-  const counts = useMemo(() => {
-    let vacant = 0, reserved = 0, overdue = 0, company = 0;
-    for (const spot of allSpots) {
-      if (spot.id === demoSpotId) continue; // don't count assigned spot
-      const s = statuses[spot.id];
-      if (s === "VACANT") vacant++;
-      else if (s === "RESERVED") reserved++;
-      else if (s === "OVERDUE") overdue++;
-      else if (s === "COMPANY") company++;
-    }
-    return { total: allSpots.length, vacant, reserved, overdue, company };
-  }, [allSpots, statuses, demoSpotId]);
+  const counts = useMemo(
+    () => countStatuses(allSpots, statuses, demoSpotId),
+    [allSpots, statuses, demoSpotId],
+  );
 
   return (
     <div style={{
@@ -379,23 +344,22 @@ function LotPage() {
             transition: `opacity ${T}`,
             zIndex: isEdit ? 0 : 1,
           }}>
-            <svg
-              viewBox="-200 -80 1500 1350"
-              width="100%"
-              height="100%"
-              preserveAspectRatio="xMidYMid meet"
-              style={{ display: "block", background: "#1C1C1E" }}
+            <LotMapViewer
+              spots={allSpots}
+              statuses={statuses}
+              selectedSpotId={selectedSpotId}
+              onSelectSpot={setSelectedSpotId}
             >
-              <defs>
-                <marker id="navArrow" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto">
-                  <polygon points="0 0, 6 2.5, 0 5" fill="#0A84FF" opacity="0.9" />
-                </marker>
-              </defs>
+              {/* Demo-only: navigation arrow marker */}
+              {isDemo && (
+                <defs>
+                  <marker id="navArrow" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto">
+                    <polygon points="0 0, 6 2.5, 0 5" fill="#0A84FF" opacity="0.9" />
+                  </marker>
+                </defs>
+              )}
 
-              {/* Lot boundary */}
-              <path d={LOT_BOUNDARY_PATH} fill="none" stroke="rgba(255,255,255,0.18)" strokeWidth="1.5" />
-
-              {/* Navigation path (demo mode) */}
+              {/* Demo-only: navigation path */}
               {isDemo && demoPathD && (
                 <path
                   d={demoPathD}
@@ -412,7 +376,7 @@ function LotPage() {
                 />
               )}
 
-              {/* Entrance marker (demo mode) */}
+              {/* Demo-only: entrance marker */}
               {isDemo && (
                 <g>
                   <circle cx={ENTRANCE[0]} cy={ENTRANCE[1]} r={8} fill="#0A84FF" opacity={0.9} />
@@ -432,79 +396,21 @@ function LotPage() {
                 </g>
               )}
 
-              {/* Spots */}
-              {allSpots.map((spot) => {
-                const isAssigned = isDemo && spot.id === demoSpotId;
-                const status = statuses[spot.id] ?? "VACANT";
-                const isHovered = hoveredId === spot.id;
-                const fill = spotFill(status, isHovered, isAssigned);
-                const stroke = spotStroke(status, isAssigned);
-                const sw = isAssigned ? 2 : status === "OVERDUE" ? 1.5 : 1;
+              {/* Demo-only: assigned spot pulse rings */}
+              {isDemo && assignedSpot && (() => {
+                const spot = assignedSpot;
                 const transform = spot.rot !== 0 ? `rotate(${spot.rot}, ${spot.cx}, ${spot.cy})` : undefined;
                 const fontSize = Math.max(10, Math.min(16, Math.min(spot.w, spot.h) * 0.75));
-                const labelFill = spotLabelFill(status, isAssigned);
-
                 return (
-                  <g
-                    key={spot.id}
-                    transform={transform}
-                    onMouseEnter={() => setHoveredId(spot.id)}
-                    onMouseLeave={() => setHoveredId(null)}
-                    onClick={() => setSelectedSpotId(spot.id)}
-                    style={{ cursor: "pointer" }}
-                  >
-                    {/* Pulse rings for assigned spot */}
-                    {isAssigned && (
-                      <>
-                        <rect
-                          key={`ring1-${pulseKey}`}
-                          x={spot.cx - spot.w / 2}
-                          y={spot.cy - spot.h / 2}
-                          width={spot.w}
-                          height={spot.h}
-                          rx={2}
-                          fill="none"
-                          stroke="#0A84FF"
-                          strokeWidth="1.5"
-                          className="spot-ring"
-                          style={{ animationDelay: "0s" }}
-                        />
-                        <rect
-                          key={`ring2-${pulseKey}`}
-                          x={spot.cx - spot.w / 2}
-                          y={spot.cy - spot.h / 2}
-                          width={spot.w}
-                          height={spot.h}
-                          rx={2}
-                          fill="none"
-                          stroke="#0A84FF"
-                          strokeWidth="1.5"
-                          className="spot-ring"
-                          style={{ animationDelay: "0.4s" }}
-                        />
-                      </>
-                    )}
-
-                    <rect
-                      x={spot.cx - spot.w / 2} y={spot.cy - spot.h / 2}
-                      width={spot.w} height={spot.h} rx={1}
-                      fill={fill} stroke={stroke} strokeWidth={sw}
-                      className={isAssigned ? "spot-assigned-blink" : undefined}
-                      style={{ transition: "fill 0.3s, stroke 0.3s" }}
-                    />
-                    <text
-                      x={spot.cx} y={spot.cy + fontSize * 0.35}
-                      fontSize={fontSize}
-                      fill={labelFill}
-                      textAnchor="middle" fontFamily="var(--font-body)"
-                      fontWeight="700" pointerEvents="none"
-                    >
-                      {spot.label}
-                    </text>
+                  <g transform={transform}>
+                    <rect key={`ring1-${pulseKey}`} x={spot.cx - spot.w / 2} y={spot.cy - spot.h / 2} width={spot.w} height={spot.h} rx={2} fill="none" stroke="#0A84FF" strokeWidth="1.5" className="spot-ring" style={{ animationDelay: "0s" }} />
+                    <rect key={`ring2-${pulseKey}`} x={spot.cx - spot.w / 2} y={spot.cy - spot.h / 2} width={spot.w} height={spot.h} rx={2} fill="none" stroke="#0A84FF" strokeWidth="1.5" className="spot-ring" style={{ animationDelay: "0.4s" }} />
+                    <rect x={spot.cx - spot.w / 2} y={spot.cy - spot.h / 2} width={spot.w} height={spot.h} rx={1} fill={ASSIGNED_COLORS.fill} stroke={ASSIGNED_COLORS.stroke} strokeWidth={2} className="spot-assigned-blink" />
+                    <text x={spot.cx} y={spot.cy + fontSize * 0.35} fontSize={fontSize} fill={ASSIGNED_COLORS.label} textAnchor="middle" fontFamily="var(--font-body)" fontWeight="700" pointerEvents="none">{spot.label}</text>
                   </g>
                 );
-              })}
-            </svg>
+              })()}
+            </LotMapViewer>
           </div>
 
           {/* Editor view */}

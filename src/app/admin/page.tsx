@@ -2,8 +2,12 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 
-import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings } from "@/types/domain";
+import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout } from "@/types/domain";
 import { apiFetch } from "@/lib/fetch";
+import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
+import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
+import type { SpotStatus, SpotDetail } from "@/app/lot/demoData";
+import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 
 type Spot = ApiSpotWithSessions;
 type AuditEntry = ApiAuditEntry;
@@ -133,6 +137,14 @@ export default function AdminDashboard() {
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
 
+  // ── Overview / lot map state ──
+  const editor = useEditorReducer();
+  const allSpots = useMemo<SpotLayout[]>(
+    () => Object.values(editor.state.spots),
+    [editor.state.spots],
+  );
+  const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
+
   // ── Sessions tab state ──
   const [sessionsData, setSessionsData] = useState<SessionsResponse | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -214,13 +226,45 @@ export default function AdminDashboard() {
   useEffect(() => { setSessOffset(0); }, [sessSearch, sessStatus]);
 
   // ── Derived state ──
-  const now = new Date();
-  const occupiedSpots = spots.filter((s) => s.status === "OCCUPIED");
-  const availableBobtail = spots.filter((s) => s.type === "BOBTAIL" && s.status === "AVAILABLE").length;
-  const availableTruck = spots.filter((s) => s.type === "TRUCK_TRAILER" && s.status === "AVAILABLE").length;
-  const overstayCount = occupiedSpots
-    .flatMap((s) => s.sessions)
-    .filter((s) => s.status === "OVERSTAY" || new Date(s.expectedEnd) < now).length;
+  const lotStatuses = useMemo<Record<string, SpotStatus>>(() => {
+    const map: Record<string, SpotStatus> = {};
+    for (const spot of spots) {
+      const session = spot.sessions?.[0];
+      if (!session) map[spot.id] = "VACANT";
+      else if (session.status === "OVERSTAY") map[spot.id] = "OVERDUE";
+      else map[spot.id] = "RESERVED";
+    }
+    return map;
+  }, [spots]);
+
+  const lotCounts = useMemo(() => countStatuses(allSpots, lotStatuses), [allSpots, lotStatuses]);
+
+  const spotDetails = useMemo<Record<string, SpotDetail>>(() => {
+    const map: Record<string, SpotDetail> = {};
+    for (const spot of spots) {
+      const session = spot.sessions?.[0] ?? null;
+      const status = lotStatuses[spot.id] ?? "VACANT";
+      map[spot.id] = {
+        spotId: spot.id,
+        spotLabel: spot.label,
+        status,
+        session: session
+          ? {
+              id: session.id,
+              driver: session.driver,
+              vehicle: session.vehicle,
+              startedAt: new Date(session.startedAt),
+              expectedEnd: new Date(session.expectedEnd),
+              endedAt: session.endedAt ? new Date(session.endedAt) : null,
+              sessionStatus: session.status,
+              reminderSent: session.reminderSent,
+              payments: [],
+            }
+          : null,
+      };
+    }
+    return map;
+  }, [spots, lotStatuses]);
 
   // ── Handlers ──
   async function handleSeedSpots() {
@@ -293,38 +337,49 @@ export default function AdminDashboard() {
 
       <div style={{ padding: "24px 24px 40px" }}>
 
-        {/* ═══ OVERVIEW ═══ */}
+        {/* ═══ OVERVIEW (Lot Map) ═══ */}
         {tab === "overview" && (
-          <div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 24 }}>
-              {[
-                { label: "Bobtail", value: `${availableBobtail} open` },
-                { label: "Truck", value: `${availableTruck} open` },
-                { label: "Occupied", value: `${occupiedSpots.length}` },
-                { label: "Overstay", value: `${overstayCount}`, highlight: overstayCount > 0 },
-              ].map((c) => (
-                <div key={c.label} style={{
-                  background: CARD_BG, borderRadius: 10, padding: "16px 18px",
-                  border: `1px solid ${c.highlight ? "#DC262660" : BORDER}`,
-                }}>
-                  <div style={{ fontSize: 11, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, marginBottom: 6 }}>
-                    {c.label}
-                  </div>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: c.highlight ? "#DC2626" : FG }}>
-                    {c.value}
-                  </div>
-                </div>
-              ))}
-            </div>
+          <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)" }}>
+            {/* Compact stats bar */}
+            <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 16, fontSize: 12, flexShrink: 0 }}>
+              <span style={{ color: FG_MUTED }}>
+                <span style={{ color: "#2D7A4A", fontWeight: 700 }}>{lotCounts.vacant}</span> vacant
+              </span>
+              <span style={{ color: FG_MUTED }}>
+                <span style={{ color: "#6366F1", fontWeight: 700 }}>{lotCounts.reserved}</span> reserved
+              </span>
+              <span style={{ color: FG_MUTED }}>
+                <span style={{ color: "#DC2626", fontWeight: 700 }}>{lotCounts.overdue}</span> overdue
+              </span>
+              <span style={{ color: FG_DIM }}>|</span>
+              <span style={{ color: FG_MUTED }}>
+                <span style={{ color: FG, fontWeight: 700 }}>{lotCounts.total}</span> total
+              </span>
 
-            {spots.length === 0 && (
-              <div style={{ textAlign: "center", padding: 40 }}>
-                <p style={{ color: FG_DIM, marginBottom: 12 }}>No spots configured.</p>
-                <button onClick={handleSeedSpots} style={{ padding: "8px 20px", background: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: 6, color: FG, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              {spots.length === 0 && (
+                <button onClick={handleSeedSpots} style={{ marginLeft: "auto", padding: "5px 14px", background: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: 6, color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                   Seed Spots
                 </button>
+              )}
+            </div>
+
+            {/* Lot map + detail panel */}
+            <div style={{ flex: 1, display: "flex", overflow: "hidden", borderRadius: RADIUS, border: `1px solid ${BORDER}`, position: "relative" }}>
+              <div style={{ flex: 1, overflow: "hidden" }}>
+                <LotMapViewer
+                  spots={allSpots}
+                  statuses={lotStatuses}
+                  selectedSpotId={selectedSpotId}
+                  onSelectSpot={setSelectedSpotId}
+                />
               </div>
-            )}
+
+              <SpotDetailPanel
+                detail={selectedSpotId ? spotDetails[selectedSpotId] ?? null : null}
+                open={selectedSpotId !== null}
+                onClose={() => setSelectedSpotId(null)}
+              />
+            </div>
           </div>
         )}
 
