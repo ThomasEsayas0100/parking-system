@@ -2,7 +2,7 @@
 // Lot Editor — Reducer + state management
 // ---------------------------------------------------------------------------
 
-import { useReducer, useCallback, useState, useMemo } from "react";
+import { useReducer, useCallback, useState, useMemo, useEffect } from "react";
 import type { EditorSpot, SpotGroup, EditorState, EditorAction } from "./types";
 import { computeGroupSpacing, computeNewSpotPosition, getGroupTemplate, snapToGrid } from "./geometry";
 import { findOverlaps, wouldOverlap } from "./validation";
@@ -397,20 +397,71 @@ function editorReducer(state: EditorState, action: EditorAction): EditorState {
 // ---------------------------------------------------------------------------
 export function useEditorReducer() {
   const [state, dispatch] = useReducer(editorReducer, undefined, initState);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  // Compute saved snapshot once on mount — the initial state IS the saved state
-  const [savedSnapshot] = useState(() => {
-    const data = {
+  // Load layout from API on mount
+  useEffect(() => {
+    fetch("/api/spots/layout")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.spots && Object.keys(data.spots).length > 0) {
+          // Derive counters from existing spot IDs
+          let maxT = 0, maxB = 0, maxG = 0;
+          for (const id of Object.keys(data.spots)) {
+            if (id.startsWith("T")) maxT = Math.max(maxT, parseInt(id.slice(1)) || 0);
+            if (id.startsWith("B")) maxB = Math.max(maxB, parseInt(id.slice(1)) || 0);
+          }
+          const groups = Array.isArray(data.groups) ? data.groups : [];
+          for (const g of groups) {
+            if (typeof g.id === "string" && g.id.startsWith("G")) {
+              maxG = Math.max(maxG, parseInt(g.id.slice(1)) || 0);
+            }
+          }
+          dispatch({
+            type: "LOAD_STATE",
+            state: {
+              spots: data.spots,
+              groups,
+              nextTruckNum: maxT + 1,
+              nextBobtailNum: maxB + 1,
+              nextGroupNum: maxG + 1,
+            },
+          });
+        }
+        // If API returns empty, keep the default state from initState
+      })
+      .catch(() => {
+        // API failed — keep default state (first-time setup or offline)
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Compute saved snapshot — updated after API load or save
+  const [currentSavedSnapshot, setCurrentSavedSnapshot] = useState(() =>
+    JSON.stringify({
       spots: state.spots,
       groups: state.groups,
       nextTruckNum: state.nextTruckNum,
       nextBobtailNum: state.nextBobtailNum,
       nextGroupNum: state.nextGroupNum,
-    };
-    return JSON.stringify(data);
-  });
+    })
+  );
 
-  const [currentSavedSnapshot, setCurrentSavedSnapshot] = useState(savedSnapshot);
+  // Sync saved snapshot when state loads from API
+  useEffect(() => {
+    if (!loading) {
+      setCurrentSavedSnapshot(JSON.stringify({
+        spots: state.spots,
+        groups: state.groups,
+        nextTruckNum: state.nextTruckNum,
+        nextBobtailNum: state.nextBobtailNum,
+        nextGroupNum: state.nextGroupNum,
+      }));
+    }
+    // Only run once after initial API load completes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
   // Detect unsaved changes
   const currentJSON = useMemo(() => JSON.stringify({
@@ -423,10 +474,23 @@ export function useEditorReducer() {
 
   const hasUnsavedChanges = currentJSON !== currentSavedSnapshot;
 
-  const saveSnapshot = useCallback(() => {
-    localStorage.setItem(STORAGE_KEY, currentJSON);
-    setCurrentSavedSnapshot(currentJSON);
-  }, [currentJSON]);
+  // Save to API (replaces localStorage.setItem)
+  const saveSnapshot = useCallback(async () => {
+    setSaving(true);
+    try {
+      const spotsArray = Object.values(state.spots);
+      await fetch("/api/spots/layout", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spots: spotsArray, groups: state.groups }),
+      });
+      setCurrentSavedSnapshot(currentJSON);
+    } catch {
+      // Save failed — changes remain unsaved, user can retry
+    } finally {
+      setSaving(false);
+    }
+  }, [state.spots, state.groups, currentJSON]);
 
   const discardChanges = useCallback(() => {
     try {
@@ -446,18 +510,28 @@ export function useEditorReducer() {
     }
   }, [currentSavedSnapshot]);
 
-  const resetToDefaults = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+  const resetToDefaults = useCallback(async () => {
     const data = getDefaultData();
     dispatch({ type: "LOAD_STATE", state: data });
-    const json = JSON.stringify(data);
-    localStorage.setItem(STORAGE_KEY, json);
-    setCurrentSavedSnapshot(json);
+    // Save defaults to API
+    setSaving(true);
+    try {
+      await fetch("/api/spots/layout", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spots: Object.values(data.spots), groups: data.groups }),
+      });
+      setCurrentSavedSnapshot(JSON.stringify(data));
+    } catch {
+      // Failed — local state reset but DB not synced
+    } finally {
+      setSaving(false);
+    }
   }, []);
 
   const exportJSON = useCallback(() => {
     return JSON.stringify({ spots: Object.values(state.spots), groups: state.groups }, null, 2);
   }, [state.spots, state.groups]);
 
-  return { state, dispatch, resetToDefaults, exportJSON, saveSnapshot, hasUnsavedChanges, discardChanges };
+  return { state, dispatch, resetToDefaults, exportJSON, saveSnapshot, hasUnsavedChanges, discardChanges, loading, saving };
 }

@@ -75,6 +75,11 @@ model Spot {
   label     String      @unique
   type      VehicleType
   status    SpotStatus  @default(AVAILABLE)
+  cx        Float       @default(0)
+  cy        Float       @default(0)
+  w         Float       @default(0)
+  h         Float       @default(0)
+  rot       Float       @default(0)
   sessions  Session[]
   auditLogs AuditLog[]
 }
@@ -136,4 +141,5 @@ model Settings {
   totalSpotsTruck       Int     @default(100)
   managerEmail          String  @default("")
   managerPhone          String  @default("")
+  lotGroups             Json    @default("[]")
 }

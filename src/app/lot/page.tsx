@@ -162,8 +162,8 @@ function LotPage() {
   );
 
   // ---------------------------------------------------------------------------
-  const handleSave = useCallback(() => {
-    editor.saveSnapshot();
+  const handleSave = useCallback(async () => {
+    await editor.saveSnapshot();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }, [editor]);

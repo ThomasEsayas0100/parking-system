@@ -56,15 +56,17 @@ const inputStyle = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  Pick a random spot from localStorage (or default state fallback)  */
+/*  Pick a random spot from API layout (or default state fallback)    */
 /* ------------------------------------------------------------------ */
-function pickDemoSpot(vehicleType: "BOBTAIL" | "TRUCK_TRAILER"): string | null {
+async function pickDemoSpot(vehicleType: "BOBTAIL" | "TRUCK_TRAILER"): Promise<string | null> {
   try {
-    const raw = localStorage.getItem("lot-editor-state");
-    const state = raw
-      ? (JSON.parse(raw) as { spots: Record<string, { id: string; type: string }> })
-      : (defaultState as { spots: Record<string, { id: string; type: string }> });
-    const spots = Object.values(state.spots).filter((s) => s.type === vehicleType);
+    const res = await fetch("/api/spots/layout");
+    const data = await res.json();
+    const spotsMap = data.spots && Object.keys(data.spots).length > 0
+      ? data.spots
+      : defaultState.spots;
+    const spots = Object.values(spotsMap as Record<string, { id: string; type: string }>)
+      .filter((s) => s.type === vehicleType);
     if (!spots.length) return null;
     return spots[Math.floor(Math.random() * spots.length)].id;
   } catch {
@@ -238,7 +240,7 @@ function CheckInContent() {
     // Simulate spot search
     await new Promise((r) => setTimeout(r, 1400));
 
-    const spotId = pickDemoSpot(vehicleType);
+    const spotId = await pickDemoSpot(vehicleType);
     if (!spotId) {
       setError("No spots available. Make sure the lot has spots in the editor.");
       setLoading(false);
