@@ -7,6 +7,7 @@ import Link from "next/link";
 import type { SavedDriver } from "@/types/domain";
 import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
+import PhoneInput from "@/components/PhoneInput";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -742,13 +743,12 @@ export default function ScanPage() {
             <p className="g-sub">We&apos;ll look up your account.</p>
             <div className="g-input-wrap">
               <label className="g-input-label">Phone number</label>
-              <input
+              <PhoneInput
                 ref={phoneRef}
                 className="g-input"
-                type="tel"
                 placeholder="(555) 000-0000"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                onChange={setPhone}
                 onKeyDown={(e) => e.key === "Enter" && lookupPhone()}
               />
             </div>

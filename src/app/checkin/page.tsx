@@ -7,6 +7,7 @@ import defaultState from "@/components/lot/editor/defaultState.json";
 import type { AppSettings, ApiVehicle } from "@/types/domain";
 import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
 import { apiFetch } from "@/lib/fetch";
+import PhoneInput from "@/components/PhoneInput";
 
 type Settings = Pick<AppSettings, "hourlyRateBobtail" | "hourlyRateTruck">;
 type Vehicle = ApiVehicle;
@@ -502,9 +503,8 @@ function CheckInContent() {
 
               <div>
                 <Label en="Phone" es="Teléfono" htmlFor="phone" />
-                <input
+                <PhoneInput
                   id="phone"
-                  type="tel"
                   className={inputClass}
                   style={{
                     ...inputStyle,
@@ -513,7 +513,7 @@ function CheckInContent() {
                     background: fieldsLocked ? "rgba(255,255,255,0.02)" : inputStyle.background,
                   }}
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  onChange={setPhone}
                   placeholder="(555) 123-4567"
                   required
                   autoComplete="tel"

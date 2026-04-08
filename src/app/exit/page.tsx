@@ -7,6 +7,7 @@ import Link from "next/link";
 import type { SavedDriver, ApiDriver, ApiPayment, OverstayInfo } from "@/types/domain";
 import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
+import PhoneInput from "@/components/PhoneInput";
 
 /* ─── types ─────────────────────────────────────────────── */
 type ExitSession = {
@@ -566,13 +567,11 @@ function EnterPhoneView({
       <p style={styles.sub}>We&apos;ll look up your session.</p>
 
       <form onSubmit={onSubmit} autoComplete="off">
-        <input
+        <PhoneInput
           style={styles.input}
-          type="tel"
-          inputMode="numeric"
           placeholder="(555) 000-0000"
           value={phone}
-          onChange={(e) => setPhone(e.target.value)}
+          onChange={setPhone}
           autoFocus
         />
         {error && <p style={styles.error}>{error}</p>}
