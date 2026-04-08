@@ -2,24 +2,41 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import type { SavedDriver } from "@/types/domain";
 import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
-import { apiFetch } from "@/lib/fetch";
+import { apiFetch, apiPost } from "@/lib/fetch";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 type State =
-  | "init"          // mounting — checking localStorage
-  | "recognized"    // saved driver found → "Welcome back!"
-  | "ask_type"      // no saved driver → "New or existing?"
-  | "enter_phone"   // existing user, enter phone number
-  | "checking"      // API in flight
-  | "confirm"       // phone found → "Are you [name]?"
-  | "not_found";    // phone not in DB
+  | "init"            // mounting — checking localStorage
+  | "checking"        // API in flight
+  | "gate_active"     // has active session → gate opening on load
+  | "gate_overstay"   // has overstay session → show fee, no gate
+  | "recognized"      // saved driver, no active session → "Welcome back!"
+  | "ask_type"        // no saved driver → "New or existing?"
+  | "enter_phone"     // existing user, enter phone number
+  | "confirm"         // phone found → "Are you [name]?"
+  | "not_found";      // phone not in DB
 
 type Driver = SavedDriver;
+
+type ActiveSession = {
+  id: string;
+  status: "ACTIVE" | "OVERSTAY";
+  expectedEnd: string;
+  startedAt: string;
+  spot: { label: string; type: string };
+  vehicle: { licensePlate: string | null; unitNumber: string | null; type: string; nickname: string | null };
+};
+
+type DriverResponse = {
+  driver: { id: string; name: string; phone: string; email: string } | null;
+  activeSessions?: ActiveSession[];
+};
 
 // ---------------------------------------------------------------------------
 // Page
@@ -28,10 +45,33 @@ export default function ScanPage() {
   const router = useRouter();
   const [state, setState] = useState<State>("init");
   const [driver, setDriver] = useState<Driver | null>(null);
+  const [session, setSession] = useState<ActiveSession | null>(null);
   const [phone, setPhone] = useState("");
   const [foundDriver, setFoundDriver] = useState<Driver | null>(null);
   const [error, setError] = useState("");
+  const [gateTriggered, setGateTriggered] = useState(false);
   const phoneRef = useRef<HTMLInputElement>(null);
+
+  // Resolve a verified driver: check for active sessions, route to correct state
+  function resolveDriver(d: { id: string; name: string; phone: string }, sessions: ActiveSession[]) {
+    const fresh: Driver = { id: d.id, name: d.name, phone: d.phone };
+    saveDriver(fresh);
+    setDriver(fresh);
+
+    // Find first active or overstay session
+    const active = sessions.find((s) => s.status === "ACTIVE");
+    const overstay = sessions.find((s) => s.status === "OVERSTAY");
+
+    if (active) {
+      setSession(active);
+      setState("gate_active");
+    } else if (overstay) {
+      setSession(overstay);
+      setState("gate_overstay");
+    } else {
+      setState("recognized");
+    }
+  }
 
   // On mount: check localStorage, then verify against server
   useEffect(() => {
@@ -41,15 +81,12 @@ export default function ScanPage() {
       return;
     }
     setState("checking");
-    apiFetch<{ driver: { id: string; name: string; phone: string } | null }>(
+    apiFetch<DriverResponse>(
       `/api/drivers?phone=${saved.phone.replace(/\D/g, "")}`
     )
       .then((data) => {
         if (data.driver?.id === saved.id) {
-          const fresh: Driver = { id: data.driver.id, name: data.driver.name, phone: data.driver.phone };
-          saveDriver(fresh);
-          setDriver(fresh);
-          setState("recognized");
+          resolveDriver(data.driver, data.activeSessions ?? []);
         } else {
           clearDriver();
           setState("ask_type");
@@ -62,27 +99,41 @@ export default function ScanPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-trigger gate when entering gate_active state
+  useEffect(() => {
+    if (state !== "gate_active" || gateTriggered) return;
+    setGateTriggered(true);
+    apiPost("/api/gate", { driverId: driver?.id, sessionId: session?.id })
+      .catch(() => {
+        // Gate trigger failed — still show session info
+      });
+  }, [state, gateTriggered, driver, session]);
+
   useEffect(() => {
     if (state === "enter_phone") {
       setTimeout(() => phoneRef.current?.focus(), 120);
     }
   }, [state]);
 
+  // Phone lookup for returning drivers
   async function lookupPhone() {
     setError("");
     const digits = phone.replace(/\D/g, "");
     if (digits.length < 7) { setError("Enter a valid phone number"); return; }
     setState("checking");
     try {
-      const data = await apiFetch<{ driver: { id: string; name: string; phone: string } | null }>(
-        `/api/drivers?phone=${digits}`
-      );
+      const data = await apiFetch<DriverResponse>(`/api/drivers?phone=${digits}`);
       if (!data.driver) {
         setState("not_found");
         return;
       }
-      setFoundDriver({ id: data.driver.id, name: data.driver.name, phone: data.driver.phone });
-      setState("confirm");
+      // If they have active sessions, resolve immediately (skip confirm step)
+      if (data.activeSessions && data.activeSessions.length > 0) {
+        resolveDriver(data.driver, data.activeSessions);
+      } else {
+        setFoundDriver({ id: data.driver.id, name: data.driver.name, phone: data.driver.phone });
+        setState("confirm");
+      }
     } catch {
       setError("Connection error. Try again.");
       setState("enter_phone");
@@ -104,9 +155,38 @@ export default function ScanPage() {
     clearDriver();
     setDriver(null);
     setFoundDriver(null);
+    setSession(null);
     setPhone("");
     setError("");
+    setGateTriggered(false);
     setState("ask_type");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Time helpers
+  // ---------------------------------------------------------------------------
+  function timeRemaining(expectedEnd: string): string {
+    const diff = new Date(expectedEnd).getTime() - Date.now();
+    if (diff <= 0) return "Expired";
+    const hrs = Math.floor(diff / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    if (hrs > 0) return `${hrs}h ${mins}m`;
+    return `${mins}m`;
+  }
+
+  function timeOverdue(expectedEnd: string): string {
+    const diff = Date.now() - new Date(expectedEnd).getTime();
+    if (diff <= 0) return "0m";
+    const hrs = Math.floor(diff / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+    if (hrs > 0) return `${hrs}h ${mins}m`;
+    return `${mins}m`;
+  }
+
+  function vehicleLabel(v: ActiveSession["vehicle"]): string {
+    if (v.unitNumber && v.licensePlate) return `#${v.unitNumber} · ${v.licensePlate}`;
+    if (v.unitNumber) return `#${v.unitNumber}`;
+    return v.licensePlate || "—";
   }
 
   // ---------------------------------------------------------------------------
@@ -128,7 +208,6 @@ export default function ScanPage() {
           flex-direction: column;
         }
 
-        /* ── Top bar ── */
         .g-bar {
           padding: 18px 24px;
           display: flex;
@@ -160,8 +239,8 @@ export default function ScanPage() {
         .g-bar-dot.green { color: #34C759; }
         .g-bar-dot.blue  { color: #4A9EFF; }
         .g-bar-dot.amber { color: #F59E0B; }
+        .g-bar-dot.red   { color: #EF4444; }
 
-        /* ── Content ── */
         .g-body {
           flex: 1;
           display: flex;
@@ -178,7 +257,6 @@ export default function ScanPage() {
           to   { opacity: 1; transform: translateY(0); }
         }
 
-        /* ── Eyebrow label ── */
         .g-eyebrow {
           font-size: 11px;
           font-weight: 600;
@@ -188,7 +266,6 @@ export default function ScanPage() {
           margin-bottom: 12px;
         }
 
-        /* ── Headings ── */
         .g-h1 {
           font-family: 'Syne', sans-serif;
           font-size: clamp(32px, 8vw, 42px);
@@ -199,6 +276,7 @@ export default function ScanPage() {
           margin-bottom: 10px;
         }
         .g-h1 span { color: #E05228; }
+        .g-h1 .green { color: #34C759; }
 
         .g-sub {
           font-size: 15px;
@@ -207,14 +285,12 @@ export default function ScanPage() {
           margin-bottom: 36px;
         }
 
-        /* ── Divider ── */
         .g-divider {
           height: 1px;
           background: rgba(242,240,235,0.07);
           margin: 0 0 28px;
         }
 
-        /* ── Buttons ── */
         .g-btn {
           width: 100%;
           padding: 16px 20px;
@@ -228,6 +304,7 @@ export default function ScanPage() {
           display: flex;
           align-items: center;
           justify-content: space-between;
+          text-decoration: none;
         }
         .g-btn:active { transform: scale(0.985); }
 
@@ -253,7 +330,6 @@ export default function ScanPage() {
         }
         .g-btn-ghost:hover { background: rgba(242,240,235,0.08); }
 
-        /* ── Menu rows (ask_type) ── */
         .g-menu {
           border: 1px solid rgba(242,240,235,0.08);
           border-radius: 12px;
@@ -279,7 +355,6 @@ export default function ScanPage() {
         }
         .g-menu-row:hover { background: rgba(242,240,235,0.06); }
         .g-menu-row:active { background: rgba(242,240,235,0.09); }
-        .g-menu-row-text {}
         .g-menu-row-label {
           font-size: 15px;
           font-weight: 600;
@@ -298,7 +373,6 @@ export default function ScanPage() {
           margin-left: 12px;
         }
 
-        /* ── Input ── */
         .g-input-wrap { margin-bottom: 6px; }
         .g-input-label {
           display: block;
@@ -339,7 +413,6 @@ export default function ScanPage() {
           text-align: center;
         }
 
-        /* ── Identity block ── */
         .g-identity {
           padding: 20px;
           border-radius: 10px;
@@ -361,7 +434,6 @@ export default function ScanPage() {
           letter-spacing: 0.04em;
         }
 
-        /* ── Verified badge ── */
         .g-verified {
           display: inline-flex;
           align-items: center;
@@ -376,12 +448,11 @@ export default function ScanPage() {
           margin-bottom: 20px;
         }
 
-        /* ── Secondary action ── */
         .g-secondary {
           text-align: center;
           margin-top: 20px;
         }
-        .g-secondary button {
+        .g-secondary button, .g-secondary a {
           background: none;
           border: none;
           font-family: 'DM Sans', sans-serif;
@@ -390,10 +461,10 @@ export default function ScanPage() {
           cursor: pointer;
           letter-spacing: 0.01em;
           transition: color 0.15s;
+          text-decoration: none;
         }
-        .g-secondary button:hover { color: rgba(242,240,235,0.5); }
+        .g-secondary button:hover, .g-secondary a:hover { color: rgba(242,240,235,0.5); }
 
-        /* ── Back link ── */
         .g-back {
           background: none;
           border: none;
@@ -410,7 +481,6 @@ export default function ScanPage() {
         }
         .g-back:hover { color: rgba(242,240,235,0.55); }
 
-        /* ── Loading dots ── */
         .g-dots {
           display: flex;
           gap: 6px;
@@ -430,7 +500,6 @@ export default function ScanPage() {
           40% { opacity: 1; transform: scale(1); }
         }
 
-        /* ── Not found icon ── */
         .g-icon-wrap {
           width: 52px;
           height: 52px;
@@ -441,6 +510,52 @@ export default function ScanPage() {
           font-size: 24px;
           margin-bottom: 20px;
         }
+
+        /* ── Session card ── */
+        .g-session-card {
+          padding: 20px;
+          border-radius: 12px;
+          background: rgba(242,240,235,0.04);
+          border: 1px solid rgba(242,240,235,0.09);
+          margin-bottom: 20px;
+        }
+        .g-session-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          padding: 5px 0;
+        }
+        .g-session-label {
+          font-size: 12px;
+          color: rgba(242,240,235,0.38);
+        }
+        .g-session-value {
+          font-size: 14px;
+          font-weight: 500;
+          color: #F2F0EB;
+          text-align: right;
+        }
+
+        /* ── Gate opening animation ── */
+        @keyframes g-gate-pulse {
+          0%   { transform: scale(1); opacity: 0.9; }
+          50%  { transform: scale(1.15); opacity: 0.6; }
+          100% { transform: scale(1); opacity: 0.9; }
+        }
+        .g-gate-icon {
+          width: 64px;
+          height: 64px;
+          border-radius: 50%;
+          background: rgba(52,199,89,0.12);
+          border: 1.5px solid rgba(52,199,89,0.3);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 28px;
+          color: #34C759;
+          margin: 0 auto 24px;
+          animation: g-gate-pulse 2s ease-in-out infinite;
+        }
       `}</style>
 
       <div className="g">
@@ -449,9 +564,19 @@ export default function ScanPage() {
         <div className="g-bar">
           <span className="g-bar-name">Parking Gate</span>
           <span className="g-bar-status">
-            <span className={`g-bar-dot ${state === "recognized" || state === "confirm" ? "green" : state === "not_found" ? "amber" : "blue"}`} />
+            <span className={`g-bar-dot ${
+              state === "gate_active" ? "green"
+              : state === "gate_overstay" ? "red"
+              : state === "recognized" || state === "confirm" ? "green"
+              : state === "not_found" ? "amber"
+              : "blue"
+            }`} />
             {state === "init" || state === "checking"
               ? "Checking…"
+              : state === "gate_active"
+              ? "Gate opening"
+              : state === "gate_overstay"
+              ? "Overstay"
               : state === "recognized"
               ? "Pass active"
               : state === "confirm"
@@ -475,7 +600,93 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* ── RECOGNIZED ── */}
+        {/* ── GATE ACTIVE — auto-opened, show session info ── */}
+        {state === "gate_active" && driver && session && (
+          <div className="g-body">
+            <div className="g-gate-icon">↑</div>
+            <p className="g-eyebrow">Gate opening</p>
+            <h1 className="g-h1">Welcome,<br /><span className="green">{driver.name.split(" ")[0]}</span>.</h1>
+            <p className="g-sub" style={{ marginBottom: 24 }}>The gate is opening. Drive through when ready.</p>
+
+            <div className="g-session-card">
+              <div className="g-session-row">
+                <span className="g-session-label">Spot</span>
+                <span className="g-session-value" style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 18 }}>
+                  {session.spot.label}
+                </span>
+              </div>
+              <div className="g-session-row">
+                <span className="g-session-label">Vehicle</span>
+                <span className="g-session-value">{vehicleLabel(session.vehicle)}</span>
+              </div>
+              <div className="g-session-row">
+                <span className="g-session-label">Time remaining</span>
+                <span className="g-session-value" style={{ color: "#34C759", fontWeight: 600 }}>
+                  {timeRemaining(session.expectedEnd)}
+                </span>
+              </div>
+              <div className="g-session-row">
+                <span className="g-session-label">Expires</span>
+                <span className="g-session-value">
+                  {new Date(session.expectedEnd).toLocaleString("en-US", {
+                    hour: "numeric", minute: "2-digit", hour12: true,
+                  })}
+                </span>
+              </div>
+            </div>
+
+            <Link href={`/extend?sessionId=${session.id}`} className="g-btn g-btn-ghost" style={{ textAlign: "center", justifyContent: "center" }}>
+              Extend parking time
+            </Link>
+
+            <div className="g-secondary">
+              <button onClick={reset}>Not {driver.name.split(" ")[0]}? Reset</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── GATE OVERSTAY — no auto-open, show fee info ── */}
+        {state === "gate_overstay" && driver && session && (
+          <div className="g-body">
+            <div className="g-icon-wrap" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", margin: "0 auto 20px" }}>
+              <span style={{ fontSize: 22, color: "#EF4444" }}>!</span>
+            </div>
+            <p className="g-eyebrow" style={{ color: "#EF4444" }}>Overstay</p>
+            <h1 className="g-h1"><span>{driver.name.split(" ")[0]}</span>,<br />time&apos;s up.</h1>
+            <p className="g-sub" style={{ marginBottom: 24 }}>
+              Your session at spot {session.spot.label} expired{" "}
+              <strong style={{ color: "#EF4444" }}>{timeOverdue(session.expectedEnd)}</strong> ago.
+              Please settle the overstay fee to open the gate.
+            </p>
+
+            <div className="g-session-card" style={{ borderColor: "rgba(239,68,68,0.2)" }}>
+              <div className="g-session-row">
+                <span className="g-session-label">Spot</span>
+                <span className="g-session-value">{session.spot.label}</span>
+              </div>
+              <div className="g-session-row">
+                <span className="g-session-label">Vehicle</span>
+                <span className="g-session-value">{vehicleLabel(session.vehicle)}</span>
+              </div>
+              <div className="g-session-row">
+                <span className="g-session-label">Overdue</span>
+                <span className="g-session-value" style={{ color: "#EF4444", fontWeight: 600 }}>
+                  {timeOverdue(session.expectedEnd)}
+                </span>
+              </div>
+            </div>
+
+            <Link href={`/exit?sessionId=${session.id}`} className="g-btn g-btn-primary" style={{ justifyContent: "center" }}>
+              Settle overstay & open gate
+            </Link>
+
+            <div className="g-secondary" style={{ marginTop: 16 }}>
+              <button onClick={reset}>Not {driver.name.split(" ")[0]}? Reset</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── RECOGNIZED (no active session) ── */}
         {state === "recognized" && driver && (
           <div className="g-body">
             <div className="g-verified">
@@ -486,7 +697,7 @@ export default function ScanPage() {
             </div>
             <p className="g-eyebrow">Welcome back</p>
             <h1 className="g-h1"><span>{driver.name.split(" ")[0]}</span>.</h1>
-            <p className="g-sub">Your information is saved on this device.</p>
+            <p className="g-sub">No active session. Check in to reserve a spot.</p>
             <div className="g-divider" />
             <button className="g-btn g-btn-success" onClick={proceedAsRecognized}>
               Continue to check in
@@ -506,14 +717,14 @@ export default function ScanPage() {
             <p className="g-sub" style={{ marginBottom: 28 }}>Select an option to continue.</p>
             <div className="g-menu">
               <button className="g-menu-row" onClick={() => router.push("/checkin?new=true")}>
-                <span className="g-menu-row-text">
+                <span>
                   <span className="g-menu-row-label">New driver</span>
                   <span className="g-menu-row-sub">First time at this facility</span>
                 </span>
                 <span className="g-menu-arrow">›</span>
               </button>
               <button className="g-menu-row" onClick={() => setState("enter_phone")}>
-                <span className="g-menu-row-text">
+                <span>
                   <span className="g-menu-row-label">Returning driver</span>
                   <span className="g-menu-row-sub">I&apos;ve parked here before</span>
                 </span>
@@ -552,7 +763,7 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* ── CONFIRM IDENTITY ── */}
+        {/* ── CONFIRM IDENTITY (no active session) ── */}
         {state === "confirm" && foundDriver && (
           <div className="g-body">
             <p className="g-eyebrow">Confirm identity</p>
