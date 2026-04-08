@@ -6,14 +6,16 @@ import LotMapEditor from "@/components/lot/LotMapEditor";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import EditorSidebar from "@/components/lot/editor/EditorSidebar";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
-import { type SpotStatus, type SpotDetail } from "./demoData";
 import SpotDetailPanel from "./SpotDetailPanel";
 import { computePath, pathD, pathTotalLength, ENTRANCE } from "./pathfinding";
+import { apiFetch } from "@/lib/fetch";
 
 import type {
   ApiSessionWithRelations as ApiSession,
   ApiSpotWithSessions as ApiSpot,
   SpotLayout,
+  LotSpotStatus,
+  LotSpotDetail,
 } from "@/types/domain";
 
 const ASSIGNED_COLORS = {
@@ -73,8 +75,7 @@ function LotPage() {
 
   useEffect(() => {
     const load = () =>
-      fetch("/api/spots")
-        .then((r) => r.json())
+      apiFetch<{ spots: ApiSpot[] }>("/api/spots")
         .then((d) => setApiSpots(d.spots ?? []))
         .catch(() => {});
     load();
@@ -83,8 +84,8 @@ function LotPage() {
   }, []);
 
   // Build statuses from live API data — keyed by label (bridges DB spots ↔ editor spots)
-  const statuses = useMemo<Record<string, SpotStatus>>(() => {
-    const map: Record<string, SpotStatus> = {};
+  const statuses = useMemo<Record<string, LotSpotStatus>>(() => {
+    const map: Record<string, LotSpotStatus> = {};
     for (const spot of apiSpots) {
       const session = spot.sessions?.[0];
       if (!session) map[spot.label] = "VACANT";
@@ -95,8 +96,8 @@ function LotPage() {
   }, [apiSpots]);
 
   // Build detail panels from live API data — keyed by label
-  const spotDetails = useMemo<Record<string, SpotDetail>>(() => {
-    const map: Record<string, SpotDetail> = {};
+  const spotDetails = useMemo<Record<string, LotSpotDetail>>(() => {
+    const map: Record<string, LotSpotDetail> = {};
     for (const spot of apiSpots) {
       const session = spot.sessions?.[0] ?? null;
       const status = statuses[spot.label] ?? "VACANT";

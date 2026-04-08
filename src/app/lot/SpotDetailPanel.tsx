@@ -1,20 +1,14 @@
 "use client";
 
 import React from "react";
-import type { SpotDetail, SpotStatus } from "./demoData";
+import type { LotSpotDetail, LotSpotStatus } from "@/types/domain";
+import { LOT_STATUS_COLORS } from "@/types/domain";
 
-const STATUS_LABELS: Record<SpotStatus, string> = {
+const STATUS_LABELS: Record<LotSpotStatus, string> = {
   VACANT: "Vacant",
   RESERVED: "Reserved",
   OVERDUE: "Overdue",
   COMPANY: "Company",
-};
-
-const STATUS_COLORS: Record<SpotStatus, string> = {
-  VACANT: "#2D7A4A",
-  RESERVED: "#6366F1",
-  OVERDUE: "#DC2626",
-  COMPANY: "#CA8A04",
 };
 
 function formatTime(d: Date): string {
@@ -80,13 +74,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 type Props = {
-  detail: SpotDetail | null;
+  detail: LotSpotDetail | null;
   onClose: () => void;
   open: boolean;
 };
 
 export default function SpotDetailPanel({ detail, onClose, open }: Props) {
   const T = "0.35s cubic-bezier(0.4, 0, 0.2, 1)";
+  const statusColor = detail ? LOT_STATUS_COLORS[detail.status].stroke : "#636366";
 
   return (
     <div
@@ -131,8 +126,8 @@ export default function SpotDetailPanel({ detail, onClose, open }: Props) {
               fontWeight: 600,
               padding: "2px 8px",
               borderRadius: 4,
-              background: STATUS_COLORS[detail.status] + "18",
-              color: STATUS_COLORS[detail.status],
+              background: statusColor + "18",
+              color: statusColor,
               textTransform: "uppercase",
               letterSpacing: "0.04em",
             }}>
@@ -238,57 +233,59 @@ export default function SpotDetailPanel({ detail, onClose, open }: Props) {
             </Section>
 
             {/* Payments */}
-            <Section title="Payments">
-              {detail.session.payments.map((p, i) => (
-                <div
-                  key={p.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "6px 0",
-                    borderBottom: i < detail.session!.payments.length - 1 ? "1px solid #2C2C2E" : "none",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 12, color: "#E5E5EA", fontWeight: 500 }}>
-                      {p.type === "CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
-                      {p.hours ? ` (${p.hours}h)` : ""}
+            {detail.session.payments.length > 0 && (
+              <Section title="Payments">
+                {detail.session.payments.map((p, i) => (
+                  <div
+                    key={p.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      padding: "6px 0",
+                      borderBottom: i < detail.session!.payments.length - 1 ? "1px solid #2C2C2E" : "none",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 12, color: "#E5E5EA", fontWeight: 500 }}>
+                        {p.type === "CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
+                        {p.hours ? ` (${p.hours}h)` : ""}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#48484A", marginTop: 1 }}>
+                        {formatDateTime(p.createdAt)}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 10, color: "#48484A", marginTop: 1 }}>
-                      {formatDateTime(p.createdAt)}
-                    </div>
+                    <span style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: p.type === "OVERSTAY" ? "#DC2626" : "#E5E5EA",
+                      fontVariantNumeric: "tabular-nums",
+                    }}>
+                      ${p.amount.toFixed(2)}
+                    </span>
                   </div>
+                ))}
+                {/* Total */}
+                <div style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "8px 0 0",
+                  marginTop: 4,
+                  borderTop: "1px solid #3A3A3C",
+                }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "#636366" }}>Total</span>
                   <span style={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: p.type === "OVERSTAY" ? "#DC2626" : "#E5E5EA",
+                    fontSize: 14,
+                    fontWeight: 700,
+                    color: "#F5F5F7",
                     fontVariantNumeric: "tabular-nums",
                   }}>
-                    ${p.amount.toFixed(2)}
+                    ${detail.session.payments.reduce((s, p) => s + p.amount, 0).toFixed(2)}
                   </span>
                 </div>
-              ))}
-              {/* Total */}
-              <div style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "8px 0 0",
-                marginTop: 4,
-                borderTop: "1px solid #3A3A3C",
-              }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: "#636366" }}>Total</span>
-                <span style={{
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: "#F5F5F7",
-                  fontVariantNumeric: "tabular-nums",
-                }}>
-                  ${detail.session.payments.reduce((s, p) => s + p.amount, 0).toFixed(2)}
-                </span>
-              </div>
-            </Section>
+              </Section>
+            )}
           </>
         )}
       </div>

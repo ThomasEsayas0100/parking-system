@@ -2,11 +2,10 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 
-import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout } from "@/types/domain";
+import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail } from "@/types/domain";
 import { apiFetch } from "@/lib/fetch";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
-import type { SpotStatus, SpotDetail } from "@/app/lot/demoData";
 import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 
 type Spot = ApiSpotWithSessions;
@@ -226,8 +225,8 @@ export default function AdminDashboard() {
   useEffect(() => { setSessOffset(0); }, [sessSearch, sessStatus]);
 
   // ── Derived state ──
-  const lotStatuses = useMemo<Record<string, SpotStatus>>(() => {
-    const map: Record<string, SpotStatus> = {};
+  const lotStatuses = useMemo<Record<string, LotSpotStatus>>(() => {
+    const map: Record<string, LotSpotStatus> = {};
     for (const spot of spots) {
       const session = spot.sessions?.[0];
       if (!session) map[spot.label] = "VACANT";
@@ -239,8 +238,8 @@ export default function AdminDashboard() {
 
   const lotCounts = useMemo(() => countStatuses(allSpots, lotStatuses), [allSpots, lotStatuses]);
 
-  const spotDetails = useMemo<Record<string, SpotDetail>>(() => {
-    const map: Record<string, SpotDetail> = {};
+  const spotDetails = useMemo<Record<string, LotSpotDetail>>(() => {
+    const map: Record<string, LotSpotDetail> = {};
     for (const spot of spots) {
       const session = spot.sessions?.[0] ?? null;
       const status = lotStatuses[spot.label] ?? "VACANT";

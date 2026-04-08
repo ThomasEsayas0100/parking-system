@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState } from "react";
-import type { SpotLayout } from "@/types/domain";
-import type { SpotStatus } from "@/app/lot/demoData";
+import type { SpotLayout, LotSpotStatus } from "@/types/domain";
+import { LOT_STATUS_COLORS } from "@/types/domain";
 
 /**
  * Read-only lot map SVG with live status coloring and click-to-select.
@@ -12,16 +12,6 @@ import type { SpotStatus } from "@/app/lot/demoData";
  *  - /admin overview tab
  */
 
-// ---------------------------------------------------------------------------
-// Color palette
-// ---------------------------------------------------------------------------
-const STATUS_COLORS: Record<SpotStatus, { fill: string; fillHover: string; stroke: string; label: string }> = {
-  VACANT:   { fill: "#12261C", fillHover: "#1A3324", stroke: "#2D7A4A", label: "rgba(255,255,255,0.5)" },
-  RESERVED: { fill: "#1A1A2E", fillHover: "#24244A", stroke: "#6366F1", label: "rgba(99,102,241,0.7)" },
-  OVERDUE:  { fill: "#2C1810", fillHover: "#3D2218", stroke: "#DC2626", label: "rgba(220,38,38,0.7)" },
-  COMPANY:  { fill: "#1C1A10", fillHover: "#2A2716", stroke: "#CA8A04", label: "rgba(202,138,4,0.7)" },
-};
-
 const LOT_BOUNDARY_PATH =
   "M -5,1210 L 1005,1210 L 1005,638 L 780,522 L 640,522 L 390,302 L 390,218 C 362,230 298,170 195,92 L -5,-5 Z";
 
@@ -30,7 +20,7 @@ const LOT_BOUNDARY_PATH =
 // ---------------------------------------------------------------------------
 export type LotMapViewerProps = {
   spots: SpotLayout[];
-  statuses: Record<string, SpotStatus>;
+  statuses: Record<string, LotSpotStatus>;
   selectedSpotId: string | null;
   onSelectSpot: (id: string | null) => void;
   /** Optional: render extra SVG elements (e.g. demo path, entrance marker) */
@@ -65,10 +55,10 @@ export default function LotMapViewer({
 
       {/* Spots — statuses keyed by label (bridges editor spots ↔ DB spots) */}
       {spots.map((spot) => {
-        const status = statuses[spot.label] ?? statuses[spot.id] ?? "VACANT";
+        const status: LotSpotStatus = statuses[spot.label] ?? statuses[spot.id] ?? "VACANT";
         const isHovered = hoveredId === spot.id;
         const isSelected = selectedSpotId === spot.id;
-        const colors = STATUS_COLORS[status];
+        const colors = LOT_STATUS_COLORS[status];
         const fill = isHovered ? colors.fillHover : colors.fill;
         const sw = status === "OVERDUE" ? 1.5 : isSelected ? 2 : 1;
         const transform = spot.rot !== 0 ? `rotate(${spot.rot}, ${spot.cx}, ${spot.cy})` : undefined;
@@ -112,7 +102,7 @@ export default function LotMapViewer({
 // ---------------------------------------------------------------------------
 export function countStatuses(
   spots: SpotLayout[],
-  statuses: Record<string, SpotStatus>,
+  statuses: Record<string, LotSpotStatus>,
   excludeId?: string | null,
 ) {
   let vacant = 0, reserved = 0, overdue = 0, company = 0;
