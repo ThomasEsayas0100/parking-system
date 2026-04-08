@@ -25,7 +25,7 @@ export async function POST() {
 
   // Upsert test driver
   const driver = await prisma.driver.upsert({
-    where: { email: "carlos@test.com" },
+    where: { phone: "5558675309" },
     update: {},
     create: {
       name: "Carlos Martinez",

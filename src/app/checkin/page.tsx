@@ -2,20 +2,14 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import defaultState from "@/components/lot-editor/defaultState.json";
+import defaultState from "@/components/lot/editor/defaultState.json";
 
-type Settings = {
-  hourlyRateBobtail: number;
-  hourlyRateTruck: number;
-};
+import type { AppSettings, ApiVehicle } from "@/types/domain";
+import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
+import { apiFetch } from "@/lib/fetch";
 
-type Vehicle = {
-  id: string;
-  unitNumber: string | null;
-  licensePlate: string | null;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
-  nickname: string | null;
-};
+type Settings = Pick<AppSettings, "hourlyRateBobtail" | "hourlyRateTruck">;
+type Vehicle = ApiVehicle;
 
 export default function CheckInPage() {
   return (
@@ -118,34 +112,28 @@ function CheckInContent() {
 
     if (isLocked) {
       // Read phone from localStorage only to make the API call — do NOT set any fields yet
-      let savedPhone: string | null = null;
-      let savedId: string | null = null;
-      try {
-        const raw = localStorage.getItem("parking_driver");
-        if (!raw) { router.replace("/scan"); return; }
-        const d = JSON.parse(raw) as { id?: string; phone?: string };
-        savedPhone = d.phone?.replace(/\D/g, "") || null;
-        savedId = d.id || null;
-      } catch {}
+      const saved = loadDriver();
+      if (!saved) { router.replace("/scan"); return; }
 
+      const savedPhone = saved.phone.replace(/\D/g, "");
+      const savedId = saved.id;
       if (!savedPhone || !savedId) { router.replace("/scan"); return; }
 
       // Verify against API — only populate fields on confirmed match
-      fetch(`/api/drivers?phone=${savedPhone}`)
-        .then((r) => r.json())
+      apiFetch<{ driver: { id: string; name: string; email: string; phone: string } | null }>(
+        `/api/drivers?phone=${savedPhone}`
+      )
         .then((data) => {
           if (data.driver?.id === savedId) {
             setName(data.driver.name || "");
             setEmail(data.driver.email || "");
             setPhone(data.driver.phone || "");
           } else {
-            // Stale / deleted / banned — clear and send back
-            localStorage.removeItem("parking_driver");
+            clearDriver();
             router.replace("/scan");
           }
         })
         .catch(() => {
-          // Network error — don't prefill anything, send back to scan
           router.replace("/scan");
         })
         .finally(() => setVerifying(false));
@@ -162,9 +150,9 @@ function CheckInContent() {
 
   useEffect(() => {
     if (!isDemo) {
-      fetch("/api/settings")
-        .then((r) => r.json())
-        .then((d) => setSettings(d.settings));
+      apiFetch<{ settings: Settings }>("/api/settings")
+        .then((d) => setSettings(d.settings))
+        .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
       setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18 });
     }
@@ -173,40 +161,34 @@ function CheckInContent() {
     // then fetch vehicles using the API-confirmed driver id (not raw localStorage)
     if (isLocked && !isDemo) {
       if (!phone) return; // still verifying — first useEffect will set phone once confirmed
-      fetch(`/api/drivers?phone=${phone.replace(/\D/g, "")}`)
-        .then((r) => r.json())
+      apiFetch<{ driver: { id: string } | null }>(`/api/drivers?phone=${phone.replace(/\D/g, "")}`)
         .then((data) => {
           if (!data.driver?.id) { setAddingVehicle(true); return; }
-          fetch(`/api/vehicles?driverId=${data.driver.id}`)
-            .then((r) => r.json())
-            .then((vd) => {
-              if (vd.vehicles?.length) {
-                setVehicles(vd.vehicles);
-                if (vd.vehicles.length === 1) setSelectedVehicleId(vd.vehicles[0].id);
-              } else {
-                setAddingVehicle(true);
-              }
-            })
-            .catch(() => setAddingVehicle(true));
+          return apiFetch<{ vehicles: Vehicle[] }>(`/api/vehicles?driverId=${data.driver.id}`);
+        })
+        .then((vd) => {
+          if (vd?.vehicles?.length) {
+            setVehicles(vd.vehicles);
+            if (vd.vehicles.length === 1) setSelectedVehicleId(vd.vehicles[0].id);
+          } else {
+            setAddingVehicle(true);
+          }
         })
         .catch(() => setAddingVehicle(true));
       return;
     }
 
     if (existingDriverId) {
-      const saved = localStorage.getItem("driverInfo");
+      const saved = loadDriver();
       if (saved) {
-        const info = JSON.parse(saved);
-        setName(info.name || "");
+        setName(saved.name || "");
         if (!isDemo) {
-          setEmail(info.email || "");
-          setPhone(info.phone || "");
+          setPhone(saved.phone || "");
         }
       }
 
       if (!isDemo) {
-        fetch(`/api/vehicles?driverId=${existingDriverId}`)
-          .then((r) => r.json())
+        apiFetch<{ vehicles: Vehicle[] }>(`/api/vehicles?driverId=${existingDriverId}`)
           .then((d) => {
             if (d.vehicles?.length) {
               setVehicles(d.vehicles);
@@ -283,6 +265,10 @@ function CheckInContent() {
   /* ---------------------------------------------------------------- */
   async function handleRealSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!settings) {
+      setError("Rates not loaded. Please refresh the page.");
+      return;
+    }
     setLoading(true);
     setError("");
 
@@ -301,10 +287,7 @@ function CheckInContent() {
         return;
       }
 
-      localStorage.setItem("driverId", driver.id);
-      localStorage.setItem("driverInfo", JSON.stringify({ name, email, phone }));
-      // Save for /scan recognition on future scans from this device
-      localStorage.setItem("parking_driver", JSON.stringify({ id: driver.id, name, phone }));
+      saveDriver({ id: driver.id, name, phone });
 
       let vehicleId = selectedVehicleId;
 

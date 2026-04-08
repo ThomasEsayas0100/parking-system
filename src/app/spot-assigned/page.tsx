@@ -2,22 +2,15 @@
 
 import React, { Suspense, useState, useMemo, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
-import { useEditorReducer } from "@/components/lot-editor/useEditorReducer";
+import Link from "next/link";
+import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import { ENTRANCE } from "@/app/lot/pathfinding";
+
+import type { SpotLayout } from "@/types/domain";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type SpotLayout = {
-  id: string;
-  label: string;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
-  cx: number;
-  cy: number;
-  w: number;
-  h: number;
-  rot: number;
-};
 
 const LOT_BOUNDARY_PATH =
   "M -5,1210 L 1005,1210 L 1005,638 L 780,522 L 640,522 L 390,302 L 390,218 C 362,230 298,170 195,92 L -5,-5 Z";
@@ -230,6 +223,40 @@ function SpotAssignedPage() {
         <span style={{ fontSize: 12, color: "#636366" }}>
           Other spots
         </span>
+      </div>
+
+      {/* Navigation out */}
+      <div style={{
+        borderTop: "1px solid #2C2C2E",
+        padding: "14px 20px",
+        display: "flex",
+        gap: 12,
+        justifyContent: "center",
+        flexShrink: 0,
+      }}>
+        <Link
+          href="/lot"
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: "#0A84FF",
+            textDecoration: "none",
+          }}
+        >
+          View full lot map
+        </Link>
+        <span style={{ color: "#3A3A3C" }}>·</span>
+        <Link
+          href="/scan"
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: "#636366",
+            textDecoration: "none",
+          }}
+        >
+          Done
+        </Link>
       </div>
     </div>
   );

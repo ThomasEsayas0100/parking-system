@@ -8,7 +8,7 @@ const serverSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().url("DATABASE_URL must be a valid URL"),
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
-  ADMIN_PASSWORD: z.string().min(8, "ADMIN_PASSWORD must be at least 8 chars"),
+  ADMIN_PASSWORD: z.string().min(4, "ADMIN_PASSWORD must be at least 4 chars"),
   AUTH_SECRET: z
     .string()
     .min(32, "AUTH_SECRET must be at least 32 chars (use a random string)"),

@@ -3,8 +3,9 @@ import { freeSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
-import { stripe } from "@/lib/stripe";
-import { handler, json, notFound, paymentRequired, conflict } from "@/lib/api-handler";
+import { verifyAndClaimPayment } from "@/lib/payments";
+import { overstayRate, ceilHours } from "@/lib/rates";
+import { handler, json, notFound } from "@/lib/api-handler";
 import { SessionExitSchema } from "@/lib/schemas";
 
 export const POST = handler(
@@ -16,51 +17,30 @@ export const POST = handler(
       where: { id: sessionId },
       include: { spot: true, vehicle: true },
     });
-    if (!session || session.status !== "ACTIVE") {
+    if (!session || !["ACTIVE", "OVERSTAY"].includes(session.status)) {
       throw notFound("No active session found");
     }
 
     const now = new Date();
-    const isOverstayed = now > session.expectedEnd;
+    const isOverstayed = now > session.expectedEnd || session.status === "OVERSTAY";
 
     if (isOverstayed) {
       const settings = await getSettings();
-      const overstayRate =
-        session.vehicle.type === "BOBTAIL"
-          ? settings.overstayRateBobtail
-          : settings.overstayRateTruck;
-      const overstayMs = now.getTime() - session.expectedEnd.getTime();
-      const overstayHours = Math.ceil(overstayMs / (1000 * 60 * 60));
-      const overstayAmount = overstayRate * overstayHours;
+      const rate = overstayRate(settings, session.vehicle.type);
+      const overstayHours = ceilHours(session.expectedEnd, now);
+      const overstayAmount = rate * overstayHours;
 
       if (!overstayPaymentId) {
         return json({
           requiresPayment: true,
           overstayHours,
           overstayAmount,
-          overstayRate,
+          overstayRate: rate,
           sessionId: session.id,
         });
       }
 
-      // Verify overstay payment was actually charged
-      try {
-        const pi = await stripe.paymentIntents.retrieve(overstayPaymentId);
-        if (pi.status !== "succeeded") {
-          throw paymentRequired("Overstay payment not confirmed");
-        }
-      } catch (err) {
-        if (err instanceof Error && err.name === "ApiError") throw err;
-        throw paymentRequired("Could not verify overstay payment");
-      }
-
-      // Prevent payment reuse
-      const paymentReuse = await prisma.payment.findFirst({
-        where: { stripePaymentId: overstayPaymentId },
-      });
-      if (paymentReuse) {
-        throw conflict("This payment has already been used");
-      }
+      await verifyAndClaimPayment(overstayPaymentId);
 
       await prisma.payment.create({
         data: {
@@ -93,6 +73,7 @@ export const POST = handler(
 
     await freeSpot(session.spotId);
 
+    // CHECKOUT is the canonical exit event — gate open is implied
     await audit({
       action: "CHECKOUT",
       sessionId,
@@ -100,18 +81,6 @@ export const POST = handler(
       vehicleId: session.vehicleId,
       spotId: session.spotId,
       details: `Checked out from spot ${session.spot.label}, plate: ${session.vehicle.licensePlate}`,
-    });
-    await audit({
-      action: "SPOT_FREED",
-      spotId: session.spotId,
-      sessionId,
-      details: `Spot ${session.spot.label} freed`,
-    });
-    await audit({
-      action: "GATE_OPEN",
-      sessionId,
-      driverId: session.driverId,
-      details: "Gate opened for exit",
     });
 
     triggerGateOpen();

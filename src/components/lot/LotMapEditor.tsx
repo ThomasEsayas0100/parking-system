@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useRef, useState, useCallback, useEffect, useMemo } from "react";
-import type { EditorState, EditorAction, SpotGroup } from "./lot-editor/types";
-import { snapToGrid } from "./lot-editor/geometry";
+import type { EditorState, EditorAction, SpotGroup } from "./editor/types";
+import { snapToGrid } from "./editor/geometry";
 
 const LOT_BOUNDARY_PATH = "M -5,1210 L 1005,1210 L 1005,638 L 780,522 L 640,522 L 390,302 L 390,218 C 362,230 298,170 195,92 L -5,-5 Z";
 

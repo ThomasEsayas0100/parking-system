@@ -110,8 +110,17 @@ export const SpotOverrideSchema = z.object({
 // ---------------------------------------------------------------------------
 // Audit query
 // ---------------------------------------------------------------------------
+export const AuditActionSchema = z.enum([
+  "CHECKIN", "CHECKOUT", "EXTEND",
+  "OVERSTAY_START", "OVERSTAY_PAYMENT",
+  "GATE_OPEN", "SPOT_FREED",
+  "REMINDER_SENT", "OVERSTAY_ALERT",
+]);
+
 export const AuditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  action: AuditActionSchema.optional(),
   vehicleId: idSchema.optional(),
   driverId: idSchema.optional(),
   spotId: idSchema.optional(),

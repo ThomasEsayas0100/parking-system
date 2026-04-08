@@ -2,52 +2,53 @@
 
 import { useEffect, useState, useCallback } from "react";
 
-type Spot = {
-  id: string;
-  label: string;
-  type: string;
-  status: string;
-  sessions: {
-    id: string;
-    startedAt: string;
-    expectedEnd: string;
-    status: string;
-    driver: { name: string; email: string; phone: string };
-    vehicle: { licensePlate: string; type: string; nickname: string | null };
-  }[];
-};
+import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings } from "@/types/domain";
+import { apiFetch } from "@/lib/fetch";
 
-type AuditEntry = {
-  id: string;
-  action: string;
-  details: string | null;
-  createdAt: string;
-  driver: { name: string; phone: string } | null;
-  vehicle: { licensePlate: string; type: string } | null;
-  spot: { label: string } | null;
-};
+type Spot = ApiSpotWithSessions;
+type AuditEntry = ApiAuditEntry;
+type Settings = AppSettings;
 
-type Settings = {
-  hourlyRateBobtail: number;
-  hourlyRateTruck: number;
-  overstayRateBobtail: number;
-  overstayRateTruck: number;
-  gracePeriodMinutes: number;
-  reminderMinutesBefore: number;
-  totalSpotsBobtail: number;
-  totalSpotsTruck: number;
-  managerEmail: string;
-  managerPhone: string;
+type LogFilter = "ALL" | "ENTRY" | "EXIT" | "EXTEND" | "OVERSTAY" | "GATE" | "ADMIN" | "NOTIFICATION";
+
+const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
+  { key: "ALL", label: "All", actions: [] },
+  { key: "ENTRY", label: "Entry", actions: ["CHECKIN"] },
+  { key: "EXIT", label: "Exit", actions: ["CHECKOUT"] },
+  { key: "EXTEND", label: "Extension", actions: ["EXTEND"] },
+  { key: "OVERSTAY", label: "Overstay", actions: ["OVERSTAY_START", "OVERSTAY_PAYMENT"] },
+  { key: "GATE", label: "Gate", actions: ["GATE_OPEN"] },
+  { key: "ADMIN", label: "Admin", actions: ["SPOT_FREED"] },
+  { key: "NOTIFICATION", label: "Notification", actions: ["REMINDER_SENT", "OVERSTAY_ALERT"] },
+];
+
+const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }> = {
+  CHECKIN:          { color: "#34C759", bg: "#12261C", label: "Check-in" },
+  CHECKOUT:         { color: "#0A84FF", bg: "#0A1A30", label: "Check-out" },
+  EXTEND:           { color: "#F59E0B", bg: "#2A1F0A", label: "Extension" },
+  OVERSTAY_START:   { color: "#DC2626", bg: "#2C1810", label: "Overstay" },
+  OVERSTAY_PAYMENT: { color: "#EF4444", bg: "#2C1810", label: "Overstay paid" },
+  GATE_OPEN:        { color: "#8E8E93", bg: "#2C2C2E", label: "Gate" },
+  SPOT_FREED:       { color: "#D4500A", bg: "#2A1508", label: "Override" },
+  REMINDER_SENT:    { color: "#14B8A6", bg: "#0A2421", label: "Reminder" },
+  OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
 };
 
 export default function AdminDashboard() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
-  const [auditLogs, setAuditLogs] = useState<AuditEntry[]>([]);
-  const [tab, setTab] = useState<"overview" | "audit" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "log" | "settings">("overview");
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+
+  // Log tab state
+  const [logEntries, setLogEntries] = useState<AuditEntry[]>([]);
+  const [logFilter, setLogFilter] = useState<LogFilter>("ALL");
+  const [logOffset, setLogOffset] = useState(0);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logLoading, setLogLoading] = useState(false);
+  const LOG_LIMIT = 30;
 
   const loadData = useCallback(() => {
     fetch("/api/spots").then((r) => r.json()).then((d) => setSpots(d.spots || []));
@@ -57,8 +58,24 @@ export default function AdminDashboard() {
     });
   }, []);
 
-  const loadAudit = useCallback(() => {
-    fetch("/api/audit?limit=100").then((r) => r.json()).then((d) => setAuditLogs(d.logs || []));
+  const loadLog = useCallback((filter: LogFilter, offset: number) => {
+    setLogLoading(true);
+    const category = LOG_CATEGORIES.find((c) => c.key === filter);
+    const actionParam = category && category.actions.length === 1 ? `&action=${category.actions[0]}` : "";
+    apiFetch<{ logs: AuditEntry[]; total: number }>(
+      `/api/audit?limit=${LOG_LIMIT}&offset=${offset}${actionParam}`
+    )
+      .then((d) => {
+        let filtered = d.logs;
+        // Client-side filter for multi-action categories (OVERSTAY, NOTIFICATION)
+        if (category && category.actions.length > 1) {
+          filtered = d.logs.filter((l) => category.actions.includes(l.action));
+        }
+        setLogEntries(filtered);
+        setLogTotal(d.total);
+      })
+      .catch(() => setLogEntries([]))
+      .finally(() => setLogLoading(false));
   }, []);
 
   useEffect(() => {
@@ -68,8 +85,8 @@ export default function AdminDashboard() {
   }, [loadData]);
 
   useEffect(() => {
-    if (tab === "audit") loadAudit();
-  }, [tab, loadAudit]);
+    if (tab === "log") loadLog(logFilter, logOffset);
+  }, [tab, logFilter, logOffset, loadLog]);
 
   const now = new Date();
 
@@ -79,7 +96,9 @@ export default function AdminDashboard() {
 
   const overstayedSessions = occupiedSpots
     .flatMap((s) => s.sessions.map((sess) => ({ ...sess, spotLabel: s.label })))
-    .filter((s) => new Date(s.expectedEnd) < now);
+    // Use status as primary signal; time-check catches sessions past expectedEnd
+    // that haven't been marked by cron yet (within the grace period window)
+    .filter((s) => s.status === "OVERSTAY" || new Date(s.expectedEnd) < now);
 
   async function handleSeedSpots() {
     const res = await fetch("/api/spots/seed", { method: "POST" });
@@ -132,7 +151,7 @@ export default function AdminDashboard() {
 
       <nav>
         <button onClick={() => setTab("overview")}>Overview</button>
-        <button onClick={() => setTab("audit")}>Audit Log</button>
+        <button onClick={() => setTab("log")}>Log</button>
         <button onClick={() => setTab("settings")}>Settings</button>
       </nav>
 
@@ -256,37 +275,127 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {tab === "audit" && (
-        <div>
-          <h2>Audit Log</h2>
-          <button onClick={loadAudit}>Refresh</button>
-          {auditLogs.length === 0 ? (
-            <p>No audit entries.</p>
+      {tab === "log" && (
+        <div style={{ background: "#1C1C1E", minHeight: "60vh", borderRadius: 12, padding: "24px 20px" }}>
+          {/* Filter chips */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 20 }}>
+            {LOG_CATEGORIES.map((cat) => {
+              const active = logFilter === cat.key;
+              return (
+                <button
+                  key={cat.key}
+                  onClick={() => { setLogFilter(cat.key); setLogOffset(0); }}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: 20,
+                    border: active ? "1px solid #F5F5F740" : "1px solid #3A3A3C",
+                    background: active ? "#3A3A3C" : "transparent",
+                    color: active ? "#F5F5F7" : "#8E8E93",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    letterSpacing: "0.02em",
+                  }}
+                >
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Log entries */}
+          {logLoading ? (
+            <p style={{ color: "#636366", fontSize: 13, textAlign: "center", padding: 40 }}>Loading…</p>
+          ) : logEntries.length === 0 ? (
+            <p style={{ color: "#636366", fontSize: 13, textAlign: "center", padding: 40 }}>No log entries.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Action</th>
-                  <th>Driver</th>
-                  <th>Plate</th>
-                  <th>Spot</th>
-                  <th>Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {auditLogs.map((entry) => (
-                  <tr key={entry.id}>
-                    <td>{new Date(entry.createdAt).toLocaleString()}</td>
-                    <td>{entry.action}</td>
-                    <td>{entry.driver?.name || "—"}</td>
-                    <td>{entry.vehicle?.licensePlate || "—"}</td>
-                    <td>{entry.spot?.label || "—"}</td>
-                    <td>{entry.details || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              {logEntries.map((entry) => {
+                const badge = ACTION_BADGE[entry.action] || { color: "#8E8E93", bg: "#2C2C2E", label: entry.action };
+                const ts = new Date(entry.createdAt);
+                const timeStr = ts.toLocaleString("en-US", {
+                  month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
+                });
+                return (
+                  <div
+                    key={entry.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 12,
+                      padding: "12px 14px",
+                      borderRadius: 8,
+                      background: "#2C2C2E",
+                    }}
+                  >
+                    {/* Badge */}
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        letterSpacing: "0.04em",
+                        textTransform: "uppercase",
+                        padding: "3px 8px",
+                        borderRadius: 4,
+                        background: badge.bg,
+                        color: badge.color,
+                        whiteSpace: "nowrap",
+                        flexShrink: 0,
+                        marginTop: 2,
+                      }}
+                    >
+                      {badge.label}
+                    </span>
+
+                    {/* Body */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, color: "#F5F5F7", lineHeight: 1.4 }}>
+                        {entry.details || "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "#636366", marginTop: 4, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                        <span>{timeStr}</span>
+                        {entry.driver && <span>{entry.driver.name}</span>}
+                        {entry.vehicle && <span>{entry.vehicle.licensePlate}</span>}
+                        {entry.spot && <span>Spot {entry.spot.label}</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Pagination */}
+          {logTotal > LOG_LIMIT && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, padding: "0 4px" }}>
+              <button
+                onClick={() => setLogOffset(Math.max(0, logOffset - LOG_LIMIT))}
+                disabled={logOffset === 0}
+                style={{
+                  padding: "6px 16px", borderRadius: 6, border: "1px solid #3A3A3C",
+                  background: logOffset === 0 ? "transparent" : "#2C2C2E",
+                  color: logOffset === 0 ? "#3A3A3C" : "#F5F5F7",
+                  fontSize: 12, fontWeight: 600, cursor: logOffset === 0 ? "default" : "pointer",
+                }}
+              >
+                ← Newer
+              </button>
+              <span style={{ fontSize: 11, color: "#636366" }}>
+                {logOffset + 1}–{Math.min(logOffset + LOG_LIMIT, logTotal)} of {logTotal}
+              </span>
+              <button
+                onClick={() => setLogOffset(logOffset + LOG_LIMIT)}
+                disabled={logOffset + LOG_LIMIT >= logTotal}
+                style={{
+                  padding: "6px 16px", borderRadius: 6, border: "1px solid #3A3A3C",
+                  background: logOffset + LOG_LIMIT >= logTotal ? "transparent" : "#2C2C2E",
+                  color: logOffset + LOG_LIMIT >= logTotal ? "#3A3A3C" : "#F5F5F7",
+                  fontSize: 12, fontWeight: 600, cursor: logOffset + LOG_LIMIT >= logTotal ? "default" : "pointer",
+                }}
+              >
+                Older →
+              </button>
+            </div>
           )}
         </div>
       )}

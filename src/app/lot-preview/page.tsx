@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import LotMap from "@/components/LotMap";
-import { computeSuggestions, DEFAULT_LABELS } from "@/components/LotMap";
-import type { LabelSuggestion } from "@/components/LotMap";
+import LotMap from "@/components/lot/LotMap";
+import { computeSuggestions, DEFAULT_LABELS } from "@/components/lot/LotMap";
+import type { LabelSuggestion } from "@/components/lot/LotMap";
 
 const LABELS_KEY = "lot-map-labels";
 

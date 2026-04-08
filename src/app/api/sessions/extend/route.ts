@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { log as audit } from "@/lib/audit";
-import { stripe } from "@/lib/stripe";
-import { handler, json, notFound, paymentRequired, conflict } from "@/lib/api-handler";
+import { verifyAndClaimPayment } from "@/lib/payments";
+import { hourlyRate, addHours } from "@/lib/rates";
+import { handler, json, notFound } from "@/lib/api-handler";
 import { SessionExtendSchema } from "@/lib/schemas";
 
 export const POST = handler(
@@ -18,34 +19,12 @@ export const POST = handler(
       throw notFound("No active session found");
     }
 
-    // Verify payment
-    try {
-      const pi = await stripe.paymentIntents.retrieve(paymentId);
-      if (pi.status !== "succeeded") {
-        throw paymentRequired("Extension payment not confirmed");
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "ApiError") throw err;
-      throw paymentRequired("Could not verify payment");
-    }
-
-    // Prevent payment reuse
-    const paymentReuse = await prisma.payment.findFirst({
-      where: { stripePaymentId: paymentId },
-    });
-    if (paymentReuse) {
-      throw conflict("This payment has already been used");
-    }
+    await verifyAndClaimPayment(paymentId);
 
     const settings = await getSettings();
-    const hourlyRate =
-      session.vehicle.type === "BOBTAIL"
-        ? settings.hourlyRateBobtail
-        : settings.hourlyRateTruck;
-    const amount = hourlyRate * hours;
-    const newEnd = new Date(
-      session.expectedEnd.getTime() + hours * 60 * 60 * 1000,
-    );
+    const rate = hourlyRate(settings, session.vehicle.type);
+    const amount = rate * hours;
+    const newEnd = addHours(session.expectedEnd, hours);
 
     const updated = await prisma.session.update({
       where: { id: sessionId },

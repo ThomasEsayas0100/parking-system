@@ -5,23 +5,30 @@ import { AuditQuerySchema } from "@/lib/schemas";
 export const GET = handler(
   { query: AuditQuerySchema },
   async ({ query }) => {
-    const { limit, vehicleId, driverId, spotId } = query;
+    const { limit, offset, action, vehicleId, driverId, spotId } = query;
 
-    const logs = await prisma.auditLog.findMany({
-      where: {
-        ...(vehicleId ? { vehicleId } : {}),
-        ...(driverId ? { driverId } : {}),
-        ...(spotId ? { spotId } : {}),
-      },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-      include: {
-        driver: { select: { name: true, phone: true } },
-        vehicle: { select: { licensePlate: true, type: true } },
-        spot: { select: { label: true } },
-      },
-    });
+    const where = {
+      ...(action ? { action } : {}),
+      ...(vehicleId ? { vehicleId } : {}),
+      ...(driverId ? { driverId } : {}),
+      ...(spotId ? { spotId } : {}),
+    };
 
-    return json({ logs });
+    const [logs, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip: offset,
+        include: {
+          driver: { select: { name: true, phone: true } },
+          vehicle: { select: { licensePlate: true, type: true } },
+          spot: { select: { label: true } },
+        },
+      }),
+      prisma.auditLog.count({ where }),
+    ]);
+
+    return json({ logs, total, limit, offset, hasMore: offset + logs.length < total });
   },
 );

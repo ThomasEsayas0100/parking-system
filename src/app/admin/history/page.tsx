@@ -2,32 +2,12 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 
+import type { ApiSessionWithRelations, SessionStatus } from "@/types/domain";
+
 // ---------------------------------------------------------------------------
-// Types (mirror the API response shape)
+// Types
 // ---------------------------------------------------------------------------
-type SessionRow = {
-  id: string;
-  startedAt: string;
-  endedAt: string | null;
-  expectedEnd: string;
-  status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
-  driver: { id: string; name: string; email: string; phone: string };
-  vehicle: {
-    id: string;
-    unitNumber: string | null;
-    licensePlate: string | null;
-    type: "BOBTAIL" | "TRUCK_TRAILER";
-    nickname: string | null;
-  };
-  spot: { id: string; label: string; type: "BOBTAIL" | "TRUCK_TRAILER" };
-  payments: {
-    id: string;
-    type: "CHECKIN" | "EXTENSION" | "OVERSTAY";
-    amount: number;
-    hours: number | null;
-    createdAt: string;
-  }[];
-};
+type SessionRow = ApiSessionWithRelations;
 
 type HistoryResponse = {
   sessions: SessionRow[];
@@ -37,7 +17,7 @@ type HistoryResponse = {
   hasMore: boolean;
 };
 
-type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY";
+type StatusFilter = "" | SessionStatus;
 
 // ---------------------------------------------------------------------------
 // Helpers

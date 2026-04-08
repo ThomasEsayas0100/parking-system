@@ -14,6 +14,16 @@
   --success: #2D7A3A;
   --error: #C93B3B;
   --input-bg: #FAFAF8;
+
+  /* Dark palette (used by hub/home page) */
+  --dark-bg: #1C1C1E;
+  --dark-card: #2C2C2E;
+  --dark-border: #3A3A3C;
+  --dark-fg: #F5F5F7;
+  --dark-fg-muted: #8E8E93;
+  --dark-fg-subtle: #636366;
+  --dark-blue: #0A84FF;
+  --dark-green: #30D158;
 }
 
 @theme inline {

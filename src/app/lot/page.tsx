@@ -2,44 +2,18 @@
 
 import React, { Suspense, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
-import LotMapEditor from "@/components/LotMapEditor";
-import EditorSidebar from "@/components/lot-editor/EditorSidebar";
-import { useEditorReducer } from "@/components/lot-editor/useEditorReducer";
+import LotMapEditor from "@/components/lot/LotMapEditor";
+import EditorSidebar from "@/components/lot/editor/EditorSidebar";
+import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import { type SpotStatus, type SpotDetail } from "./demoData";
 import SpotDetailPanel from "./SpotDetailPanel";
 import { computePath, pathD, pathTotalLength, ENTRANCE } from "./pathfinding";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-type ApiSession = {
-  id: string;
-  status: "ACTIVE" | "OVERSTAY";
-  startedAt: string;
-  expectedEnd: string;
-  endedAt: string | null;
-  reminderSent: boolean;
-  driver: { id: string; name: string; email: string; phone: string };
-  vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
-};
-
-type ApiSpot = {
-  id: string;
-  label: string;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
-  sessions: ApiSession[];
-};
-
-type SpotLayout = {
-  id: string;
-  label: string;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
-  cx: number;
-  cy: number;
-  w: number;
-  h: number;
-  rot: number;
-};
+import type {
+  ApiSessionWithRelations as ApiSession,
+  ApiSpotWithSessions as ApiSpot,
+  SpotLayout,
+} from "@/types/domain";
 
 const LOT_BOUNDARY_PATH =
   "M -5,1210 L 1005,1210 L 1005,638 L 780,522 L 640,522 L 390,302 L 390,218 C 362,230 298,170 195,92 L -5,-5 Z";

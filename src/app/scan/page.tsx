@@ -3,6 +3,10 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 
+import type { SavedDriver } from "@/types/domain";
+import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
+import { apiFetch } from "@/lib/fetch";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -15,27 +19,7 @@ type State =
   | "confirm"       // phone found → "Are you [name]?"
   | "not_found";    // phone not in DB
 
-type Driver = { id: string; name: string; phone: string };
-
-const STORAGE_KEY = "parking_driver";
-
-function saveDriver(d: Driver) {
-  if (!d?.id) return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-}
-function loadDriver(): Driver | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw || raw === "undefined" || raw === "null") return null;
-    const parsed = JSON.parse(raw);
-    return parsed?.id ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function clearDriver() {
-  localStorage.removeItem(STORAGE_KEY);
-}
+type Driver = SavedDriver;
 
 // ---------------------------------------------------------------------------
 // Page
@@ -57,8 +41,9 @@ export default function ScanPage() {
       return;
     }
     setState("checking");
-    fetch(`/api/drivers?phone=${saved.phone.replace(/\D/g, "")}`)
-      .then((r) => r.json())
+    apiFetch<{ driver: { id: string; name: string; phone: string } | null }>(
+      `/api/drivers?phone=${saved.phone.replace(/\D/g, "")}`
+    )
       .then((data) => {
         if (data.driver?.id === saved.id) {
           const fresh: Driver = { id: data.driver.id, name: data.driver.name, phone: data.driver.phone };
@@ -89,8 +74,9 @@ export default function ScanPage() {
     if (digits.length < 7) { setError("Enter a valid phone number"); return; }
     setState("checking");
     try {
-      const res = await fetch(`/api/drivers?phone=${digits}`);
-      const data = await res.json();
+      const data = await apiFetch<{ driver: { id: string; name: string; phone: string } | null }>(
+        `/api/drivers?phone=${digits}`
+      );
       if (!data.driver) {
         setState("not_found");
         return;

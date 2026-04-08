@@ -2,6 +2,10 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
+
+import { loadDriver } from "@/lib/driver-store";
+import { apiFetch, apiPost } from "@/lib/fetch";
 
 export default function ExtendPage() {
   return (
@@ -20,30 +24,55 @@ function ExtendContent() {
   const [hourlyRate, setHourlyRate] = useState(0);
   const [currentEnd, setCurrentEnd] = useState<Date | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      setLoadError("No session ID provided.");
+      setLoading(false);
+      return;
+    }
 
-    const driverId = localStorage.getItem("driverId");
-    if (!driverId) return;
+    const saved = loadDriver();
+    if (!saved) {
+      setLoadError("Driver identity not found. Please check in again.");
+      setLoading(false);
+      return;
+    }
 
     Promise.all([
-      fetch(`/api/sessions?driverId=${driverId}`).then((r) => r.json()),
-      fetch("/api/settings").then((r) => r.json()),
-    ]).then(([sessionData, settingsData]) => {
-      if (sessionData.session) {
-        setCurrentEnd(new Date(sessionData.session.expectedEnd));
-        const rate =
-          sessionData.session.vehicleType === "BOBTAIL"
-            ? settingsData.settings.hourlyRateBobtail
-            : settingsData.settings.hourlyRateTruck;
-        setHourlyRate(rate);
-      }
-      setLoading(false);
-    });
-  }, [sessionId]);
+      apiFetch<{ session: { id: string; status: string; expectedEnd: string; vehicle?: { type: string } } | null }>(
+        `/api/sessions?driverId=${saved.id}`
+      ),
+      apiFetch<{ settings: { hourlyRateBobtail: number; hourlyRateTruck: number } }>(
+        "/api/settings"
+      ),
+    ])
+      .then(([sessionData, settingsData]) => {
+        if (sessionData.session) {
+          // Can't extend an overstay session — redirect to exit/payment flow
+          if (sessionData.session.status === "OVERSTAY") {
+            router.replace(`/exit?sessionId=${sessionData.session.id}`);
+            return;
+          }
+          setCurrentEnd(new Date(sessionData.session.expectedEnd));
+          const rate =
+            sessionData.session.vehicle?.type === "BOBTAIL"
+              ? settingsData.settings.hourlyRateBobtail
+              : settingsData.settings.hourlyRateTruck;
+          setHourlyRate(rate);
+        } else {
+          setLoadError("No active session found.");
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        setLoadError("Could not load session details. Please try again.");
+        setLoading(false);
+      });
+  }, [sessionId, router]);
 
   const totalAmount = hourlyRate * hours;
   const newEnd = currentEnd
@@ -52,61 +81,79 @@ function ExtendContent() {
 
   async function handleExtend(e: React.FormEvent) {
     e.preventDefault();
-    if (!sessionId) return;
+    if (!sessionId || submitting) return;
     setSubmitting(true);
     setError("");
 
     try {
       // Create payment
-      const payRes = await fetch("/api/payments/create-intent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: totalAmount,
-          description: `Parking extension: ${hours}h`,
-        }),
-      });
-      const { paymentIntentId } = await payRes.json();
+      const payData = await apiPost<{ paymentIntentId: string }>(
+        "/api/payments/create-intent",
+        { amount: totalAmount, description: `Parking extension: ${hours}h` }
+      );
 
       // Extend session
-      const extendRes = await fetch("/api/sessions/extend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, hours, paymentId: paymentIntentId }),
-      });
-      const extendData = await extendRes.json();
+      await apiPost(
+        "/api/sessions/extend",
+        { sessionId, hours, paymentId: payData.paymentIntentId }
+      );
 
-      if (extendRes.ok) {
-        router.replace(`/confirmation?sessionId=${sessionId}`);
-      } else {
-        setError(extendData.error || "Failed to extend.");
-      }
-    } catch {
-      setError("Something went wrong. Please try again.");
+      router.replace(`/confirmation?sessionId=${sessionId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
       setSubmitting(false);
     }
   }
 
   if (loading) {
-    return <p>Loading session info...</p>;
+    return <p style={{ padding: 40, textAlign: "center" }}>Loading session info...</p>;
+  }
+
+  if (loadError) {
+    return (
+      <div style={{ padding: 40, textAlign: "center" }}>
+        <p style={{ color: "var(--error)" }}>{loadError}</p>
+        <div style={{ marginTop: 20, display: "flex", gap: 12, justifyContent: "center" }}>
+          <button
+            onClick={() => window.location.reload()}
+            style={{ padding: "10px 20px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 8, cursor: "pointer" }}
+          >
+            Retry
+          </button>
+          <Link
+            href="/scan"
+            style={{ padding: "10px 20px", background: "var(--input-bg)", color: "var(--fg)", border: "1px solid var(--border)", borderRadius: 8, textDecoration: "none" }}
+          >
+            Back to start
+          </Link>
+        </div>
+      </div>
+    );
   }
 
   if (!currentEnd) {
-    return <p>No active session found.</p>;
+    return (
+      <div style={{ padding: 40, textAlign: "center" }}>
+        <p>No active session found.</p>
+        <Link href="/scan" style={{ color: "var(--accent)", marginTop: 16, display: "inline-block" }}>
+          Back to start
+        </Link>
+      </div>
+    );
   }
 
   return (
-    <div>
+    <div style={{ padding: 40, maxWidth: 480, margin: "0 auto" }}>
       <h1>Extend Parking</h1>
 
-      <div>
+      <div style={{ marginTop: 16 }}>
         <p><strong>Current expiry:</strong> {currentEnd.toLocaleString()}</p>
         {newEnd && <p><strong>New expiry:</strong> {newEnd.toLocaleString()}</p>}
       </div>
 
       <form onSubmit={handleExtend}>
-        <div>
+        <div style={{ marginTop: 16 }}>
           <label htmlFor="hours">Additional Hours</label>
           <input
             id="hours"
@@ -119,11 +166,11 @@ function ExtendContent() {
           />
         </div>
 
-        <p>Rate: ${hourlyRate}/hr &bull; Total: ${totalAmount.toFixed(2)}</p>
+        <p style={{ marginTop: 8 }}>Rate: ${hourlyRate}/hr &bull; Total: ${totalAmount.toFixed(2)}</p>
 
-        {error && <p style={{ color: "red" }}>{error}</p>}
+        {error && <p style={{ color: "var(--error)", marginTop: 8 }}>{error}</p>}
 
-        <button type="submit" disabled={submitting}>
+        <button type="submit" disabled={submitting} style={{ marginTop: 16 }}>
           {submitting ? "Processing..." : `Pay $${totalAmount.toFixed(2)} & Extend`}
         </button>
       </form>

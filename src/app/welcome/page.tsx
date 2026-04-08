@@ -3,19 +3,13 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-type ActiveSession = {
-  id: string;
-  startedAt: string;
-  expectedEnd: string;
-  status: string;
-  spot: { label: string; type: string };
-  vehicle: {
-    id: string;
-    unitNumber: string | null;
-    licensePlate: string | null;
-    type: "BOBTAIL" | "TRUCK_TRAILER";
-    nickname: string | null;
-  };
+import type { ApiSession, ApiVehicle, ApiSpot } from "@/types/domain";
+import { loadDriver, clearDriver } from "@/lib/driver-store";
+import { apiFetch, apiPost } from "@/lib/fetch";
+
+type ActiveSession = Pick<ApiSession, "id" | "startedAt" | "expectedEnd" | "status"> & {
+  spot: Pick<ApiSpot, "label" | "type">;
+  vehicle: ApiVehicle;
 };
 
 export default function WelcomePage() {
@@ -56,27 +50,30 @@ function WelcomeContent() {
   const [driverName, setDriverName] = useState("");
   const [sessions, setSessions] = useState<ActiveSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState("");
   const [gateLoading, setGateLoading] = useState<string | null>(null);
+  const [gateError, setGateError] = useState("");
 
   useEffect(() => {
     if (!driverId) {
-      router.replace("/checkin");
+      router.replace("/scan");
       return;
     }
 
-    const saved = localStorage.getItem("driverInfo");
+    const saved = loadDriver();
     if (saved) {
-      const info = JSON.parse(saved);
-      setDriverName(info.name || "");
+      setDriverName(saved.name || "");
     }
 
-    fetch(`/api/sessions?driverId=${driverId}`)
-      .then((r) => r.json())
+    apiFetch<{ activeSessions: ActiveSession[] }>(`/api/sessions?driverId=${driverId}`)
       .then((d) => {
         setSessions(d.activeSessions || []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setFetchError("Could not load sessions. Please try again.");
+        setLoading(false);
+      });
   }, [driverId, router]);
 
   function vehicleLabel(v: ActiveSession["vehicle"]) {
@@ -94,21 +91,25 @@ function WelcomeContent() {
     return `${mins}m left`;
   }
 
-  function isOverstayed(expectedEnd: string) {
-    return new Date(expectedEnd).getTime() < Date.now();
+  function isOverstayed(session: ActiveSession) {
+    // Use status as primary signal; fall back to time-check to catch
+    // sessions that are past expectedEnd but haven't been marked by cron yet
+    return session.status === "OVERSTAY" || new Date(session.expectedEnd).getTime() < Date.now();
   }
 
   async function handleOpenGate(session: ActiveSession) {
-    if (isOverstayed(session.expectedEnd)) {
+    if (isOverstayed(session)) {
       router.push(`/exit?sessionId=${session.id}`);
       return;
     }
 
     setGateLoading(session.id);
+    setGateError("");
     try {
-      await fetch("/api/gate", { method: "POST" });
+      await apiPost("/api/gate", {});
       router.push(`/confirmation?sessionId=${session.id}&gateOpened=true`);
     } catch {
+      setGateError("Gate could not be opened. Please try again.");
       setGateLoading(null);
     }
   }
@@ -158,6 +159,24 @@ function WelcomeContent() {
       </div>
 
       <div className="max-w-lg mx-auto px-5 py-6 space-y-5">
+        {/* Error banners */}
+        {fetchError && (
+          <div className="rounded-lg p-4 text-sm font-medium" style={{ background: "#FEF2F2", color: "var(--error)", border: "1px solid #FECACA" }}>
+            {fetchError}
+            <button
+              className="ml-3 underline font-semibold"
+              onClick={() => window.location.reload()}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {gateError && (
+          <div className="rounded-lg p-4 text-sm font-medium" style={{ background: "#FEF2F2", color: "var(--error)", border: "1px solid #FECACA" }}>
+            {gateError}
+          </div>
+        )}
+
         {/* Active sessions */}
         {sessions.length > 0 && (
           <section
@@ -180,7 +199,7 @@ function WelcomeContent() {
             </div>
 
             {sessions.map((s) => {
-              const overstayed = isOverstayed(s.expectedEnd);
+              const overstayed = isOverstayed(s);
               const isOpening = gateLoading === s.id;
 
               return (
@@ -291,6 +310,20 @@ function WelcomeContent() {
                       Opening gate... / Abriendo puerta...
                     </div>
                   )}
+
+                  {/* Extend link — only show on non-overstayed active sessions */}
+                  {!overstayed && !isOpening && (
+                    <div
+                      className="mt-3 text-center text-[12px] font-semibold underline"
+                      style={{ color: "var(--accent)" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        router.push(`/extend?sessionId=${s.id}`);
+                      }}
+                    >
+                      Extend time / Extender tiempo
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -317,9 +350,8 @@ function WelcomeContent() {
         <button
           type="button"
           onClick={() => {
-            localStorage.removeItem("driverId");
-            localStorage.removeItem("driverInfo");
-            router.replace("/checkin");
+            clearDriver();
+            router.replace("/scan");
           }}
           className="w-full text-center py-3 text-sm font-medium underline"
           style={{ color: "var(--fg-subtle)" }}

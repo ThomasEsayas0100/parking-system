@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { sendSMS, sendEmail } from "@/lib/notifications";
+import { log as audit } from "@/lib/audit";
+import { ceilHours } from "@/lib/rates";
 
 // This endpoint should be called periodically (e.g., every 5 minutes via Vercel Cron or external cron)
 export async function GET() {
@@ -35,6 +37,14 @@ export async function GET() {
       where: { id: session.id },
       data: { reminderSent: true },
     });
+
+    await audit({
+      action: "REMINDER_SENT",
+      sessionId: session.id,
+      driverId: session.driverId,
+      spotId: session.spotId,
+      details: `Expiry reminder sent to ${session.driver.name} (${session.driver.phone}) — spot ${session.spot.label}`,
+    });
   }
 
   // 2. Notify manager about overstayed vehicles
@@ -57,12 +67,23 @@ export async function GET() {
       where: { id: { in: overstayedSessions.map((s) => s.id) }, status: "ACTIVE" },
       data: { status: "OVERSTAY" },
     });
+
+    await Promise.all(
+      overstayedSessions.map((s) =>
+        audit({
+          action: "OVERSTAY_START",
+          sessionId: s.id,
+          driverId: s.driverId,
+          spotId: s.spotId,
+          details: `Overstay began at spot ${s.spot.label} — ${s.driver.name} (${s.driver.phone})`,
+        })
+      )
+    );
   }
 
   if (overstayedSessions.length > 0 && settings.managerEmail) {
     const lines = overstayedSessions.map((s) => {
-      const overMs = now.getTime() - new Date(s.expectedEnd).getTime();
-      const overHours = Math.ceil(overMs / (1000 * 60 * 60));
+      const overHours = ceilHours(new Date(s.expectedEnd), now);
       return `- Spot ${s.spot.label}: ${s.driver.name} (${s.driver.phone}) — ${overHours}h overstay`;
     });
 
@@ -73,6 +94,11 @@ export async function GET() {
     if (settings.managerPhone) {
       await sendSMS(settings.managerPhone, `Overstay alert: ${overstayedSessions.length} vehicle(s) past time. Check dashboard.`);
     }
+
+    await audit({
+      action: "OVERSTAY_ALERT",
+      details: `Manager notified: ${overstayedSessions.length} vehicle(s) overstayed — ${settings.managerEmail}`,
+    });
   }
 
   return NextResponse.json({
