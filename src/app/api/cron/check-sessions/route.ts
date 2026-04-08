@@ -50,6 +50,15 @@ export async function GET() {
     include: { driver: true, spot: true },
   });
 
+  // Mark overstayed sessions — ACTIVE → OVERSTAY so the spot stays
+  // occupied on the map but shows as overdue until the driver exits
+  if (overstayedSessions.length > 0) {
+    await prisma.session.updateMany({
+      where: { id: { in: overstayedSessions.map((s) => s.id) }, status: "ACTIVE" },
+      data: { status: "OVERSTAY" },
+    });
+  }
+
   if (overstayedSessions.length > 0 && settings.managerEmail) {
     const lines = overstayedSessions.map((s) => {
       const overMs = now.getTime() - new Date(s.expectedEnd).getTime();

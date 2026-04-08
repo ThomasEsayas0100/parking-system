@@ -16,8 +16,10 @@ export const GET = handler(
       orderBy: { label: "asc" },
       include: {
         sessions: {
-          where: { status: "ACTIVE" },
+          where: { status: { in: ["ACTIVE", "OVERSTAY"] } },
           include: { driver: true, vehicle: true },
+          orderBy: { startedAt: "desc" },
+          take: 1,
         },
       },
     });

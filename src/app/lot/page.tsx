@@ -5,13 +5,31 @@ import { useSearchParams } from "next/navigation";
 import LotMapEditor from "@/components/LotMapEditor";
 import EditorSidebar from "@/components/lot-editor/EditorSidebar";
 import { useEditorReducer } from "@/components/lot-editor/useEditorReducer";
-import { generateDemoData, type SpotStatus } from "./demoData";
+import { type SpotStatus, type SpotDetail } from "./demoData";
 import SpotDetailPanel from "./SpotDetailPanel";
 import { computePath, pathD, pathTotalLength, ENTRANCE } from "./pathfinding";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+type ApiSession = {
+  id: string;
+  status: "ACTIVE" | "OVERSTAY";
+  startedAt: string;
+  expectedEnd: string;
+  endedAt: string | null;
+  reminderSent: boolean;
+  driver: { id: string; name: string; email: string; phone: string };
+  vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
+};
+
+type ApiSpot = {
+  id: string;
+  label: string;
+  type: "BOBTAIL" | "TRUCK_TRAILER";
+  sessions: ApiSession[];
+};
+
 type SpotLayout = {
   id: string;
   label: string;
@@ -102,10 +120,59 @@ function LotPage() {
     [editor.state.spots],
   );
 
-  // Demo data — deterministic statuses + session details
-  const demoData = useMemo(() => generateDemoData(allSpots), [allSpots]);
-  const statuses = demoData.statuses;
-  const spotDetails = demoData.details;
+  // Live data from API
+  const [apiSpots, setApiSpots] = useState<ApiSpot[]>([]);
+
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/spots")
+        .then((r) => r.json())
+        .then((d) => setApiSpots(d.spots ?? []))
+        .catch(() => {});
+    load();
+    const interval = setInterval(load, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Build statuses from live API data
+  const statuses = useMemo<Record<string, SpotStatus>>(() => {
+    const map: Record<string, SpotStatus> = {};
+    for (const spot of apiSpots) {
+      const session = spot.sessions?.[0];
+      if (!session) map[spot.id] = "VACANT";
+      else if (session.status === "OVERSTAY") map[spot.id] = "OVERDUE";
+      else map[spot.id] = "RESERVED";
+    }
+    return map;
+  }, [apiSpots]);
+
+  // Build detail panels from live API data
+  const spotDetails = useMemo<Record<string, SpotDetail>>(() => {
+    const map: Record<string, SpotDetail> = {};
+    for (const spot of apiSpots) {
+      const session = spot.sessions?.[0] ?? null;
+      const status = statuses[spot.id] ?? "VACANT";
+      map[spot.id] = {
+        spotId: spot.id,
+        spotLabel: spot.label,
+        status,
+        session: session
+          ? {
+              id: session.id,
+              driver: session.driver,
+              vehicle: session.vehicle,
+              startedAt: new Date(session.startedAt),
+              expectedEnd: new Date(session.expectedEnd),
+              endedAt: session.endedAt ? new Date(session.endedAt) : null,
+              sessionStatus: session.status,
+              reminderSent: session.reminderSent,
+              payments: [],
+            }
+          : null,
+      };
+    }
+    return map;
+  }, [apiSpots, statuses]);
 
   // Status view state
   const [hoveredId, setHoveredId] = useState<string | null>(null);
