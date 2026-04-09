@@ -62,7 +62,7 @@ const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }>
   OVERSTAY_START:   { color: "#DC2626", bg: "#2C1810", label: "Overstay" },
   OVERSTAY_PAYMENT: { color: "#EF4444", bg: "#2C1810", label: "Overstay paid" },
   GATE_OPEN:        { color: "#8E8E93", bg: "#2C2C2E", label: "Gate" },
-  SPOT_FREED:       { color: "#D4500A", bg: "#2A1508", label: "Override" },
+  SPOT_FREED:       { color: "#F59E0B", bg: "#2A1F0A", label: "Override" },
   REMINDER_SENT:    { color: "#14B8A6", bg: "#0A2421", label: "Reminder" },
   OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
   SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },

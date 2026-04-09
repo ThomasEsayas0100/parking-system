@@ -384,8 +384,8 @@ function spotFill(
   isSelected: boolean,
   isHovered: boolean,
 ): string {
-  if (isSelected) return "#FFF1EB";
-  if (status === "OCCUPIED") return "#FFF1EB";
+  if (isSelected) return "#EEF0FF";
+  if (status === "OCCUPIED") return "#EEF0FF";
   if (isHovered) return type === "BOBTAIL" ? "#D6EAFF" : "#D6F5D9";
   return type === "BOBTAIL" ? "#E3F2FD" : "#E8F5E9";
 }
@@ -395,8 +395,8 @@ function spotStroke(
   status: SpotStatus,
   isSelected: boolean,
 ): string {
-  if (isSelected) return "#D4500A";
-  if (status === "OCCUPIED") return "#D4500A";
+  if (isSelected) return "#6366F1";
+  if (status === "OCCUPIED") return "#6366F1";
   return type === "BOBTAIL" ? "#90CAF9" : "#A5D6A7";
 }
 
@@ -563,7 +563,7 @@ export default function LotMap({ spots, onSpotClick, selectedSpotId, labelOverri
                 x={layout.cx}
                 y={layout.cy + fontSize * 0.35}
                 fontSize={fontSize}
-                fill={isSuggested ? "#3F51B5" : data.status === "OCCUPIED" ? "#D4500A" : "#1A1A1A"}
+                fill={isSuggested ? "#3F51B5" : data.status === "OCCUPIED" ? "#6366F1" : "#1A1A1A"}
                 textAnchor="middle"
                 fontFamily="var(--font-display)"
                 fontWeight="600"
@@ -577,7 +577,7 @@ export default function LotMap({ spots, onSpotClick, selectedSpotId, labelOverri
                   cx={layout.cx + layout.w / 2 - 4}
                   cy={layout.cy - layout.h / 2 + 4}
                   r={2.5}
-                  fill="#D4500A"
+                  fill="#6366F1"
                 />
               )}
             </g>
@@ -598,7 +598,7 @@ export default function LotMap({ spots, onSpotClick, selectedSpotId, labelOverri
               <text x={tx + 10} y={ty + 16} fontSize="11" fill="#1A1A1A" fontFamily="var(--font-display)" fontWeight="700">
                 Spot {hoveredData.label}
               </text>
-              <text x={tx + 10} y={ty + 30} fontSize="9" fill={hoveredData.status === "OCCUPIED" ? "#D4500A" : "#2D7A3A"} fontFamily="var(--font-body)" fontWeight="600">
+              <text x={tx + 10} y={ty + 30} fontSize="9" fill={hoveredData.status === "OCCUPIED" ? "#6366F1" : "#2D7A3A"} fontFamily="var(--font-body)" fontWeight="600">
                 {hoveredData.status === "OCCUPIED" ? "Occupied" : "Available"} — {hoveredData.type === "BOBTAIL" ? "Bobtail" : "Truck"}
               </text>
               {hoveredData.status === "OCCUPIED" && hoveredData.vehicle && (
@@ -620,11 +620,11 @@ export default function LotMap({ spots, onSpotClick, selectedSpotId, labelOverri
           <rect x="0" y="0" width="940" height="32" rx="6" fill="#FFF" stroke="#E0DDD6" strokeWidth="0.8" opacity={0.9} />
           <rect x="16" y="8" width="14" height="14" rx="2" fill="#E8F5E9" stroke="#A5D6A7" strokeWidth="1" />
           <text x="36" y="19" fontSize="8" fill="#1A1A1A" fontFamily="var(--font-body)">Truck</text>
-          <rect x="100" y="8" width="14" height="14" rx="2" fill="#FFF1EB" stroke="#D4500A" strokeWidth="1" />
+          <rect x="100" y="8" width="14" height="14" rx="2" fill="#EEF0FF" stroke="#6366F1" strokeWidth="1" />
           <text x="120" y="19" fontSize="8" fill="#1A1A1A" fontFamily="var(--font-body)">Occupied</text>
           <rect x="210" y="8" width="14" height="14" rx="2" fill="#E3F2FD" stroke="#90CAF9" strokeWidth="1" />
           <text x="230" y="19" fontSize="8" fill="#1A1A1A" fontFamily="var(--font-body)">Bobtail</text>
-          <rect x="310" y="8" width="14" height="14" rx="2" fill="#FFF1EB" stroke="#D4500A" strokeWidth="3" />
+          <rect x="310" y="8" width="14" height="14" rx="2" fill="#EEF0FF" stroke="#6366F1" strokeWidth="3" />
           <text x="330" y="19" fontSize="8" fill="#1A1A1A" fontFamily="var(--font-body)">Selected</text>
           <text x="450" y="19" fontSize="8" fill="#9A9A9A" fontFamily="var(--font-body)">
             85 Truck + 48 Bobtail = 133 Total

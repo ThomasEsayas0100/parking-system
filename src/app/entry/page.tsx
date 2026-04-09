@@ -256,7 +256,7 @@ export default function ScanPage() {
           color: #F2F0EB;
           margin-bottom: 10px;
         }
-        .g-h1 span { color: #E05228; }
+        .g-h1 span { color: #2D7A4A; }
         .g-h1 .green { color: #34C759; }
 
         .g-sub {
@@ -290,7 +290,7 @@ export default function ScanPage() {
         .g-btn:active { transform: scale(0.985); }
 
         .g-btn-primary {
-          background: #E05228;
+          background: #2D7A4A;
           color: #fff;
           margin-bottom: 10px;
         }

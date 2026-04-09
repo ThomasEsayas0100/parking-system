@@ -327,7 +327,7 @@ function GateOpeningView() {
   return (
     <div style={styles.center}>
       <div style={styles.gateIcon}>↑</div>
-      <p style={{ ...styles.heading, color: "#E05228" }}>Gate opening…</p>
+      <p style={{ ...styles.heading, color: "#2D7A4A" }}>Gate opening…</p>
       <p style={styles.hint}>Please proceed through the gate.</p>
     </div>
   );
@@ -354,7 +354,7 @@ function GateOpenedView({
 
       <div style={styles.center}>
         <div style={styles.gateIcon}>↑</div>
-        <p style={{ ...styles.heading, color: "#E05228", marginBottom: 8 }}>Gate opening</p>
+        <p style={{ ...styles.heading, color: "#2D7A4A", marginBottom: 8 }}>Gate opening</p>
         <p style={styles.hint}>Drive safe! Your spot is still reserved.</p>
       </div>
 
@@ -490,8 +490,8 @@ function OverstayView({
     <div>
       <WelcomeBar name={driver.name} onNotYou={onNotYou} />
 
-      <div style={{ ...styles.card, borderColor: "#E05228" }}>
-        <div style={{ ...styles.cardLabel, color: "#E05228" }}>
+      <div style={{ ...styles.card, borderColor: "#DC2626" }}>
+        <div style={{ ...styles.cardLabel, color: "#DC2626" }}>
           Overstay detected
         </div>
         <div style={styles.cardRow}>
@@ -517,7 +517,7 @@ function OverstayView({
               <span style={{ ...styles.cardKey, fontWeight: 600 }}>
                 Amount due
               </span>
-              <span style={{ ...styles.cardVal, color: "#E05228", fontWeight: 700, fontSize: 20 }}>
+              <span style={{ ...styles.cardVal, color: "#DC2626", fontWeight: 700, fontSize: 20 }}>
                 ${overstayInfo.overstayAmount.toFixed(2)}
               </span>
             </div>
@@ -697,7 +697,7 @@ function Spinner() {
         width: 32,
         height: 32,
         border: "2px solid #2a2a2a",
-        borderTopColor: "#E05228",
+        borderTopColor: "#2D7A4A",
         borderRadius: "50%",
         animation: "spin 0.8s linear infinite",
         margin: "0 auto 16px",
@@ -756,7 +756,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               fontSize: 13,
               letterSpacing: "0.15em",
               textTransform: "uppercase",
-              color: "#E05228",
+              color: "#2D7A4A",
               marginBottom: 40,
             }}
           >
@@ -810,7 +810,7 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.5,
   },
   accent: {
-    color: "#E05228",
+    color: "#2D7A4A",
     fontWeight: 600,
   },
   error: {
@@ -867,7 +867,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "block",
     width: "100%",
     padding: "15px 20px",
-    background: "#E05228",
+    background: "#2D7A4A",
     color: "#fff",
     border: "none",
     borderRadius: 10,
@@ -951,7 +951,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   menuArrow: {
     fontSize: 16,
-    color: "#E05228",
+    color: "#2D7A4A",
   },
 
   /* welcome bar */
@@ -990,7 +990,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     fontSize: 28,
-    color: "#E05228",
+    color: "#2D7A4A",
     marginBottom: 24,
   },
   gateIcon: {
@@ -1003,7 +1003,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "center",
     fontSize: 28,
-    color: "#E05228",
+    color: "#2D7A4A",
     marginBottom: 24,
     animation: "fadeUp 0.4s ease both",
   },
