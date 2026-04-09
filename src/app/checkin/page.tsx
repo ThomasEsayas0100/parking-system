@@ -451,7 +451,7 @@ function CheckInContent() {
           {isNew && !isDemo && (
             <div
               className="rounded-lg px-4 py-3 text-xs leading-relaxed"
-              style={{ background: "rgba(10,132,255,0.08)", border: "1px solid rgba(10,132,255,0.2)", color: "rgba(255,255,255,0.6)", fontFamily: "var(--font-body, sans-serif)" }}
+              style={{ background: "rgba(10,132,255,0.08)", border: "1px solid rgba(10,132,255,0.2)", color: "var(--fg-muted)", fontFamily: "var(--font-body, sans-serif)" }}
             >
               Your info will be saved on this device for faster check-ins next time.
             </div>
