@@ -94,6 +94,7 @@ export type AppSettings = {
   totalSpotsTruck: number;
   managerEmail: string;
   managerPhone: string;
+  bobtailOverflow: boolean;
 };
 
 // ---------------------------------------------------------------------------

@@ -116,6 +116,7 @@ export const AuditActionSchema = z.enum([
   "GATE_OPEN", "SPOT_FREED",
   "REMINDER_SENT", "OVERSTAY_ALERT",
   "SUSPICIOUS_ENTRY",
+  "GATE_DENIED",
 ]);
 
 export const AuditQuerySchema = z.object({

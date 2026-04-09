@@ -11,31 +11,48 @@ const GateOpenBody = z.object({
   direction: z.enum(["ENTRANCE", "EXIT"]).optional(),
 });
 
+/** Log a gate denial and return 403. */
+async function deny(
+  reason: string,
+  ctx: { sessionId?: string; driverId?: string; deviceId?: string; direction?: string },
+) {
+  const dirLabel = ctx.direction === "EXIT" ? "exit" : "entrance";
+  await audit({
+    action: "GATE_DENIED",
+    sessionId: ctx.sessionId,
+    driverId: ctx.driverId,
+    details: [
+      `Gate ${dirLabel} denied: ${reason}`,
+      ctx.deviceId ? `device:${ctx.deviceId.slice(0, 8)}` : null,
+    ].filter(Boolean).join(" — "),
+  }).catch(() => {}); // best-effort logging
+  return json({ success: false, error: reason }, { status: 403 });
+}
+
 export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
   const { sessionId, driverId, deviceId, direction } = body;
+  const ctx = { sessionId, driverId, deviceId, direction };
 
-  // ── Session validation — gate only opens for valid, non-expired sessions ──
+  // ── Session validation ──
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
     select: { id: true, status: true, driverId: true, expectedEnd: true },
   });
 
   if (!session) {
-    return json({ success: false, error: "No session found" }, { status: 403 });
+    return deny("No session found", ctx);
   }
 
   if (!["ACTIVE", "OVERSTAY"].includes(session.status)) {
-    return json({ success: false, error: "Session is not active" }, { status: 403 });
+    return deny("Session is not active", { ...ctx, driverId: driverId ?? session.driverId });
   }
 
-  // For ENTRANCE: only allow if session hasn't expired (OVERSTAY can still exit but not enter)
   if (direction === "ENTRANCE" && session.status === "OVERSTAY") {
-    return json({ success: false, error: "Session has expired — please settle overstay first" }, { status: 403 });
+    return deny("Session expired — settle overstay first", { ...ctx, driverId: driverId ?? session.driverId });
   }
 
-  // Verify the driver matches the session (if driverId provided)
   if (driverId && session.driverId !== driverId) {
-    return json({ success: false, error: "Session does not belong to this driver" }, { status: 403 });
+    return deny("Session does not belong to this driver", ctx);
   }
 
   // ── Gate opens ──
@@ -45,9 +62,7 @@ export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
   const details = [
     `Gate ${dirLabel.toLowerCase()} via QR scan`,
     deviceId ? `device:${deviceId.slice(0, 8)}` : null,
-  ]
-    .filter(Boolean)
-    .join(" — ");
+  ].filter(Boolean).join(" — ");
 
   await audit({
     action: "GATE_OPEN",

@@ -40,6 +40,7 @@ enum AuditAction {
   REMINDER_SENT
   OVERSTAY_ALERT
   SUSPICIOUS_ENTRY
+  GATE_DENIED
 }
 
 model Driver {
@@ -142,5 +143,6 @@ model Settings {
   totalSpotsTruck       Int     @default(100)
   managerEmail          String  @default("")
   managerPhone          String  @default("")
+  bobtailOverflow       Boolean @default(true)
   lotGroups             Json    @default("[]")
 }

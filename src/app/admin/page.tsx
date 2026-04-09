@@ -51,7 +51,7 @@ const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
   { key: "GATE", label: "Gate", actions: ["GATE_OPEN"] },
   { key: "ADMIN", label: "Admin", actions: ["SPOT_FREED"] },
   { key: "NOTIFICATION", label: "Notification", actions: ["REMINDER_SENT", "OVERSTAY_ALERT"] },
-  { key: "SECURITY", label: "Security", actions: ["SUSPICIOUS_ENTRY"] },
+  { key: "SECURITY", label: "Security", actions: ["SUSPICIOUS_ENTRY", "GATE_DENIED"] },
 ];
 
 const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }> = {
@@ -65,6 +65,7 @@ const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }>
   REMINDER_SENT:    { color: "#14B8A6", bg: "#0A2421", label: "Reminder" },
   OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
   SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },
+  GATE_DENIED:      { color: "#F87171", bg: "#2C1810", label: "Denied" },
 };
 
 const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
@@ -649,6 +650,18 @@ export default function AdminDashboard() {
               <SettingsGroup title="Spot Configuration">
                 <SettingsField label="Total Bobtail Spots" value={settingsForm.totalSpotsBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, totalSpotsBobtail: v })} />
                 <SettingsField label="Total Truck/Trailer Spots" value={settingsForm.totalSpotsTruck} onChange={(v) => setSettingsForm({ ...settingsForm, totalSpotsTruck: v })} />
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+                  <input
+                    type="checkbox"
+                    id="bobtailOverflow"
+                    checked={settingsForm.bobtailOverflow ?? true}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, bobtailOverflow: e.target.checked })}
+                    style={{ width: 16, height: 16, accentColor: FG }}
+                  />
+                  <label htmlFor="bobtailOverflow" style={{ fontSize: 12, color: FG_MUTED, cursor: "pointer" }}>
+                    Allow bobtails in truck spots when bobtail spots are full
+                  </label>
+                </div>
               </SettingsGroup>
               <button type="submit" style={{ padding: "12px 24px", background: FG, color: DARK_BG, border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", alignSelf: "flex-start" }}>
                 Save Settings
