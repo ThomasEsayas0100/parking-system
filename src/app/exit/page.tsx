@@ -31,6 +31,7 @@ type State =
   | "confirm"
   | "not_registered"
   | "gate_opening"
+  | "gate_opened"
   | "exited";
 
 /* ─── root ───────────────────────────────────────────────── */
@@ -95,6 +96,20 @@ function ExitContent() {
       }
 
       setSession(activeSession);
+
+      if (activeSession.status === "ACTIVE") {
+        // Auto-open gate for active sessions — no button needed
+        setState("gate_opening");
+        apiPost("/api/gate", {
+          driverId: apiDriver.id,
+          sessionId: activeSession.id,
+          deviceId: getDeviceId(),
+          direction: "EXIT",
+        })
+          .then(() => setState("gate_opened"))
+          .catch(() => setState("gate_opened")); // show info even if gate call fails
+        return;
+      }
 
       if (activeSession.status === "OVERSTAY") {
         /* probe exit endpoint for fee breakdown */
@@ -245,8 +260,10 @@ function ExitContent() {
         <CheckingView />
       ) : state === "gate_opening" ? (
         <GateOpeningView />
+      ) : state === "gate_opened" && driver && session ? (
+        <GateOpenedView driver={driver} session={session} onNotYou={() => { clearDriver(); setState("ask_type"); }} />
       ) : state === "exited" ? (
-        <ExitedView spotLabel={session?.spot.label} />
+        <ExitedView />
       ) : state === "has_session" ? (
         <ActiveSessionView
           driver={driver!}
@@ -316,16 +333,58 @@ function GateOpeningView() {
   );
 }
 
-function ExitedView({ spotLabel }: { spotLabel?: string }) {
+function GateOpenedView({
+  driver,
+  session,
+  onNotYou,
+}: {
+  driver: ApiDriver;
+  session: ExitSession;
+  onNotYou: () => void;
+}) {
+  const expiresAt = new Date(session.expectedEnd).toLocaleString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  return (
+    <div>
+      <WelcomeBar name={driver.name} onNotYou={onNotYou} />
+
+      <div style={styles.center}>
+        <div style={styles.gateIcon}>↑</div>
+        <p style={{ ...styles.heading, color: "#E05228", marginBottom: 8 }}>Gate opening</p>
+        <p style={styles.hint}>Drive safe! Your spot is still reserved.</p>
+      </div>
+
+      <div style={{ ...styles.card, marginTop: 24 }}>
+        <div style={styles.cardLabel}>Your session</div>
+        <div style={styles.cardRow}>
+          <span style={styles.cardKey}>Spot</span>
+          <span style={styles.cardVal}>{session.spot.label}</span>
+        </div>
+        <div style={styles.cardRow}>
+          <span style={styles.cardKey}>Plate</span>
+          <span style={styles.cardVal}>{session.vehicle.licensePlate}</span>
+        </div>
+        <div style={styles.cardRow}>
+          <span style={styles.cardKey}>Expires</span>
+          <span style={styles.cardVal}>{expiresAt}</span>
+        </div>
+      </div>
+
+      <p style={styles.hint}>Scan the entry QR code to re-enter.</p>
+    </div>
+  );
+}
+
+function ExitedView() {
   return (
     <div style={styles.center}>
       <div style={styles.successMark}>✓</div>
-      <p style={styles.heading}>Drive safe!</p>
-      {spotLabel && (
-        <p style={styles.hint}>
-          Spot <span style={styles.accent}>{spotLabel}</span> has been released.
-        </p>
-      )}
+      <p style={styles.heading}>Overstay settled</p>
+      <p style={styles.hint}>Drive safe!</p>
       <p style={{ ...styles.hint, marginTop: 32 }}>
         <Link href="/entry" style={styles.linkMuted}>
           Return to start
