@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 
 import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail } from "@/types/domain";
 import { apiFetch } from "@/lib/fetch";
+import { useIsMobile } from "@/lib/hooks";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
@@ -107,31 +108,32 @@ const FG_MUTED = "#8E8E93";
 const FG_DIM = "#636366";
 const RADIUS = 12;
 
-const chipBase: React.CSSProperties = {
-  padding: "6px 14px", borderRadius: 20, border: `1px solid ${BORDER}`,
-  background: "transparent", color: FG_MUTED, fontSize: 12, fontWeight: 600,
+const chip = (active: boolean, mobile: boolean): React.CSSProperties => ({
+  padding: mobile ? "10px 16px" : "6px 14px", borderRadius: 20,
+  border: active ? "1px solid #F5F5F740" : `1px solid ${BORDER}`,
+  background: active ? BORDER : "transparent",
+  color: active ? FG : FG_MUTED,
+  fontSize: mobile ? 13 : 12, fontWeight: 600,
   cursor: "pointer", letterSpacing: "0.02em",
-};
-const chipActive: React.CSSProperties = {
-  ...chipBase, border: "1px solid #F5F5F740", background: BORDER, color: FG,
-};
+});
 
 const inputStyle: React.CSSProperties = {
-  padding: "7px 12px", fontSize: 13, background: CARD_BG, border: `1px solid ${BORDER}`,
+  padding: "10px 12px", fontSize: 14, background: CARD_BG, border: `1px solid ${BORDER}`,
   borderRadius: 6, color: FG, outline: "none", width: "100%",
 };
 
-const paginationBtn = (disabled: boolean): React.CSSProperties => ({
-  padding: "6px 16px", borderRadius: 6, border: `1px solid ${BORDER}`,
+const paginationBtn = (disabled: boolean, mobile: boolean): React.CSSProperties => ({
+  padding: mobile ? "10px 18px" : "6px 16px", borderRadius: 6, border: `1px solid ${BORDER}`,
   background: disabled ? "transparent" : CARD_BG,
   color: disabled ? "#48484A" : FG,
-  fontSize: 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
+  fontSize: mobile ? 13 : 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Main component
 // ═══════════════════════════════════════════════════════════════════════════
 export default function AdminDashboard() {
+  const mobile = useIsMobile();
   const [spots, setSpots] = useState<Spot[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
@@ -310,8 +312,8 @@ export default function AdminDashboard() {
   return (
     <div style={{ background: DARK_BG, minHeight: "100vh", color: FG, fontFamily: "system-ui, sans-serif" }}>
       {/* Header */}
-      <div style={{ padding: "20px 24px 0", borderBottom: `1px solid ${BORDER}` }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 16 }}>
+      <div style={{ padding: mobile ? "16px 16px 0" : "20px 24px 0", borderBottom: `1px solid ${BORDER}` }}>
+        <h1 style={{ fontSize: mobile ? 17 : 20, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 12 }}>
           Parking Admin
         </h1>
         <div style={{ display: "flex", gap: 0 }}>
@@ -320,12 +322,12 @@ export default function AdminDashboard() {
               key={t.key}
               onClick={() => setTab(t.key)}
               style={{
-                padding: "10px 20px",
+                padding: mobile ? "10px 12px" : "10px 20px",
                 background: "transparent",
                 border: "none",
                 borderBottom: tab === t.key ? `2px solid ${FG}` : "2px solid transparent",
                 color: tab === t.key ? FG : FG_DIM,
-                fontSize: 13,
+                fontSize: mobile ? 12 : 13,
                 fontWeight: 600,
                 cursor: "pointer",
                 letterSpacing: "0.02em",
@@ -337,13 +339,13 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div style={{ padding: "24px 24px 40px" }}>
+      <div style={{ padding: mobile ? "16px 16px 32px" : "24px 24px 40px" }}>
 
         {/* ═══ OVERVIEW (Lot Map) ═══ */}
         {tab === "overview" && (
-          <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)" }}>
+          <div style={{ display: "flex", flexDirection: "column", minHeight: mobile ? "auto" : "calc(100vh - 120px)" }}>
             {/* Compact stats bar */}
-            <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 16, fontSize: 12, flexShrink: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: mobile ? 12 : 20, marginBottom: 12, fontSize: mobile ? 13 : 12, flexShrink: 0, flexWrap: "wrap" }}>
               <span style={{ color: FG_MUTED }}>
                 <span style={{ color: "#2D7A4A", fontWeight: 700 }}>{lotCounts.vacant}</span> vacant
               </span>
@@ -353,20 +355,19 @@ export default function AdminDashboard() {
               <span style={{ color: FG_MUTED }}>
                 <span style={{ color: "#DC2626", fontWeight: 700 }}>{lotCounts.overdue}</span> overdue
               </span>
-              <span style={{ color: FG_DIM }}>|</span>
               <span style={{ color: FG_MUTED }}>
                 <span style={{ color: FG, fontWeight: 700 }}>{lotCounts.total}</span> total
               </span>
 
               {spots.length === 0 && (
-                <button onClick={handleSeedSpots} style={{ marginLeft: "auto", padding: "5px 14px", background: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: 6, color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                <button onClick={handleSeedSpots} style={{ padding: "8px 16px", background: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: 6, color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                   Seed Spots
                 </button>
               )}
             </div>
 
             {/* Lot map + detail panel */}
-            <div style={{ flex: 1, display: "flex", overflow: "hidden", borderRadius: RADIUS, border: `1px solid ${BORDER}`, position: "relative" }}>
+            <div style={{ flex: mobile ? "none" : 1, height: mobile ? "60vh" : undefined, display: "flex", flexDirection: mobile ? "column" : "row", overflow: "hidden", borderRadius: RADIUS, border: `1px solid ${BORDER}`, position: "relative" }}>
               <div style={{ flex: 1, overflow: "hidden" }}>
                 <LotMapViewer
                   spots={allSpots}
@@ -380,6 +381,7 @@ export default function AdminDashboard() {
                 detail={selectedSpotId ? spotDetails[allSpots.find(s => s.id === selectedSpotId)?.label ?? ""] ?? null : null}
                 open={selectedSpotId !== null}
                 onClose={() => setSelectedSpotId(null)}
+                mobile={mobile}
               />
             </div>
           </div>
@@ -389,20 +391,18 @@ export default function AdminDashboard() {
         {tab === "sessions" && (
           <div>
             {/* Filters */}
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20, alignItems: "center" }}>
-              {/* Status chips */}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
               {(["", "ACTIVE", "OVERSTAY", "COMPLETED"] as StatusFilter[]).map((s) => {
                 const active = sessStatus === s;
                 const label = s || "All";
                 return (
-                  <button key={label} onClick={() => setSessStatus(s)} style={active ? chipActive : chipBase}>
+                  <button key={label} onClick={() => setSessStatus(s)} style={chip(active, mobile)}>
                     {label}
                   </button>
                 );
               })}
 
-              {/* Search */}
-              <div style={{ flex: 1, minWidth: 180, maxWidth: 300 }}>
+              <div style={{ flex: 1, minWidth: mobile ? "100%" : 180, maxWidth: mobile ? "100%" : 300 }}>
                 <input
                   type="text"
                   placeholder="Search name, plate, spot…"
@@ -442,10 +442,10 @@ export default function AdminDashboard() {
                           onClick={() => setSessExpanded(isExpanded ? null : s.id)}
                           style={{
                             display: "grid",
-                            gridTemplateColumns: "60px 1fr 1fr auto auto",
-                            gap: 12,
+                            gridTemplateColumns: mobile ? "auto 1fr auto" : "60px 1fr 1fr auto auto",
+                            gap: mobile ? 8 : 12,
                             alignItems: "center",
-                            padding: "14px 16px",
+                            padding: mobile ? "12px 14px" : "14px 16px",
                             background: isExpanded ? "#343436" : CARD_BG,
                             borderRadius: isExpanded ? `${RADIUS}px ${RADIUS}px 0 0` : RADIUS,
                             cursor: "pointer",
@@ -454,8 +454,8 @@ export default function AdminDashboard() {
                         >
                           {/* Spot */}
                           <div>
-                            <div style={{ fontSize: 15, fontWeight: 700, color: FG }}>{s.spot.label}</div>
-                            <div style={{ fontSize: 10, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                            <div style={{ fontSize: mobile ? 14 : 15, fontWeight: 700, color: FG }}>{s.spot.label}</div>
+                            <div style={{ fontSize: mobile ? 10 : 10, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                               {s.spot.type === "BOBTAIL" ? "Bob" : "Truck"}
                             </div>
                           </div>
@@ -466,37 +466,46 @@ export default function AdminDashboard() {
                               {s.driver.name}
                             </div>
                             <div style={{ fontSize: 12, color: FG_DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {vLabel}
+                              {mobile ? (s.vehicle.licensePlate || vLabel) : vLabel}
                             </div>
+                            {mobile && (
+                              <div style={{ fontSize: 11, color: FG_DIM, marginTop: 2 }}>
+                                {fmtDate(s.startedAt)} · {calcDuration(s.startedAt, s.endedAt)} · ${total.toFixed(2)}
+                              </div>
+                            )}
                           </div>
 
-                          {/* Time */}
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 12, color: FG_MUTED }}>{fmtDate(s.startedAt)}</div>
-                            <div style={{ fontSize: 11, color: FG_DIM }}>{calcDuration(s.startedAt, s.endedAt)}</div>
-                          </div>
+                          {/* Time — desktop only */}
+                          {!mobile && (
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 12, color: FG_MUTED }}>{fmtDate(s.startedAt)}</div>
+                              <div style={{ fontSize: 11, color: FG_DIM }}>{calcDuration(s.startedAt, s.endedAt)}</div>
+                            </div>
+                          )}
 
                           {/* Status badge */}
                           <span style={{
-                            fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
-                            padding: "4px 10px", borderRadius: 4, background: st.bg, color: st.color,
+                            fontSize: mobile ? 9 : 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                            padding: mobile ? "3px 8px" : "4px 10px", borderRadius: 4, background: st.bg, color: st.color,
                             whiteSpace: "nowrap",
                           }}>
                             {s.status}
                           </span>
 
-                          {/* Total */}
-                          <div style={{ fontSize: 13, fontWeight: 600, color: FG, fontVariantNumeric: "tabular-nums", textAlign: "right", minWidth: 60 }}>
-                            ${total.toFixed(2)}
-                          </div>
+                          {/* Total — desktop only */}
+                          {!mobile && (
+                            <div style={{ fontSize: 13, fontWeight: 600, color: FG, fontVariantNumeric: "tabular-nums", textAlign: "right", minWidth: 60 }}>
+                              ${total.toFixed(2)}
+                            </div>
+                          )}
                         </div>
 
                         {/* Expanded detail */}
                         {isExpanded && (
                           <div style={{
                             background: "#343436", borderRadius: `0 0 ${RADIUS}px ${RADIUS}px`,
-                            padding: "0 16px 16px",
-                            display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 20,
+                            padding: mobile ? "12px 14px 14px" : "0 16px 16px",
+                            display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr 1fr", gap: mobile ? 16 : 20,
                           }}>
                             {/* Driver */}
                             <DetailCol title="Driver">
@@ -547,13 +556,13 @@ export default function AdminDashboard() {
                 {/* Pagination */}
                 {sessionsData.total > SESS_LIMIT && (
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
-                    <button onClick={() => setSessOffset(Math.max(0, sessOffset - SESS_LIMIT))} disabled={sessOffset === 0} style={paginationBtn(sessOffset === 0)}>
+                    <button onClick={() => setSessOffset(Math.max(0, sessOffset - SESS_LIMIT))} disabled={sessOffset === 0} style={paginationBtn(sessOffset === 0, mobile)}>
                       ← Newer
                     </button>
                     <span style={{ fontSize: 11, color: FG_DIM }}>
                       {sessOffset + 1}–{Math.min(sessOffset + SESS_LIMIT, sessionsData.total)} of {sessionsData.total}
                     </span>
-                    <button onClick={() => setSessOffset(sessOffset + SESS_LIMIT)} disabled={!sessionsData.hasMore} style={paginationBtn(!sessionsData.hasMore)}>
+                    <button onClick={() => setSessOffset(sessOffset + SESS_LIMIT)} disabled={!sessionsData.hasMore} style={paginationBtn(!sessionsData.hasMore, mobile)}>
                       Older →
                     </button>
                   </div>
@@ -571,7 +580,7 @@ export default function AdminDashboard() {
                 <button
                   key={cat.key}
                   onClick={() => { setLogFilter(cat.key); setLogOffset(0); }}
-                  style={logFilter === cat.key ? chipActive : chipBase}
+                  style={chip(logFilter === cat.key, mobile)}
                 >
                   {cat.label}
                 </button>
@@ -615,9 +624,9 @@ export default function AdminDashboard() {
 
             {logTotal > LOG_LIMIT && (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
-                <button onClick={() => setLogOffset(Math.max(0, logOffset - LOG_LIMIT))} disabled={logOffset === 0} style={paginationBtn(logOffset === 0)}>← Newer</button>
+                <button onClick={() => setLogOffset(Math.max(0, logOffset - LOG_LIMIT))} disabled={logOffset === 0} style={paginationBtn(logOffset === 0, mobile)}>← Newer</button>
                 <span style={{ fontSize: 11, color: FG_DIM }}>{logOffset + 1}–{Math.min(logOffset + LOG_LIMIT, logTotal)} of {logTotal}</span>
-                <button onClick={() => setLogOffset(logOffset + LOG_LIMIT)} disabled={logOffset + LOG_LIMIT >= logTotal} style={paginationBtn(logOffset + LOG_LIMIT >= logTotal)}>Older →</button>
+                <button onClick={() => setLogOffset(logOffset + LOG_LIMIT)} disabled={logOffset + LOG_LIMIT >= logTotal} style={paginationBtn(logOffset + LOG_LIMIT >= logTotal, mobile)}>Older →</button>
               </div>
             )}
           </div>
@@ -625,7 +634,7 @@ export default function AdminDashboard() {
 
         {/* ═══ SETTINGS ═══ */}
         {tab === "settings" && settingsForm && (
-          <div style={{ maxWidth: 560 }}>
+          <div style={{ maxWidth: mobile ? "100%" : 560 }}>
             <form onSubmit={handleSaveSettings} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
               <SettingsGroup title="Payment">
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

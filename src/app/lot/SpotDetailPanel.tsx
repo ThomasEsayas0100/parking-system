@@ -77,16 +77,34 @@ type Props = {
   detail: LotSpotDetail | null;
   onClose: () => void;
   open: boolean;
+  mobile?: boolean;
 };
 
-export default function SpotDetailPanel({ detail, onClose, open }: Props) {
+export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props) {
   const T = "0.35s cubic-bezier(0.4, 0, 0.2, 1)";
   const statusColor = detail ? LOT_STATUS_COLORS[detail.status].stroke : "#636366";
 
-  return (
-    <div
-      style={{
+  // Mobile: slide up from bottom. Desktop: slide in from right.
+  const panelStyle: React.CSSProperties = mobile
+    ? {
         position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        maxHeight: "60vh",
+        transform: open ? "translateY(0)" : "translateY(100%)",
+        transition: `transform ${T}`,
+        background: "#1C1C1E",
+        borderTop: "1px solid #2C2C2E",
+        borderRadius: "16px 16px 0 0",
+        zIndex: 50,
+        display: "flex",
+        flexDirection: "column" as const,
+        fontFamily: "var(--font-body)",
+        overflow: "hidden",
+      }
+    : {
+        position: "absolute" as const,
         top: 0,
         right: 0,
         bottom: 0,
@@ -97,11 +115,13 @@ export default function SpotDetailPanel({ detail, onClose, open }: Props) {
         borderLeft: "1px solid #2C2C2E",
         zIndex: 50,
         display: "flex",
-        flexDirection: "column",
+        flexDirection: "column" as const,
         fontFamily: "var(--font-body)",
         overflow: "hidden",
-      }}
-    >
+      };
+
+  return (
+    <div style={panelStyle}>
       {/* Header */}
       <div style={{
         display: "flex",
