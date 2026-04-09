@@ -627,6 +627,20 @@ export default function AdminDashboard() {
         {tab === "settings" && settingsForm && (
           <div style={{ maxWidth: 560 }}>
             <form onSubmit={handleSaveSettings} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+              <SettingsGroup title="Payment">
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <input
+                    type="checkbox"
+                    id="paymentRequired"
+                    checked={settingsForm.paymentRequired ?? true}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, paymentRequired: e.target.checked })}
+                    style={{ width: 16, height: 16, accentColor: FG }}
+                  />
+                  <label htmlFor="paymentRequired" style={{ fontSize: 12, color: FG_MUTED, cursor: "pointer" }}>
+                    Require payment at check-in (disable for testing)
+                  </label>
+                </div>
+              </SettingsGroup>
               <SettingsGroup title="Hourly Rates">
                 <SettingsField label="Bobtail ($/hr)" value={settingsForm.hourlyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateBobtail: v })} step="0.01" />
                 <SettingsField label="Truck/Trailer ($/hr)" value={settingsForm.hourlyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateTruck: v })} step="0.01" />

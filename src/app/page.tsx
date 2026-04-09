@@ -5,9 +5,12 @@ import { useState, useEffect } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
 export default function Home() {
-  const [scanUrl, setScanUrl] = useState("");
+  const [entryUrl, setEntryUrl] = useState("");
+  const [exitUrl, setExitUrl] = useState("");
   useEffect(() => {
-    setScanUrl(`${window.location.origin}/scan`);
+    const origin = window.location.origin;
+    setEntryUrl(`${origin}/scan`);
+    setExitUrl(`${origin}/exit`);
   }, []);
 
   return (
@@ -44,48 +47,11 @@ export default function Home() {
         </p>
       </div>
 
-      {/* QR Code */}
-      {scanUrl && (
-        <div style={{
-          background: "var(--dark-card)",
-          border: "1px solid var(--dark-border)",
-          borderRadius: 16,
-          padding: 20,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 12,
-          width: "100%",
-          maxWidth: 360,
-        }}>
-          <div style={{
-            background: "#fff",
-            padding: 12,
-            borderRadius: 10,
-            lineHeight: 0,
-          }}>
-            <QRCodeSVG value={scanUrl} size={140} />
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div style={{
-              fontSize: 13,
-              fontWeight: 700,
-              color: "var(--dark-fg)",
-              fontFamily: "var(--font-display)",
-              letterSpacing: "0.04em",
-            }}>
-              Gate QR Code
-            </div>
-            <div style={{
-              fontSize: 11,
-              color: "var(--dark-fg-subtle)",
-              marginTop: 4,
-              fontFamily: "monospace",
-              letterSpacing: "0.02em",
-            }}>
-              {scanUrl}
-            </div>
-          </div>
+      {/* QR Codes — Entry and Exit */}
+      {entryUrl && (
+        <div style={{ display: "flex", gap: 16, width: "100%", maxWidth: 420, flexWrap: "wrap", justifyContent: "center" }}>
+          <QRCard url={entryUrl} label="Entry Gate" sublabel="/scan" color="var(--dark-green)" />
+          <QRCard url={exitUrl} label="Exit Gate" sublabel="/exit" color="#0A84FF" />
         </div>
       )}
 
@@ -202,6 +168,46 @@ export default function Home() {
         <SecondaryCard href="/lot" icon="🗺️" title="Lot Map" subtitle="View & edit parking lot layout" />
         <SecondaryCard href="/checkin" icon="📋" title="Check In" subtitle="Full flow with payment" />
         <SecondaryCard href="/admin" icon="⚙️" title="Admin" subtitle="Dashboard & session history" />
+      </div>
+    </div>
+  );
+}
+
+function QRCard({ url, label, sublabel, color }: { url: string; label: string; sublabel: string; color: string }) {
+  return (
+    <div style={{
+      background: "var(--dark-card)",
+      border: "1px solid var(--dark-border)",
+      borderRadius: 14,
+      padding: 18,
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      gap: 10,
+      flex: "1 1 180px",
+      maxWidth: 200,
+    }}>
+      <div style={{ background: "#fff", padding: 10, borderRadius: 8, lineHeight: 0 }}>
+        <QRCodeSVG value={url} size={120} />
+      </div>
+      <div style={{ textAlign: "center" }}>
+        <div style={{
+          fontSize: 13,
+          fontWeight: 700,
+          color,
+          fontFamily: "var(--font-display)",
+          letterSpacing: "0.04em",
+        }}>
+          {label}
+        </div>
+        <div style={{
+          fontSize: 10,
+          color: "var(--dark-fg-subtle)",
+          marginTop: 3,
+          fontFamily: "monospace",
+        }}>
+          {sublabel}
+        </div>
       </div>
     </div>
   );

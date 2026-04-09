@@ -42,19 +42,22 @@ export const POST = handler(
     const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
     if (!vehicle) throw notFound("Vehicle not found");
 
+    const settings = await getSettings();
+
     // Reserve spot BEFORE verifying payment — prevents charging with no spot
     const spot = await assignSpot(vehicle.type);
     if (!spot) throw conflict("No available spots for this vehicle type");
 
-    // Verify payment — if this fails, release the spot
-    try {
-      await verifyAndClaimPayment(paymentId);
-    } catch (err) {
-      await freeSpot(spot.id);
-      throw err;
+    // Verify payment (skip if payment is disabled in settings)
+    if (settings.paymentRequired && paymentId) {
+      try {
+        await verifyAndClaimPayment(paymentId);
+      } catch (err) {
+        await freeSpot(spot.id);
+        throw err;
+      }
     }
 
-    const settings = await getSettings();
     const rate = hourlyRate(settings, vehicle.type);
     const now = new Date();
     const expectedEnd = addHours(now, hours);
@@ -69,8 +72,8 @@ export const POST = handler(
       data: {
         sessionId: session.id,
         type: "CHECKIN",
-        stripePaymentId: paymentId,
-        amount,
+        stripePaymentId: paymentId || `free_${Date.now()}`,
+        amount: settings.paymentRequired ? amount : 0,
         hours,
       },
     });

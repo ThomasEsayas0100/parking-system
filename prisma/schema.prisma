@@ -144,5 +144,6 @@ model Settings {
   managerEmail          String  @default("")
   managerPhone          String  @default("")
   bobtailOverflow       Boolean @default(true)
+  paymentRequired       Boolean @default(true)
   lotGroups             Json    @default("[]")
 }

@@ -58,7 +58,7 @@ export const SessionCreateSchema = z.object({
   driverId: idSchema,
   vehicleId: idSchema,
   hours: z.number().int().min(1, "min 1 hour").max(72, "max 72 hours"),
-  paymentId: z.string().min(1).max(200),
+  paymentId: z.string().min(1).max(200).optional(),
 });
 export type SessionCreateInput = z.infer<typeof SessionCreateSchema>;
 

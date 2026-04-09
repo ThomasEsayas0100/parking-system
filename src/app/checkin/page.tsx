@@ -9,7 +9,7 @@ import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
 import { apiFetch } from "@/lib/fetch";
 import PhoneInput from "@/components/PhoneInput";
 
-type Settings = Pick<AppSettings, "hourlyRateBobtail" | "hourlyRateTruck">;
+type Settings = Pick<AppSettings, "hourlyRateBobtail" | "hourlyRateTruck" | "paymentRequired">;
 type Vehicle = ApiVehicle;
 
 export default function CheckInPage() {
@@ -157,7 +157,7 @@ function CheckInContent() {
         .then((d) => setSettings(d.settings))
         .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
-      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18 });
+      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18, paymentRequired: false });
     }
 
     // Locked mode: wait until phone is populated by the verified API response,
@@ -320,21 +320,25 @@ function CheckInContent() {
         vehicleId = vehicle.id;
       }
 
-      const payRes = await fetch("/api/payments/create-intent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount: totalAmount,
-          description: `Parking: ${vehicleType} for ${hours}h`,
-        }),
-      });
-      const payJson = await payRes.json();
-      if (!payRes.ok || !payJson.paymentIntentId) {
-        setError(payJson.error || "Payment setup failed. Please try again.");
-        setLoading(false);
-        return;
+      let paymentIntentId: string | undefined;
+
+      if (settings.paymentRequired) {
+        const payRes = await fetch("/api/payments/create-intent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: totalAmount,
+            description: `Parking: ${vehicleType} for ${hours}h`,
+          }),
+        });
+        const payJson = await payRes.json();
+        if (!payRes.ok || !payJson.paymentIntentId) {
+          setError(payJson.error || "Payment setup failed. Please try again.");
+          setLoading(false);
+          return;
+        }
+        paymentIntentId = payJson.paymentIntentId;
       }
-      const { paymentIntentId } = payJson;
 
       const sessionRes = await fetch("/api/sessions", {
         method: "POST",
@@ -343,7 +347,7 @@ function CheckInContent() {
           driverId: driver.id,
           vehicleId,
           hours,
-          paymentId: paymentIntentId,
+          ...(paymentIntentId ? { paymentId: paymentIntentId } : {}),
         }),
       });
       const sessionData = await sessionRes.json();
