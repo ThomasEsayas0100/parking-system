@@ -51,7 +51,14 @@ export default function ScanPage() {
   const [foundDriver, setFoundDriver] = useState<Driver | null>(null);
   const [error, setError] = useState("");
   const [gateTriggered, setGateTriggered] = useState(false);
+  const [gateDenied, setGateDenied] = useState(false);
   const phoneRef = useRef<HTMLInputElement>(null);
+
+  // Detect if this is a fresh navigation (QR scan) vs refresh/back/shared link
+  const isFreshNavigation = useRef(
+    typeof window !== "undefined" &&
+    (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming)?.type === "navigate"
+  );
 
   // Resolve a verified driver: check for active sessions, route to correct state
   function resolveDriver(d: { id: string; name: string; phone: string }, sessions: ActiveSession[]) {
@@ -100,9 +107,14 @@ export default function ScanPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-trigger gate when entering gate_active state
+  // Auto-trigger gate when entering gate_active state — only on fresh QR scan
   useEffect(() => {
     if (state !== "gate_active" || gateTriggered) return;
+    if (!isFreshNavigation.current) {
+      // Refresh, back button, or shared link — don't auto-open
+      setGateDenied(true);
+      return;
+    }
     setGateTriggered(true);
     apiPost("/api/gate", { driverId: driver?.id, sessionId: session?.id, deviceId: getDeviceId(), direction: "ENTRANCE" })
       .catch(() => {
@@ -601,13 +613,28 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* ── GATE ACTIVE — auto-opened, show session info ── */}
+        {/* ── GATE ACTIVE — auto-opened (or denied if not fresh scan) ── */}
         {state === "gate_active" && driver && session && (
           <div className="g-body">
-            <div className="g-gate-icon">↑</div>
-            <p className="g-eyebrow">Gate opening</p>
-            <h1 className="g-h1">Welcome,<br /><span className="green">{driver.name.split(" ")[0]}</span>.</h1>
-            <p className="g-sub" style={{ marginBottom: 24 }}>The gate is opening. Drive through when ready.</p>
+            {gateDenied ? (
+              <>
+                <div className="g-icon-wrap" style={{ background: "rgba(242,240,235,0.06)", border: "1px solid rgba(242,240,235,0.12)", margin: "0 auto 20px" }}>
+                  <span style={{ fontSize: 22, color: "rgba(242,240,235,0.4)" }}>⟳</span>
+                </div>
+                <p className="g-eyebrow">Session active</p>
+                <h1 className="g-h1">Hey,<br /><span className="green">{driver.name.split(" ")[0]}</span>.</h1>
+                <p className="g-sub" style={{ marginBottom: 24 }}>
+                  Please re-scan the QR code at the gate to open it.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="g-gate-icon">↑</div>
+                <p className="g-eyebrow">Gate opening</p>
+                <h1 className="g-h1">Welcome,<br /><span className="green">{driver.name.split(" ")[0]}</span>.</h1>
+                <p className="g-sub" style={{ marginBottom: 24 }}>The gate is opening. Drive through when ready.</p>
+              </>
+            )}
 
             <div className="g-session-card">
               <div className="g-session-row">
