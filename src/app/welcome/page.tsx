@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import type { ApiSession, ApiVehicle, ApiSpot } from "@/types/domain";
 import { loadDriver, clearDriver, getDeviceId } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
+import { timeRemaining as _timeRemaining, vehicleLabel as _vehicleLabel } from "@/lib/time";
 
 type ActiveSession = Pick<ApiSession, "id" | "startedAt" | "expectedEnd" | "status"> & {
   spot: Pick<ApiSpot, "label" | "type">;
@@ -76,20 +77,8 @@ function WelcomeContent() {
       });
   }, [driverId, router]);
 
-  function vehicleLabel(v: ActiveSession["vehicle"]) {
-    if (v.unitNumber && v.licensePlate) return `#${v.unitNumber} · ${v.licensePlate}`;
-    if (v.unitNumber) return `#${v.unitNumber}`;
-    return v.licensePlate || "Unknown";
-  }
-
-  function timeRemaining(expectedEnd: string) {
-    const diff = new Date(expectedEnd).getTime() - Date.now();
-    if (diff <= 0) return "Expired";
-    const hrs = Math.floor(diff / 3600000);
-    const mins = Math.floor((diff % 3600000) / 60000);
-    if (hrs > 0) return `${hrs}h ${mins}m left`;
-    return `${mins}m left`;
-  }
+  const vehicleLabel = _vehicleLabel;
+  const timeRemaining = (s: string) => _timeRemaining(s);
 
   function isOverstayed(session: ActiveSession) {
     // Use status as primary signal; fall back to time-check to catch

@@ -4,9 +4,10 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-import type { SavedDriver } from "@/types/domain";
+import type { SavedDriver, DriverActiveSession } from "@/types/domain";
 import { loadDriver, saveDriver, clearDriver, getDeviceId } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
+import { timeRemaining, timeOverdue, vehicleLabel } from "@/lib/time";
 import PhoneInput from "@/components/PhoneInput";
 
 // ---------------------------------------------------------------------------
@@ -20,24 +21,27 @@ type State =
   | "recognized"      // saved driver, no active session → "Welcome back!"
   | "ask_type"        // no saved driver → "New or existing?"
   | "enter_phone"     // existing user, enter phone number
-  | "confirm"         // phone found → "Are you [name]?"
+  | "confirm"         // phone found, no session → "Are you [name]?"
   | "not_found";      // phone not in DB
-
-type Driver = SavedDriver;
-
-type ActiveSession = {
-  id: string;
-  status: "ACTIVE" | "OVERSTAY";
-  expectedEnd: string;
-  startedAt: string;
-  spot: { label: string; type: string };
-  vehicle: { licensePlate: string | null; unitNumber: string | null; type: string; nickname: string | null };
-};
 
 type DriverResponse = {
   driver: { id: string; name: string; phone: string; email: string } | null;
-  activeSessions?: ActiveSession[];
+  activeSessions?: DriverActiveSession[];
 };
+
+/** Detect if page load is a fresh QR scan (not refresh, back button, or shared link). */
+function isExternalNavigation(): boolean {
+  if (typeof window === "undefined") return false;
+  const nav = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  if (!nav || nav.type !== "navigate") return false;
+  // Internal link clicks (e.g. from home page) have same-origin referrer
+  try {
+    if (document.referrer && new URL(document.referrer).origin === window.location.origin) {
+      return false;
+    }
+  } catch { /* invalid referrer URL — treat as external */ }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -45,28 +49,22 @@ type DriverResponse = {
 export default function ScanPage() {
   const router = useRouter();
   const [state, setState] = useState<State>("init");
-  const [driver, setDriver] = useState<Driver | null>(null);
-  const [session, setSession] = useState<ActiveSession | null>(null);
+  // Single driver slot — populated on recognition or phone confirm
+  const [driver, setDriver] = useState<SavedDriver | null>(null);
+  const [session, setSession] = useState<DriverActiveSession | null>(null);
   const [phone, setPhone] = useState("");
-  const [foundDriver, setFoundDriver] = useState<Driver | null>(null);
   const [error, setError] = useState("");
   const [gateTriggered, setGateTriggered] = useState(false);
   const [gateDenied, setGateDenied] = useState(false);
   const phoneRef = useRef<HTMLInputElement>(null);
-
-  // Detect if this is a fresh navigation (QR scan) vs refresh/back/shared link
-  const isFreshNavigation = useRef(
-    typeof window !== "undefined" &&
-    (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming)?.type === "navigate"
-  );
+  const freshScan = useRef(isExternalNavigation());
 
   // Resolve a verified driver: check for active sessions, route to correct state
-  function resolveDriver(d: { id: string; name: string; phone: string }, sessions: ActiveSession[]) {
-    const fresh: Driver = { id: d.id, name: d.name, phone: d.phone };
-    saveDriver(fresh);
-    setDriver(fresh);
+  function resolveDriver(d: { id: string; name: string; phone: string }, sessions: DriverActiveSession[]) {
+    const saved: SavedDriver = { id: d.id, name: d.name, phone: d.phone };
+    saveDriver(saved);
+    setDriver(saved);
 
-    // Find first active or overstay session
     const active = sessions.find((s) => s.status === "ACTIVE");
     const overstay = sessions.find((s) => s.status === "OVERSTAY");
 
@@ -107,19 +105,16 @@ export default function ScanPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-trigger gate when entering gate_active state — only on fresh QR scan
+  // Auto-trigger gate when entering gate_active — only on fresh external scan
   useEffect(() => {
     if (state !== "gate_active" || gateTriggered) return;
-    if (!isFreshNavigation.current) {
-      // Refresh, back button, or shared link — don't auto-open
+    if (!freshScan.current) {
       setGateDenied(true);
       return;
     }
     setGateTriggered(true);
     apiPost("/api/gate", { driverId: driver?.id, sessionId: session?.id, deviceId: getDeviceId(), direction: "ENTRANCE" })
-      .catch(() => {
-        // Gate trigger failed — still show session info
-      });
+      .catch(() => {});
   }, [state, gateTriggered, driver, session]);
 
   useEffect(() => {
@@ -144,7 +139,8 @@ export default function ScanPage() {
       if (data.activeSessions && data.activeSessions.length > 0) {
         resolveDriver(data.driver, data.activeSessions);
       } else {
-        setFoundDriver({ id: data.driver.id, name: data.driver.name, phone: data.driver.phone });
+        // No active session — set as pending driver, ask to confirm
+        setDriver({ id: data.driver.id, name: data.driver.name, phone: data.driver.phone });
         setState("confirm");
       }
     } catch {
@@ -154,9 +150,8 @@ export default function ScanPage() {
   }
 
   function confirmIdentity() {
-    if (!foundDriver) return;
-    saveDriver(foundDriver);
-    setDriver(foundDriver);
+    if (!driver) return;
+    saveDriver(driver);
     router.push("/checkin?locked=true");
   }
 
@@ -167,39 +162,12 @@ export default function ScanPage() {
   function reset() {
     clearDriver();
     setDriver(null);
-    setFoundDriver(null);
     setSession(null);
     setPhone("");
     setError("");
     setGateTriggered(false);
+    setGateDenied(false);
     setState("ask_type");
-  }
-
-  // ---------------------------------------------------------------------------
-  // Time helpers
-  // ---------------------------------------------------------------------------
-  function timeRemaining(expectedEnd: string): string {
-    const diff = new Date(expectedEnd).getTime() - Date.now();
-    if (diff <= 0) return "Expired";
-    const hrs = Math.floor(diff / 3600000);
-    const mins = Math.floor((diff % 3600000) / 60000);
-    if (hrs > 0) return `${hrs}h ${mins}m`;
-    return `${mins}m`;
-  }
-
-  function timeOverdue(expectedEnd: string): string {
-    const diff = Date.now() - new Date(expectedEnd).getTime();
-    if (diff <= 0) return "0m";
-    const hrs = Math.floor(diff / 3600000);
-    const mins = Math.floor((diff % 3600000) / 60000);
-    if (hrs > 0) return `${hrs}h ${mins}m`;
-    return `${mins}m`;
-  }
-
-  function vehicleLabel(v: ActiveSession["vehicle"]): string {
-    if (v.unitNumber && v.licensePlate) return `#${v.unitNumber} · ${v.licensePlate}`;
-    if (v.unitNumber) return `#${v.unitNumber}`;
-    return v.licensePlate || "—";
   }
 
   // ---------------------------------------------------------------------------
@@ -791,20 +759,20 @@ export default function ScanPage() {
         )}
 
         {/* ── CONFIRM IDENTITY (no active session) ── */}
-        {state === "confirm" && foundDriver && (
+        {state === "confirm" && driver && (
           <div className="g-body">
             <p className="g-eyebrow">Confirm identity</p>
             <h1 className="g-h1">Is this<br />you?</h1>
             <p className="g-sub" style={{ marginBottom: 20 }}>We found a match for that number.</p>
             <div className="g-identity">
-              <div className="g-identity-name">{foundDriver.name}</div>
-              <div className="g-identity-phone">{foundDriver.phone}</div>
+              <div className="g-identity-name">{driver.name}</div>
+              <div className="g-identity-phone">{driver.phone}</div>
             </div>
             <button className="g-btn g-btn-success" onClick={confirmIdentity}>
               Yes, that&apos;s me
               <span>→</span>
             </button>
-            <button className="g-btn g-btn-ghost" style={{ marginTop: 8 }} onClick={() => { setFoundDriver(null); setPhone(""); setState("enter_phone"); }}>
+            <button className="g-btn g-btn-ghost" style={{ marginTop: 8 }} onClick={() => { setDriver(null); setPhone(""); setState("enter_phone"); }}>
               No, try a different number
               <span />
             </button>

@@ -65,6 +65,21 @@ export type ApiSessionWithRelations = ApiSession & {
   payments: ApiPayment[];
 };
 
+/** Lightweight session with spot + vehicle (from GET /api/drivers activeSessions). */
+export type DriverActiveSession = {
+  id: string;
+  status: "ACTIVE" | "OVERSTAY";
+  expectedEnd: string;
+  startedAt: string;
+  spot: { label: string; type: string };
+  vehicle: {
+    licensePlate: string | null;
+    unitNumber: string | null;
+    type: string;
+    nickname: string | null;
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
