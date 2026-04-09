@@ -113,6 +113,6 @@ export async function POST() {
       ? { id: activeSession.id, spot: spot1?.label }
       : null,
     instructions:
-      "Set localStorage: driverId = the driverId above, driverInfo = {name, email, phone}. Then visit /scan.",
+      "Set localStorage: parking_driver = {id, name, phone}. Then visit /entry.",
   });
 }

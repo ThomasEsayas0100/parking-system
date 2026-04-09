@@ -275,7 +275,7 @@ function ExitContent() {
       ) : state === "ask_type" ? (
         <AskTypeView
           onExisting={() => setState("enter_phone")}
-          onNew={() => router.push("/scan")}
+          onNew={() => router.push("/entry")}
         />
       ) : state === "enter_phone" ? (
         <EnterPhoneView
@@ -327,7 +327,7 @@ function ExitedView({ spotLabel }: { spotLabel?: string }) {
         </p>
       )}
       <p style={{ ...styles.hint, marginTop: 32 }}>
-        <Link href="/scan" style={styles.linkMuted}>
+        <Link href="/entry" style={styles.linkMuted}>
           Return to start
         </Link>
       </p>
@@ -515,7 +515,7 @@ function NoSessionView({
         </p>
       </div>
 
-      <Link href="/scan" style={styles.btn}>
+      <Link href="/entry" style={styles.btn}>
         Go to check-in
       </Link>
     </div>
@@ -603,7 +603,7 @@ function NotRegisteredView({ onBack }: { onBack: () => void }) {
           You may not have an active session, or you may need to check in first.
         </p>
       </div>
-      <Link href="/scan" style={styles.btn}>
+      <Link href="/entry" style={styles.btn}>
         Go to check-in
       </Link>
     </div>

@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { handler, json } from "@/lib/api-handler";
 import { DriverUpsertSchema, DriverLookupSchema } from "@/lib/schemas";
 
-// GET: look up driver by email or phone (used by /scan and "remember me")
+// GET: look up driver by email or phone (used by /entry, /exit and "remember me")
 export const GET = handler(
   { query: DriverLookupSchema },
   async ({ query }) => {

@@ -116,11 +116,11 @@ function CheckInContent() {
     if (isLocked) {
       // Read phone from localStorage only to make the API call — do NOT set any fields yet
       const saved = loadDriver();
-      if (!saved) { router.replace("/scan"); return; }
+      if (!saved) { router.replace("/entry"); return; }
 
       const savedPhone = saved.phone.replace(/\D/g, "");
       const savedId = saved.id;
-      if (!savedPhone || !savedId) { router.replace("/scan"); return; }
+      if (!savedPhone || !savedId) { router.replace("/entry"); return; }
 
       // Verify against API — only populate fields on confirmed match
       apiFetch<{ driver: { id: string; name: string; email: string; phone: string } | null }>(
@@ -133,11 +133,11 @@ function CheckInContent() {
             setPhone(data.driver.phone || "");
           } else {
             clearDriver();
-            router.replace("/scan");
+            router.replace("/entry");
           }
         })
         .catch(() => {
-          router.replace("/scan");
+          router.replace("/entry");
         })
         .finally(() => setVerifying(false));
       return;

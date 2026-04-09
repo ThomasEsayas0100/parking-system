@@ -247,7 +247,7 @@ function SpotAssignedPage() {
         </Link>
         <span style={{ color: "#3A3A3C" }}>·</span>
         <Link
-          href="/scan"
+          href="/entry"
           style={{
             fontSize: 13,
             fontWeight: 600,

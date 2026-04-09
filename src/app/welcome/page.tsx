@@ -57,7 +57,7 @@ function WelcomeContent() {
 
   useEffect(() => {
     if (!driverId) {
-      router.replace("/scan");
+      router.replace("/entry");
       return;
     }
 
@@ -345,7 +345,7 @@ function WelcomeContent() {
           type="button"
           onClick={() => {
             clearDriver();
-            router.replace("/scan");
+            router.replace("/entry");
           }}
           className="w-full text-center py-3 text-sm font-medium underline"
           style={{ color: "var(--fg-subtle)" }}

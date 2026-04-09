@@ -9,7 +9,7 @@ export default function Home() {
   const [exitUrl, setExitUrl] = useState("");
   useEffect(() => {
     const origin = window.location.origin;
-    setEntryUrl(`${origin}/scan`);
+    setEntryUrl(`${origin}/entry`);
     setExitUrl(`${origin}/exit`);
   }, []);
 
@@ -50,7 +50,7 @@ export default function Home() {
       {/* QR Codes — Entry and Exit */}
       {entryUrl && (
         <div style={{ display: "flex", gap: 16, width: "100%", maxWidth: 420, flexWrap: "wrap", justifyContent: "center" }}>
-          <QRCard url={entryUrl} label="Entry Gate" sublabel="/scan" color="var(--dark-green)" />
+          <QRCard url={entryUrl} label="Entry Gate" sublabel="/entry" color="var(--dark-green)" />
           <QRCard url={exitUrl} label="Exit Gate" sublabel="/exit" color="#0A84FF" />
         </div>
       )}
@@ -58,7 +58,7 @@ export default function Home() {
       {/* Cards */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%", maxWidth: 360 }}>
         {/* Scan / gate */}
-        <Link href="/scan" style={{ textDecoration: "none" }}>
+        <Link href="/entry" style={{ textDecoration: "none" }}>
           <div
             className="hover:scale-[1.02] transition-all duration-150"
             style={{

@@ -71,7 +71,7 @@ function ConfirmationContent() {
             Retry
           </button>
           <Link
-            href="/scan"
+            href="/entry"
             style={{ padding: "10px 20px", background: "var(--input-bg)", color: "var(--fg)", border: "1px solid var(--border)", borderRadius: 8, textDecoration: "none" }}
           >
             Back to start
@@ -122,7 +122,7 @@ function ConfirmationContent() {
             View your sessions
           </Link>
           <Link
-            href="/scan"
+            href="/entry"
             style={{
               display: "block",
               padding: "12px 20px",

@@ -122,7 +122,7 @@ function ExtendContent() {
             Retry
           </button>
           <Link
-            href="/scan"
+            href="/entry"
             style={{ padding: "10px 20px", background: "var(--input-bg)", color: "var(--fg)", border: "1px solid var(--border)", borderRadius: 8, textDecoration: "none" }}
           >
             Back to start
@@ -136,7 +136,7 @@ function ExtendContent() {
     return (
       <div style={{ padding: 40, textAlign: "center" }}>
         <p>No active session found.</p>
-        <Link href="/scan" style={{ color: "var(--accent)", marginTop: 16, display: "inline-block" }}>
+        <Link href="/entry" style={{ color: "var(--accent)", marginTop: 16, display: "inline-block" }}>
           Back to start
         </Link>
       </div>
