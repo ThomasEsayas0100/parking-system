@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { assignSpot } from "@/lib/spots";
+import { assignSpot, freeSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
@@ -33,8 +33,6 @@ export const POST = handler(
   async ({ body }) => {
     const { driverId, vehicleId, hours, paymentId } = body;
 
-    await verifyAndClaimPayment(paymentId);
-
     // Check if this vehicle already has an active or overstay session
     const existingSession = await prisma.session.findFirst({
       where: { vehicleId, status: { in: ["ACTIVE", "OVERSTAY"] } },
@@ -44,12 +42,20 @@ export const POST = handler(
     const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
     if (!vehicle) throw notFound("Vehicle not found");
 
-    const settings = await getSettings();
-    const rate = hourlyRate(settings, vehicle.type);
-
+    // Reserve spot BEFORE verifying payment — prevents charging with no spot
     const spot = await assignSpot(vehicle.type);
     if (!spot) throw conflict("No available spots for this vehicle type");
 
+    // Verify payment — if this fails, release the spot
+    try {
+      await verifyAndClaimPayment(paymentId);
+    } catch (err) {
+      await freeSpot(spot.id);
+      throw err;
+    }
+
+    const settings = await getSettings();
+    const rate = hourlyRate(settings, vehicle.type);
     const now = new Date();
     const expectedEnd = addHours(now, hours);
     const amount = rate * hours;
