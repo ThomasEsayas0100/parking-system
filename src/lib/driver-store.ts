@@ -41,4 +41,31 @@ export function clearDriver(): void {
   // Clean up legacy keys from older versions
   localStorage.removeItem("driverId");
   localStorage.removeItem("driverInfo");
+  // NOTE: device ID is NOT cleared here — it persists across driver resets
+}
+
+// ---------------------------------------------------------------------------
+// Device ID — anonymous, persistent, survives driver resets
+// ---------------------------------------------------------------------------
+const DEVICE_KEY = "parking_device_id";
+
+/**
+ * Get or create a stable device identifier.
+ *
+ * Generated once per browser on first visit. Persists indefinitely —
+ * not tied to any driver identity. Used to detect multi-device access
+ * patterns on gate scans.
+ */
+export function getDeviceId(): string {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch {
+    // Private browsing or localStorage disabled — generate ephemeral ID
+    return crypto.randomUUID();
+  }
 }
