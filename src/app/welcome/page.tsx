@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import type { ApiSession, ApiVehicle, ApiSpot } from "@/types/domain";
-import { loadDriver, clearDriver } from "@/lib/driver-store";
+import { loadDriver, clearDriver, getDeviceId } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
 
 type ActiveSession = Pick<ApiSession, "id" | "startedAt" | "expectedEnd" | "status"> & {
@@ -106,7 +106,12 @@ function WelcomeContent() {
     setGateLoading(session.id);
     setGateError("");
     try {
-      await apiPost("/api/gate", {});
+      await apiPost("/api/gate", {
+        driverId: loadDriver()?.id,
+        sessionId: session.id,
+        deviceId: getDeviceId(),
+        direction: "ENTRANCE",
+      });
       router.push(`/confirmation?sessionId=${session.id}&gateOpened=true`);
     } catch {
       setGateError("Gate could not be opened. Please try again.");

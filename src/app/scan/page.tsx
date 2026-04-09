@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import type { SavedDriver } from "@/types/domain";
-import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
+import { loadDriver, saveDriver, clearDriver, getDeviceId } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
 import PhoneInput from "@/components/PhoneInput";
 
@@ -104,7 +104,7 @@ export default function ScanPage() {
   useEffect(() => {
     if (state !== "gate_active" || gateTriggered) return;
     setGateTriggered(true);
-    apiPost("/api/gate", { driverId: driver?.id, sessionId: session?.id })
+    apiPost("/api/gate", { driverId: driver?.id, sessionId: session?.id, deviceId: getDeviceId(), direction: "ENTRANCE" })
       .catch(() => {
         // Gate trigger failed — still show session info
       });

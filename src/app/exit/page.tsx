@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import type { SavedDriver, ApiDriver, ApiPayment, OverstayInfo } from "@/types/domain";
-import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
+import { loadDriver, saveDriver, clearDriver, getDeviceId } from "@/lib/driver-store";
 import { apiFetch, apiPost } from "@/lib/fetch";
 import PhoneInput from "@/components/PhoneInput";
 
@@ -181,16 +181,14 @@ function ExitContent() {
     setError("");
     setState("gate_opening");
     try {
-      const data = await apiPost<{ success?: boolean; requiresPayment?: boolean; error?: string }>(
-        "/api/sessions/exit",
-        { sessionId: session.id }
-      );
-      if (data.success) {
-        setState("exited");
-      } else {
-        setError(data.error || "Something went wrong. Please try again.");
-        setState("has_session");
-      }
+      // Trigger gate + log exit direction with device ID
+      await apiPost("/api/gate", {
+        driverId: driver?.id,
+        sessionId: session.id,
+        deviceId: getDeviceId(),
+        direction: "EXIT",
+      });
+      setState("exited");
     } catch {
       setError("Network error. Please try again.");
       setState("has_session");
@@ -222,6 +220,13 @@ function ExitContent() {
       );
 
       if (exitData.success) {
+        // Trigger gate after successful overstay payment
+        await apiPost("/api/gate", {
+          driverId: driver?.id,
+          sessionId: overstayInfo.sessionId,
+          deviceId: getDeviceId(),
+          direction: "EXIT",
+        }).catch(() => {}); // gate trigger is best-effort
         setState("exited");
       } else {
         setError(exitData.error || "Exit failed. Please try again.");

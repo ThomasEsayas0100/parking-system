@@ -39,6 +39,7 @@ enum AuditAction {
   SPOT_FREED
   REMINDER_SENT
   OVERSTAY_ALERT
+  SUSPICIOUS_ENTRY
 }
 
 model Driver {

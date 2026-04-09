@@ -40,7 +40,7 @@ type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY";
 // ---------------------------------------------------------------------------
 // Log tab config
 // ---------------------------------------------------------------------------
-type LogFilter = "ALL" | "ENTRY" | "EXIT" | "EXTEND" | "OVERSTAY" | "GATE" | "ADMIN" | "NOTIFICATION";
+type LogFilter = "ALL" | "ENTRY" | "EXIT" | "EXTEND" | "OVERSTAY" | "GATE" | "ADMIN" | "NOTIFICATION" | "SECURITY";
 
 const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
   { key: "ALL", label: "All", actions: [] },
@@ -51,6 +51,7 @@ const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
   { key: "GATE", label: "Gate", actions: ["GATE_OPEN"] },
   { key: "ADMIN", label: "Admin", actions: ["SPOT_FREED"] },
   { key: "NOTIFICATION", label: "Notification", actions: ["REMINDER_SENT", "OVERSTAY_ALERT"] },
+  { key: "SECURITY", label: "Security", actions: ["SUSPICIOUS_ENTRY"] },
 ];
 
 const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }> = {
@@ -63,6 +64,7 @@ const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }>
   SPOT_FREED:       { color: "#D4500A", bg: "#2A1508", label: "Override" },
   REMINDER_SENT:    { color: "#14B8A6", bg: "#0A2421", label: "Reminder" },
   OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
+  SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },
 };
 
 const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
