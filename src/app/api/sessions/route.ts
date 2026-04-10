@@ -5,7 +5,7 @@ import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
 import { verifyAndClaimPayment } from "@/lib/payments";
-import { hourlyRate, addHours } from "@/lib/rates";
+import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionCreateSchema, idSchema } from "@/lib/schemas";
 
@@ -31,7 +31,8 @@ export const GET = handler(
 export const POST = handler(
   { body: SessionCreateSchema },
   async ({ body }) => {
-    const { driverId, vehicleId, hours, paymentId } = body;
+    const { driverId, vehicleId, durationType, hours, months, paymentId } = body;
+    const isMonthly = durationType === "MONTHLY";
 
     // Check if this vehicle already has an active or overstay session
     const existingSession = await prisma.session.findFirst({
@@ -44,7 +45,7 @@ export const POST = handler(
 
     const settings = await getSettings();
 
-    // Reserve spot BEFORE verifying payment — prevents charging with no spot
+    // Reserve spot BEFORE verifying payment
     const spot = await assignSpot(vehicle.type);
     if (!spot) throw conflict("No available spots for this vehicle type");
 
@@ -58,10 +59,25 @@ export const POST = handler(
       }
     }
 
-    const rate = hourlyRate(settings, vehicle.type);
     const now = new Date();
-    const expectedEnd = addHours(now, hours);
-    const amount = rate * hours;
+    let expectedEnd: Date;
+    let amount: number;
+    let paymentType: "CHECKIN" | "MONTHLY_CHECKIN";
+    let durationLabel: string;
+
+    if (isMonthly) {
+      const mths = months!;
+      expectedEnd = addMonths(now, mths);
+      amount = monthlyRate(settings, vehicle.type) * mths;
+      paymentType = "MONTHLY_CHECKIN";
+      durationLabel = `${mths} month${mths > 1 ? "s" : ""}`;
+    } else {
+      const hrs = hours!;
+      expectedEnd = addHours(now, hrs);
+      amount = hourlyRate(settings, vehicle.type) * hrs;
+      paymentType = "CHECKIN";
+      durationLabel = `${hrs}h`;
+    }
 
     const session = await prisma.session.create({
       data: { driverId, vehicleId, spotId: spot.id, expectedEnd },
@@ -71,10 +87,10 @@ export const POST = handler(
     await prisma.payment.create({
       data: {
         sessionId: session.id,
-        type: "CHECKIN",
+        type: paymentType,
         stripePaymentId: paymentId || `free_${Date.now()}`,
         amount: settings.paymentRequired ? amount : 0,
-        hours,
+        hours: isMonthly ? null : hours,
       },
     });
 
@@ -84,7 +100,7 @@ export const POST = handler(
       driverId,
       vehicleId,
       spotId: spot.id,
-      details: `Checked in for ${hours}h, paid $${amount.toFixed(2)}, plate: ${vehicle.licensePlate}`,
+      details: `Checked in for ${durationLabel}, paid $${amount.toFixed(2)}, plate: ${vehicle.licensePlate}`,
     });
 
     triggerGateOpen();

@@ -25,6 +25,7 @@ enum SessionStatus {
 
 enum PaymentType {
   CHECKIN
+  MONTHLY_CHECKIN
   EXTENSION
   OVERSTAY
 }
@@ -135,6 +136,8 @@ model Settings {
   id                    String  @id @default("default")
   hourlyRateBobtail     Float   @default(10.0)
   hourlyRateTruck       Float   @default(15.0)
+  monthlyRateBobtail    Float   @default(250.0)
+  monthlyRateTruck      Float   @default(400.0)
   overstayRateBobtail   Float   @default(20.0)
   overstayRateTruck     Float   @default(25.0)
   gracePeriodMinutes    Int     @default(15)

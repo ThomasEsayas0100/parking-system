@@ -25,6 +25,8 @@ export function ceilHours(start: Date, end: Date): number {
 type RateSettings = {
   hourlyRateBobtail: number;
   hourlyRateTruck: number;
+  monthlyRateBobtail: number;
+  monthlyRateTruck: number;
   overstayRateBobtail: number;
   overstayRateTruck: number;
 };
@@ -38,9 +40,23 @@ export function hourlyRate(settings: RateSettings, vehicleType: VehicleType): nu
     : settings.hourlyRateTruck;
 }
 
+/** Look up the monthly rate for a vehicle type. */
+export function monthlyRate(settings: RateSettings, vehicleType: VehicleType): number {
+  return vehicleType === "BOBTAIL"
+    ? settings.monthlyRateBobtail
+    : settings.monthlyRateTruck;
+}
+
 /** Look up the overstay (premium) hourly rate for a vehicle type. */
 export function overstayRate(settings: RateSettings, vehicleType: VehicleType): number {
   return vehicleType === "BOBTAIL"
     ? settings.overstayRateBobtail
     : settings.overstayRateTruck;
+}
+
+/** Add `months` to a base Date and return the new Date. */
+export function addMonths(base: Date, months: number): Date {
+  const result = new Date(base);
+  result.setMonth(result.getMonth() + months);
+  return result;
 }

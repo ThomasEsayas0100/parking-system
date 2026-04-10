@@ -9,8 +9,16 @@ import { loadDriver, saveDriver, clearDriver } from "@/lib/driver-store";
 import { apiFetch } from "@/lib/fetch";
 import PhoneInput from "@/components/PhoneInput";
 
-type Settings = Pick<AppSettings, "hourlyRateBobtail" | "hourlyRateTruck" | "paymentRequired">;
+type Settings = Pick<
+  AppSettings,
+  | "hourlyRateBobtail"
+  | "hourlyRateTruck"
+  | "monthlyRateBobtail"
+  | "monthlyRateTruck"
+  | "paymentRequired"
+>;
 type Vehicle = ApiVehicle;
+type DurationType = "HOURLY" | "MONTHLY";
 
 export default function CheckInPage() {
   return (
@@ -90,6 +98,8 @@ function CheckInContent() {
   const [email, setEmail] = useState(isDemo ? "demo@example.com" : "");
   const [phone, setPhone] = useState(isDemo ? "555-0100" : "");
   const [hours, setHours] = useState(4);
+  const [months, setMonths] = useState(1);
+  const [durationType, setDurationType] = useState<DurationType>("HOURLY");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -157,7 +167,7 @@ function CheckInContent() {
         .then((d) => setSettings(d.settings))
         .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
-      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18, paymentRequired: false });
+      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18, monthlyRateBobtail: 250, monthlyRateTruck: 400, paymentRequired: false });
     }
 
     // Locked mode: wait until phone is populated by the verified API response,
@@ -218,7 +228,14 @@ function CheckInContent() {
       : settings.hourlyRateTruck
     : 0;
 
-  const totalAmount = hourlyRate * hours;
+  const monthlyRate = settings
+    ? vehicleType === "BOBTAIL"
+      ? settings.monthlyRateBobtail
+      : settings.monthlyRateTruck
+    : 0;
+
+  const totalAmount =
+    durationType === "MONTHLY" ? monthlyRate * months : hourlyRate * hours;
 
   /* ---------------------------------------------------------------- */
   /*  Demo submit — no API calls, pick spot from localStorage         */
@@ -346,7 +363,8 @@ function CheckInContent() {
         body: JSON.stringify({
           driverId: driver.id,
           vehicleId,
-          hours,
+          durationType,
+          ...(durationType === "HOURLY" ? { hours } : { months }),
           ...(paymentIntentId ? { paymentId: paymentIntentId } : {}),
         }),
       });
@@ -781,63 +799,146 @@ function CheckInContent() {
             </span>
           </div>
 
-          <div>
-            <Label en="Hours" es="Horas" />
-            <div className="flex items-center gap-4">
-              <button
-                type="button"
-                onClick={() => setHours(Math.max(1, hours - 1))}
-                className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
-                style={{
-                  borderColor: "var(--border)",
-                  color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
-                  background: "var(--input-bg)",
-                  fontFamily: "var(--font-display)",
-                }}
-              >
-                −
-              </button>
-              <div className="flex-1 text-center">
-                <span className="text-5xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
-                  {hours}
-                </span>
-                <span className="text-lg ml-1 font-semibold" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
-                  hr{hours !== 1 ? "s" : ""}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setHours(Math.min(72, hours + 1))}
-                className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
-                style={{
-                  borderColor: "var(--border)",
-                  color: hours >= 72 ? "var(--fg-subtle)" : "var(--fg)",
-                  background: "var(--input-bg)",
-                  fontFamily: "var(--font-display)",
-                }}
-              >
-                +
-              </button>
-            </div>
-            <div className="flex gap-2 mt-3">
-              {[2, 4, 8, 12, 24].map((h) => (
+          {/* Duration type toggle: Hourly / Monthly */}
+          <div className="flex gap-2 mb-4">
+            {(["HOURLY", "MONTHLY"] as DurationType[]).map((dt) => {
+              const active = durationType === dt;
+              return (
                 <button
-                  key={h}
+                  key={dt}
                   type="button"
-                  onClick={() => setHours(h)}
-                  className="flex-1 py-2 rounded-md border text-sm font-semibold transition-all duration-150"
+                  onClick={() => setDurationType(dt)}
+                  className="flex-1 py-3 rounded-lg border-2 text-sm font-bold uppercase tracking-wider transition-all duration-150"
                   style={{
-                    borderColor: hours === h ? "var(--accent)" : "var(--border)",
-                    background: hours === h ? "var(--accent-light)" : "transparent",
-                    color: hours === h ? "var(--accent)" : "var(--fg-muted)",
+                    borderColor: active ? "var(--accent)" : "var(--border)",
+                    background: active ? "var(--accent-light)" : "transparent",
+                    color: active ? "var(--accent)" : "var(--fg-muted)",
                     fontFamily: "var(--font-display)",
                   }}
                 >
-                  {h}h
+                  {dt === "HOURLY" ? "Hourly" : "Monthly"}
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
+
+          {durationType === "HOURLY" ? (
+            <div>
+              <Label en="Hours" es="Horas" />
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => setHours(Math.max(1, hours - 1))}
+                  className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
+                  style={{
+                    borderColor: "var(--border)",
+                    color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                    background: "var(--input-bg)",
+                    fontFamily: "var(--font-display)",
+                  }}
+                >
+                  −
+                </button>
+                <div className="flex-1 text-center">
+                  <span className="text-5xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
+                    {hours}
+                  </span>
+                  <span className="text-lg ml-1 font-semibold" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
+                    hr{hours !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setHours(Math.min(72, hours + 1))}
+                  className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
+                  style={{
+                    borderColor: "var(--border)",
+                    color: hours >= 72 ? "var(--fg-subtle)" : "var(--fg)",
+                    background: "var(--input-bg)",
+                    fontFamily: "var(--font-display)",
+                  }}
+                >
+                  +
+                </button>
+              </div>
+              <div className="flex gap-2 mt-3">
+                {[2, 4, 8, 12, 24].map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setHours(h)}
+                    className="flex-1 py-2 rounded-md border text-sm font-semibold transition-all duration-150"
+                    style={{
+                      borderColor: hours === h ? "var(--accent)" : "var(--border)",
+                      background: hours === h ? "var(--accent-light)" : "transparent",
+                      color: hours === h ? "var(--accent)" : "var(--fg-muted)",
+                      fontFamily: "var(--font-display)",
+                    }}
+                  >
+                    {h}h
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <Label en="Months" es="Meses" />
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => setMonths(Math.max(1, months - 1))}
+                  className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
+                  style={{
+                    borderColor: "var(--border)",
+                    color: months <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                    background: "var(--input-bg)",
+                    fontFamily: "var(--font-display)",
+                  }}
+                >
+                  −
+                </button>
+                <div className="flex-1 text-center">
+                  <span className="text-5xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
+                    {months}
+                  </span>
+                  <span className="text-lg ml-1 font-semibold" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
+                    mo{months !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMonths(Math.min(12, months + 1))}
+                  className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
+                  style={{
+                    borderColor: "var(--border)",
+                    color: months >= 12 ? "var(--fg-subtle)" : "var(--fg)",
+                    background: "var(--input-bg)",
+                    fontFamily: "var(--font-display)",
+                  }}
+                >
+                  +
+                </button>
+              </div>
+              <div className="flex gap-2 mt-3">
+                {[1, 3, 6, 12].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMonths(m)}
+                    className="flex-1 py-2 rounded-md border text-sm font-semibold transition-all duration-150"
+                    style={{
+                      borderColor: months === m ? "var(--accent)" : "var(--border)",
+                      background: months === m ? "var(--accent-light)" : "transparent",
+                      color: months === m ? "var(--accent)" : "var(--fg-muted)",
+                      fontFamily: "var(--font-display)",
+                    }}
+                  >
+                    {m} mo
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         {/* ---- PRICE SUMMARY + SUBMIT ---- */}
@@ -850,7 +951,9 @@ function CheckInContent() {
               Rate / Tarifa
             </span>
             <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
-              ${hourlyRate.toFixed(2)}/hr
+              {durationType === "MONTHLY"
+                ? `$${monthlyRate.toFixed(2)}/mo`
+                : `$${hourlyRate.toFixed(2)}/hr`}
             </span>
           </div>
           <div className="flex justify-between items-baseline mb-1">
@@ -858,7 +961,9 @@ function CheckInContent() {
               Duration / Duración
             </span>
             <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
-              {hours} hr{hours !== 1 ? "s" : ""}
+              {durationType === "MONTHLY"
+                ? `${months} mo${months !== 1 ? "s" : ""}`
+                : `${hours} hr${hours !== 1 ? "s" : ""}`}
             </span>
           </div>
           <div

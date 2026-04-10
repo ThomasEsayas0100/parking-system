@@ -54,12 +54,21 @@ export type VehicleUpsertInput = z.infer<typeof VehicleUpsertSchema>;
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
-export const SessionCreateSchema = z.object({
-  driverId: idSchema,
-  vehicleId: idSchema,
-  hours: z.number().int().min(1, "min 1 hour").max(72, "max 72 hours"),
-  paymentId: z.string().min(1).max(200).optional(),
-});
+export const SessionCreateSchema = z
+  .object({
+    driverId: idSchema,
+    vehicleId: idSchema,
+    durationType: z.enum(["HOURLY", "MONTHLY"]).default("HOURLY"),
+    hours: z.number().int().min(1).max(72).optional(),
+    months: z.number().int().min(1).max(12).optional(),
+    paymentId: z.string().min(1).max(200).optional(),
+  })
+  .refine(
+    (d) =>
+      (d.durationType === "HOURLY" && d.hours != null) ||
+      (d.durationType === "MONTHLY" && d.months != null),
+    { message: "hours required for HOURLY, months required for MONTHLY" },
+  );
 export type SessionCreateInput = z.infer<typeof SessionCreateSchema>;
 
 export const SessionExtendSchema = z.object({

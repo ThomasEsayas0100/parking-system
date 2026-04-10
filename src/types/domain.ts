@@ -101,6 +101,8 @@ export type ApiAuditEntry = {
 export type AppSettings = {
   hourlyRateBobtail: number;
   hourlyRateTruck: number;
+  monthlyRateBobtail: number;
+  monthlyRateTruck: number;
   overstayRateBobtail: number;
   overstayRateTruck: number;
   gracePeriodMinutes: number;
