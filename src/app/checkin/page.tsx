@@ -16,6 +16,7 @@ type Settings = Pick<
   | "monthlyRateBobtail"
   | "monthlyRateTruck"
   | "paymentRequired"
+  | "bobtailOverflow"
 >;
 type Vehicle = ApiVehicle;
 type DurationType = "HOURLY" | "MONTHLY";
@@ -104,6 +105,10 @@ function CheckInContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Spot availability — checked on mount to warn if lot is full
+  const [availableBobtail, setAvailableBobtail] = useState<number | null>(null);
+  const [availableTruck, setAvailableTruck] = useState<number | null>(null);
+
   // Locked mode (recognized/confirmed driver)
   const [fieldsLocked, setFieldsLocked] = useState(isLocked);
   const [showEditWarning, setShowEditWarning] = useState(false);
@@ -167,7 +172,21 @@ function CheckInContent() {
         .then((d) => setSettings(d.settings))
         .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
-      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18, monthlyRateBobtail: 250, monthlyRateTruck: 400, paymentRequired: false });
+      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18, monthlyRateBobtail: 250, monthlyRateTruck: 400, paymentRequired: false, bobtailOverflow: true });
+    }
+
+    // Check spot availability — warn if the lot is full before the driver fills out the form
+    if (!isDemo) {
+      apiFetch<{ spots: { type: string; status: string }[] }>("/api/spots")
+        .then((d) => {
+          const bobtail = d.spots.filter((s) => s.type === "BOBTAIL" && s.status === "AVAILABLE").length;
+          const truck = d.spots.filter((s) => s.type === "TRUCK_TRAILER" && s.status === "AVAILABLE").length;
+          setAvailableBobtail(bobtail);
+          setAvailableTruck(truck);
+        })
+        .catch(() => {
+          // Silently fail — driver will see the error on submit if there's actually a problem
+        });
     }
 
     // Locked mode: wait until phone is populated by the verified API response,
@@ -221,6 +240,20 @@ function CheckInContent() {
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
   const vehicleType = selectedVehicle?.type || newVehicleType;
+
+  // Effective spot availability for the selected vehicle type
+  // Bobtails can use truck spots if overflow is enabled
+  const overflowEnabled = settings?.bobtailOverflow ?? true;
+  const effectiveBobtailAvailability =
+    availableBobtail === null || availableTruck === null
+      ? null
+      : availableBobtail + (overflowEnabled ? availableTruck : 0);
+  const effectiveTruckAvailability = availableTruck;
+  const spotsAvailableForSelectedType =
+    vehicleType === "BOBTAIL" ? effectiveBobtailAvailability : effectiveTruckAvailability;
+  const lotFullForSelected = spotsAvailableForSelectedType === 0;
+  const lotCompletelyFull =
+    availableBobtail === 0 && availableTruck === 0;
 
   const hourlyRate = settings
     ? vehicleType === "BOBTAIL"
@@ -287,6 +320,14 @@ function CheckInContent() {
     e.preventDefault();
     if (!settings) {
       setError("Rates not loaded. Please refresh the page.");
+      return;
+    }
+    if (lotFullForSelected) {
+      setError(
+        vehicleType === "BOBTAIL"
+          ? "No bobtail spots available. The lot is full."
+          : "No truck/trailer spots available. The lot is full.",
+      );
       return;
     }
     setLoading(true);
@@ -433,6 +474,44 @@ function CheckInContent() {
       </div>
 
       <form onSubmit={handleSubmit} autoComplete="off" className="max-w-lg mx-auto px-5 py-6 space-y-5">
+
+        {/* ---- LOT AVAILABILITY WARNING ---- */}
+        {!isDemo && lotCompletelyFull && (
+          <div
+            className="rounded-xl p-4 border-2"
+            style={{
+              background: "#FEF2F2",
+              borderColor: "var(--error)",
+              color: "var(--error)",
+            }}
+          >
+            <div className="font-bold text-sm mb-1" style={{ fontFamily: "var(--font-display)", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+              Lot is full
+            </div>
+            <div className="text-xs" style={{ color: "var(--fg-muted)" }}>
+              All parking spots are currently occupied. Please come back later or contact the manager.
+            </div>
+          </div>
+        )}
+        {!isDemo && !lotCompletelyFull && lotFullForSelected && (
+          <div
+            className="rounded-xl p-4 border-2"
+            style={{
+              background: "#FFF7E6",
+              borderColor: "#F59E0B",
+              color: "#92400E",
+            }}
+          >
+            <div className="font-bold text-sm mb-1" style={{ fontFamily: "var(--font-display)", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+              {vehicleType === "BOBTAIL" ? "No bobtail spots" : "No truck/trailer spots"}
+            </div>
+            <div className="text-xs" style={{ color: "var(--fg-muted)" }}>
+              {vehicleType === "BOBTAIL"
+                ? "No bobtail spots are available. Try selecting a different vehicle type."
+                : "No truck/trailer spots are available. Try selecting a different vehicle type."}
+            </div>
+          </div>
+        )}
 
         {/* ---- DRIVER INFO ---- */}
         <section
@@ -1001,20 +1080,23 @@ function CheckInContent() {
         {/* Submit button */}
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || (!isDemo && lotFullForSelected)}
           className="w-full py-4 rounded-xl text-lg font-bold tracking-wider uppercase text-white transition-all duration-150 active:scale-[0.98]"
           style={{
-            background: loading
-              ? "var(--fg-subtle)"
-              : isDemo
-              ? "#0A84FF"
-              : "var(--accent)",
+            background:
+              loading || (!isDemo && lotFullForSelected)
+                ? "var(--fg-subtle)"
+                : isDemo
+                ? "#0A84FF"
+                : "var(--accent)",
             fontFamily: "var(--font-display)",
-            boxShadow: loading
-              ? "none"
-              : isDemo
-              ? "0 4px 12px rgba(10, 132, 255, 0.35)"
-              : "0 4px 12px rgba(212, 80, 10, 0.3)",
+            boxShadow:
+              loading || (!isDemo && lotFullForSelected)
+                ? "none"
+                : isDemo
+                ? "0 4px 12px rgba(10, 132, 255, 0.35)"
+                : "0 4px 12px rgba(45, 122, 74, 0.3)",
+            cursor: !isDemo && lotFullForSelected ? "not-allowed" : undefined,
           }}
         >
           {loading ? (
@@ -1024,6 +1106,8 @@ function CheckInContent() {
               </svg>
               {isDemo ? "Finding your spot..." : "Processing..."}
             </span>
+          ) : !isDemo && lotFullForSelected ? (
+            "Lot Full — No Spots Available"
           ) : isDemo ? (
             "Find My Spot →"
           ) : (
