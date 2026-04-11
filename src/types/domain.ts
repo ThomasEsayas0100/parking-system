@@ -113,6 +113,8 @@ export type AppSettings = {
   managerPhone: string;
   bobtailOverflow: boolean;
   paymentRequired: boolean;
+  termsVersion: string;
+  termsBody: string;
 };
 
 // ---------------------------------------------------------------------------

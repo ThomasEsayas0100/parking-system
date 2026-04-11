@@ -62,6 +62,11 @@ export const SessionCreateSchema = z
     hours: z.number().int().min(1).max(72).optional(),
     months: z.number().int().min(1).max(12).optional(),
     paymentId: z.string().min(1).max(200).optional(),
+    // Clickwrap consent — required for new sessions
+    termsVersion: z.string().min(1).max(50),
+    overstayAuthorized: z.boolean().refine((v) => v === true, {
+      message: "Overstay authorization required",
+    }),
   })
   .refine(
     (d) =>

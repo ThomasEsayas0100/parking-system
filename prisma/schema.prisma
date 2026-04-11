@@ -88,22 +88,25 @@ model Spot {
 }
 
 model Session {
-  id           String        @id @default(uuid())
-  spotId       String
-  spot         Spot          @relation(fields: [spotId], references: [id])
-  driverId     String
-  driver       Driver        @relation(fields: [driverId], references: [id])
-  vehicleId    String
-  vehicle      Vehicle       @relation(fields: [vehicleId], references: [id])
-  startedAt    DateTime      @default(now())
-  expectedEnd  DateTime
-  endedAt      DateTime?
-  status       SessionStatus @default(ACTIVE)
-  reminderSent Boolean       @default(false)
-  payments     Payment[]
-  auditLogs    AuditLog[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id                 String        @id @default(uuid())
+  spotId             String
+  spot               Spot          @relation(fields: [spotId], references: [id])
+  driverId           String
+  driver             Driver        @relation(fields: [driverId], references: [id])
+  vehicleId          String
+  vehicle            Vehicle       @relation(fields: [vehicleId], references: [id])
+  startedAt          DateTime      @default(now())
+  expectedEnd        DateTime
+  endedAt            DateTime?
+  status             SessionStatus @default(ACTIVE)
+  reminderSent       Boolean       @default(false)
+  // Terms acceptance (clickwrap consent record)
+  termsVersion       String?
+  overstayAuthorized Boolean       @default(false)
+  payments           Payment[]
+  auditLogs          AuditLog[]
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 }
 
 model Payment {
@@ -149,4 +152,7 @@ model Settings {
   bobtailOverflow       Boolean @default(true)
   paymentRequired       Boolean @default(true)
   lotGroups             Json    @default("[]")
+  // Clickwrap terms — admin editable, version bumped when text changes
+  termsVersion          String  @default("1.0")
+  termsBody             String  @default("")
 }

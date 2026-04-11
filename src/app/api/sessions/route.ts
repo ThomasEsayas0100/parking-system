@@ -31,7 +31,7 @@ export const GET = handler(
 export const POST = handler(
   { body: SessionCreateSchema },
   async ({ body }) => {
-    const { driverId, vehicleId, durationType, hours, months, paymentId } = body;
+    const { driverId, vehicleId, durationType, hours, months, paymentId, termsVersion, overstayAuthorized } = body;
     const isMonthly = durationType === "MONTHLY";
 
     // Check if this vehicle already has an active or overstay session
@@ -44,6 +44,11 @@ export const POST = handler(
     if (!vehicle) throw notFound("Vehicle not found");
 
     const settings = await getSettings();
+
+    // Terms version must match the current version in settings
+    if (termsVersion !== settings.termsVersion) {
+      throw conflict("Terms have been updated. Please reload the page and accept the current terms.");
+    }
 
     // Reserve spot BEFORE verifying payment
     const spot = await assignSpot(vehicle.type);
@@ -80,7 +85,14 @@ export const POST = handler(
     }
 
     const session = await prisma.session.create({
-      data: { driverId, vehicleId, spotId: spot.id, expectedEnd },
+      data: {
+        driverId,
+        vehicleId,
+        spotId: spot.id,
+        expectedEnd,
+        termsVersion,
+        overstayAuthorized,
+      },
       include: { spot: true, driver: true, vehicle: true, payments: true },
     });
 
@@ -100,7 +112,7 @@ export const POST = handler(
       driverId,
       vehicleId,
       spotId: spot.id,
-      details: `Checked in for ${durationLabel}, paid $${amount.toFixed(2)}, plate: ${vehicle.licensePlate}`,
+      details: `Checked in for ${durationLabel}, paid $${amount.toFixed(2)}, plate: ${vehicle.licensePlate}, terms:v${termsVersion}`,
     });
 
     triggerGateOpen();

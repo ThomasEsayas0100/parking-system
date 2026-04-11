@@ -690,6 +690,35 @@ export default function AdminDashboard() {
                   </label>
                 </div>
               </SettingsGroup>
+
+              <SettingsGroup title="Parking Terms (Clickwrap)">
+                <div>
+                  <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Version</label>
+                  <input
+                    type="text"
+                    value={settingsForm.termsVersion ?? ""}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, termsVersion: e.target.value })}
+                    style={inputStyle}
+                    placeholder="1.0"
+                  />
+                  <div style={{ fontSize: 10, color: FG_DIM, marginTop: 4 }}>
+                    Bump this whenever you change the terms text below. Existing sessions stay bound to their original version.
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Terms body (shown to driver at check-in)</label>
+                  <textarea
+                    value={settingsForm.termsBody ?? ""}
+                    onChange={(e) => setSettingsForm({ ...settingsForm, termsBody: e.target.value })}
+                    style={{ ...inputStyle, minHeight: 220, fontFamily: "inherit", resize: "vertical" as const, lineHeight: 1.5 }}
+                    placeholder="Enter the terms drivers must accept to check in..."
+                  />
+                  <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 6 }}>
+                    ⚠ Have a Texas attorney review this text before production. Clickwrap consent is only enforceable if the terms are clear and the driver actively agrees.
+                  </div>
+                </div>
+              </SettingsGroup>
+
               <button type="submit" style={{ padding: "12px 24px", background: FG, color: DARK_BG, border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", alignSelf: "flex-start" }}>
                 Save Settings
               </button>

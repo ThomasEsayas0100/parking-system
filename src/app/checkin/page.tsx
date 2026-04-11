@@ -15,8 +15,13 @@ type Settings = Pick<
   | "hourlyRateTruck"
   | "monthlyRateBobtail"
   | "monthlyRateTruck"
+  | "overstayRateBobtail"
+  | "overstayRateTruck"
   | "paymentRequired"
   | "bobtailOverflow"
+  | "termsVersion"
+  | "termsBody"
+  | "gracePeriodMinutes"
 >;
 type Vehicle = ApiVehicle;
 type DurationType = "HOURLY" | "MONTHLY";
@@ -109,6 +114,10 @@ function CheckInContent() {
   const [availableBobtail, setAvailableBobtail] = useState<number | null>(null);
   const [availableTruck, setAvailableTruck] = useState<number | null>(null);
 
+  // Clickwrap consent state
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [overstayAuthorized, setOverstayAuthorized] = useState(false);
+
   // Locked mode (recognized/confirmed driver)
   const [fieldsLocked, setFieldsLocked] = useState(isLocked);
   const [showEditWarning, setShowEditWarning] = useState(false);
@@ -172,7 +181,19 @@ function CheckInContent() {
         .then((d) => setSettings(d.settings))
         .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
-      setSettings({ hourlyRateBobtail: 12, hourlyRateTruck: 18, monthlyRateBobtail: 250, monthlyRateTruck: 400, paymentRequired: false, bobtailOverflow: true });
+      setSettings({
+        hourlyRateBobtail: 12,
+        hourlyRateTruck: 18,
+        monthlyRateBobtail: 250,
+        monthlyRateTruck: 400,
+        overstayRateBobtail: 20,
+        overstayRateTruck: 25,
+        paymentRequired: false,
+        bobtailOverflow: true,
+        termsVersion: "demo",
+        termsBody: "Demo mode — no terms acceptance required.",
+        gracePeriodMinutes: 15,
+      });
     }
 
     // Check spot availability — warn if the lot is full before the driver fills out the form
@@ -322,6 +343,10 @@ function CheckInContent() {
       setError("Rates not loaded. Please refresh the page.");
       return;
     }
+    if (!termsAccepted || !overstayAuthorized) {
+      setError("Please read and accept the parking terms and overstay authorization.");
+      return;
+    }
     if (lotFullForSelected) {
       setError(
         vehicleType === "BOBTAIL"
@@ -407,6 +432,8 @@ function CheckInContent() {
           durationType,
           ...(durationType === "HOURLY" ? { hours } : { months }),
           ...(paymentIntentId ? { paymentId: paymentIntentId } : {}),
+          termsVersion: settings.termsVersion,
+          overstayAuthorized: true,
         }),
       });
       const sessionData = await sessionRes.json();
@@ -1067,6 +1094,74 @@ function CheckInContent() {
           </div>
         </section>
 
+        {/* ---- TERMS & CONSENT ---- */}
+        {!isDemo && settings && (
+          <section
+            className="rounded-xl p-5 space-y-4 border"
+            style={{ background: "var(--bg-card)", borderColor: "var(--border)" }}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold text-white"
+                style={{ background: "var(--accent)", fontFamily: "var(--font-display)" }}
+              >
+                4
+              </div>
+              <h2 className="text-lg font-bold tracking-wide uppercase" style={{ fontFamily: "var(--font-display)" }}>
+                Terms & Authorization
+              </h2>
+            </div>
+
+            {/* Scrollable terms box */}
+            <div
+              className="rounded-lg p-4 text-xs leading-relaxed whitespace-pre-wrap"
+              style={{
+                background: "var(--input-bg)",
+                border: "1px solid var(--border)",
+                color: "var(--fg-muted)",
+                maxHeight: 200,
+                overflowY: "auto",
+              }}
+            >
+              {settings.termsBody || "Terms not configured. Please contact the manager."}
+            </div>
+            <div className="text-[10px] font-semibold" style={{ color: "var(--fg-subtle)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Version {settings.termsVersion}
+            </div>
+
+            {/* Consent checkboxes */}
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={termsAccepted}
+                onChange={(e) => setTermsAccepted(e.target.checked)}
+                className="mt-1 flex-shrink-0"
+                style={{ width: 18, height: 18, accentColor: "var(--accent)" }}
+              />
+              <span className="text-sm" style={{ color: "var(--fg)" }}>
+                I have read and agree to the parking terms above.
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={overstayAuthorized}
+                onChange={(e) => setOverstayAuthorized(e.target.checked)}
+                className="mt-1 flex-shrink-0"
+                style={{ width: 18, height: 18, accentColor: "var(--accent)" }}
+              />
+              <span className="text-sm" style={{ color: "var(--fg)" }}>
+                I authorize automatic charging of my payment method for overstay fees at the posted rate (
+                <strong>
+                  ${vehicleType === "BOBTAIL" ? settings.overstayRateBobtail : settings.overstayRateTruck}/hr
+                </strong>
+                {" "}after a {settings.gracePeriodMinutes}-minute grace period), billed per hour or portion thereof.
+              </span>
+            </label>
+          </section>
+        )}
+
         {/* Error */}
         {error && (
           <div
@@ -1078,42 +1173,48 @@ function CheckInContent() {
         )}
 
         {/* Submit button */}
-        <button
-          type="submit"
-          disabled={loading || (!isDemo && lotFullForSelected)}
-          className="w-full py-4 rounded-xl text-lg font-bold tracking-wider uppercase text-white transition-all duration-150 active:scale-[0.98]"
-          style={{
-            background:
-              loading || (!isDemo && lotFullForSelected)
-                ? "var(--fg-subtle)"
-                : isDemo
-                ? "#0A84FF"
-                : "var(--accent)",
-            fontFamily: "var(--font-display)",
-            boxShadow:
-              loading || (!isDemo && lotFullForSelected)
-                ? "none"
-                : isDemo
-                ? "0 4px 12px rgba(10, 132, 255, 0.35)"
-                : "0 4px 12px rgba(45, 122, 74, 0.3)",
-            cursor: !isDemo && lotFullForSelected ? "not-allowed" : undefined,
-          }}
-        >
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" />
-              </svg>
-              {isDemo ? "Finding your spot..." : "Processing..."}
-            </span>
-          ) : !isDemo && lotFullForSelected ? (
-            "Lot Full — No Spots Available"
-          ) : isDemo ? (
-            "Find My Spot →"
-          ) : (
-            <>Pay ${totalAmount.toFixed(2)} &amp; Check In</>
-          )}
-        </button>
+        {(() => {
+          const consentMissing = !isDemo && (!termsAccepted || !overstayAuthorized);
+          const disabled = loading || (!isDemo && lotFullForSelected) || consentMissing;
+          return (
+            <button
+              type="submit"
+              disabled={disabled}
+              className="w-full py-4 rounded-xl text-lg font-bold tracking-wider uppercase text-white transition-all duration-150 active:scale-[0.98]"
+              style={{
+                background: disabled
+                  ? "var(--fg-subtle)"
+                  : isDemo
+                  ? "#0A84FF"
+                  : "var(--accent)",
+                fontFamily: "var(--font-display)",
+                boxShadow: disabled
+                  ? "none"
+                  : isDemo
+                  ? "0 4px 12px rgba(10, 132, 255, 0.35)"
+                  : "0 4px 12px rgba(45, 122, 74, 0.3)",
+                cursor: disabled ? "not-allowed" : undefined,
+              }}
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round" />
+                  </svg>
+                  {isDemo ? "Finding your spot..." : "Processing..."}
+                </span>
+              ) : !isDemo && lotFullForSelected ? (
+                "Lot Full — No Spots Available"
+              ) : consentMissing ? (
+                "Accept Terms to Continue"
+              ) : isDemo ? (
+                "Find My Spot →"
+              ) : (
+                <>Pay ${totalAmount.toFixed(2)} &amp; Check In</>
+              )}
+            </button>
+          );
+        })()}
 
         <p className="text-center text-xs pb-6" style={{ color: "var(--fg-subtle)" }}>
           {isDemo
