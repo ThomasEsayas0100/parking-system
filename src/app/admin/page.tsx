@@ -137,9 +137,34 @@ export default function AdminDashboard() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
-  const [tab, setTab] = useState<"overview" | "sessions" | "log" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "sessions" | "drivers" | "log" | "settings">("overview");
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+
+  // ── Drivers tab state ──
+  type DriverRow = {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+    vehicles: { id: string; licensePlate: string | null; unitNumber: string | null; type: string; nickname: string | null }[];
+    sessions: { id: string; status: string; spot: { label: string } }[];
+    _count: { sessions: number };
+  };
+  const [drivers, setDrivers] = useState<DriverRow[]>([]);
+  const [driversTotal, setDriversTotal] = useState(0);
+  const [driversSearch, setDriversSearch] = useState("");
+  const [driversOffset, setDriversOffset] = useState(0);
+  const [driversLoading, setDriversLoading] = useState(false);
+  const [editingDriver, setEditingDriver] = useState<DriverRow | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const DRIVERS_LIMIT = 30;
+
+  // ── Session actions state ──
+  const [sessionAction, setSessionAction] = useState<{ id: string; type: "extend" | "cancel" } | null>(null);
+  const [sessionActionHours, setSessionActionHours] = useState(4);
+  const [sessionActionReason, setSessionActionReason] = useState("");
+  const [sessionActionLoading, setSessionActionLoading] = useState(false);
 
   // ── Overview / lot map state ──
   const editor = useEditorReducer();
@@ -192,6 +217,22 @@ export default function AdminDashboard() {
       .finally(() => setSessionsLoading(false));
   }, [sessQueryStr]);
 
+  const driversQueryStr = useMemo(() => {
+    const p = new URLSearchParams();
+    p.set("limit", String(DRIVERS_LIMIT));
+    p.set("offset", String(driversOffset));
+    if (driversSearch.trim()) p.set("q", driversSearch.trim());
+    return p.toString();
+  }, [driversSearch, driversOffset]);
+
+  const loadDrivers = useCallback(() => {
+    setDriversLoading(true);
+    apiFetch<{ drivers: DriverRow[]; total: number }>(`/api/admin/drivers?${driversQueryStr}`)
+      .then((d) => { setDrivers(d.drivers); setDriversTotal(d.total); })
+      .catch(() => setDrivers([]))
+      .finally(() => setDriversLoading(false));
+  }, [driversQueryStr]);
+
   const loadLog = useCallback((filter: LogFilter, offset: number) => {
     setLogLoading(true);
     const category = LOG_CATEGORIES.find((c) => c.key === filter);
@@ -220,7 +261,8 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     if (tab === "sessions") loadSessions();
-  }, [tab, loadSessions]);
+    if (tab === "drivers") loadDrivers();
+  }, [tab, loadSessions, loadDrivers]);
 
   useEffect(() => {
     if (tab === "log") loadLog(logFilter, logOffset);
@@ -228,6 +270,7 @@ export default function AdminDashboard() {
 
   // Reset offset when filters change
   useEffect(() => { setSessOffset(0); }, [sessSearch, sessStatus]);
+  useEffect(() => { setDriversOffset(0); }, [driversSearch]);
 
   // ── Derived state ──
   const lotStatuses = useMemo<Record<string, LotSpotStatus>>(() => {
@@ -299,12 +342,48 @@ export default function AdminDashboard() {
     loadData();
   }
 
+  // ── Session actions ──
+  async function handleSessionAction() {
+    if (!sessionAction) return;
+    setSessionActionLoading(true);
+    try {
+      await fetch("/api/admin/sessions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: sessionAction.id,
+          action: sessionAction.type,
+          ...(sessionAction.type === "extend" ? { hours: sessionActionHours } : { reason: sessionActionReason }),
+        }),
+      });
+      setSessionAction(null);
+      setSessionActionHours(4);
+      setSessionActionReason("");
+      loadSessions();
+      loadData(); // refresh overview
+    } catch { /* silent */ }
+    finally { setSessionActionLoading(false); }
+  }
+
+  // ── Driver update ──
+  async function handleSaveDriver() {
+    if (!editingDriver) return;
+    await fetch("/api/admin/drivers", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: editingDriver.id, ...editForm }),
+    });
+    setEditingDriver(null);
+    loadDrivers();
+  }
+
   // ═════════════════════════════════════════════════════════════════════════
   // Render
   // ═════════════════════════════════════════════════════════════════════════
   const tabs: { key: typeof tab; label: string }[] = [
     { key: "overview", label: "Overview" },
     { key: "sessions", label: "Sessions" },
+    { key: "drivers", label: "Drivers" },
     { key: "log", label: "Log" },
     { key: "settings", label: "Settings" },
   ];
@@ -535,7 +614,7 @@ export default function AdminDashboard() {
                               {s.payments.map((p) => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
                                   <span style={{ color: p.type === "OVERSTAY" ? "#DC2626" : FG_MUTED }}>
-                                    {p.type === "CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
+                                    {p.type === "CHECKIN" || p.type === "MONTHLY_CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
                                     {p.hours ? ` (${p.hours}h)` : ""}
                                   </span>
                                   <span style={{ color: FG, fontVariantNumeric: "tabular-nums" }}>${p.amount.toFixed(2)}</span>
@@ -546,6 +625,43 @@ export default function AdminDashboard() {
                                 <span style={{ color: FG, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>${total.toFixed(2)}</span>
                               </div>
                             </DetailCol>
+
+                            {/* Admin actions */}
+                            {s.status !== "COMPLETED" && (
+                              <div style={{ gridColumn: mobile ? undefined : "1 / -1", borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 4 }}>
+                                {sessionAction?.id === s.id ? (
+                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                    {sessionAction.type === "extend" && (
+                                      <>
+                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Add hours:</span>
+                                        <input type="number" min={1} max={720} value={sessionActionHours} onChange={(e) => setSessionActionHours(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
+                                      </>
+                                    )}
+                                    {sessionAction.type === "cancel" && (
+                                      <>
+                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
+                                        <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="Required" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
+                                      </>
+                                    )}
+                                    <button onClick={handleSessionAction} disabled={sessionActionLoading} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: sessionAction.type === "cancel" ? "#DC2626" : "#2D7A4A", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                      {sessionActionLoading ? "..." : sessionAction.type === "extend" ? "Extend" : "Cancel Session"}
+                                    </button>
+                                    <button onClick={() => setSessionAction(null)} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
+                                      Back
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div style={{ display: "flex", gap: 8 }}>
+                                    <button onClick={() => setSessionAction({ id: s.id, type: "extend" })} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                      Extend Time
+                                    </button>
+                                    <button onClick={() => setSessionAction({ id: s.id, type: "cancel" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                      Cancel Session
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -564,6 +680,148 @@ export default function AdminDashboard() {
                     </span>
                     <button onClick={() => setSessOffset(sessOffset + SESS_LIMIT)} disabled={!sessionsData.hasMore} style={paginationBtn(!sessionsData.hasMore, mobile)}>
                       Older →
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ═══ DRIVERS ═══ */}
+        {tab === "drivers" && (
+          <div>
+            {/* Search */}
+            <div style={{ marginBottom: 16 }}>
+              <input
+                type="text"
+                placeholder="Search by name, phone, email, plate, unit #…"
+                value={driversSearch}
+                onChange={(e) => setDriversSearch(e.target.value)}
+                style={{ ...inputStyle, maxWidth: mobile ? "100%" : 400 }}
+              />
+            </div>
+
+            {/* Driver edit modal */}
+            {editingDriver && (
+              <div style={{ background: CARD_BG, borderRadius: RADIUS, border: `1px solid ${BORDER}`, padding: 20, marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 }}>
+                  Edit Driver
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Name</label>
+                    <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Email</label>
+                    <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} style={inputStyle} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Phone</label>
+                    <input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} style={inputStyle} />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    <button onClick={handleSaveDriver} style={{ padding: "8px 18px", borderRadius: 6, border: "none", background: "#2D7A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                      Save
+                    </button>
+                    <button onClick={() => setEditingDriver(null)} style={{ padding: "8px 18px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 13, cursor: "pointer" }}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Driver list */}
+            {driversLoading ? (
+              <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>Loading…</p>
+            ) : drivers.length === 0 ? (
+              <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>No drivers found.</p>
+            ) : (
+              <>
+                <div style={{ fontSize: 11, color: FG_DIM, marginBottom: 10 }}>
+                  {driversOffset + 1}–{Math.min(driversOffset + DRIVERS_LIMIT, driversTotal)} of {driversTotal} drivers
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {drivers.map((d) => {
+                    const activeSession = d.sessions[0];
+                    return (
+                      <div
+                        key={d.id}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: mobile ? "1fr auto" : "1fr 1fr auto auto",
+                          gap: mobile ? 8 : 16,
+                          alignItems: "center",
+                          padding: mobile ? "12px 14px" : "14px 16px",
+                          background: CARD_BG,
+                          borderRadius: RADIUS,
+                        }}
+                      >
+                        {/* Name + phone */}
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {d.name}
+                          </div>
+                          <div style={{ fontSize: 12, color: FG_DIM }}>
+                            {d.phone} {d.email && <span style={{ color: FG_DIM }}>· {d.email}</span>}
+                          </div>
+                          {mobile && (
+                            <div style={{ fontSize: 11, color: FG_DIM, marginTop: 2 }}>
+                              {d.vehicles.length} vehicle{d.vehicles.length !== 1 ? "s" : ""} · {d._count.sessions} session{d._count.sessions !== 1 ? "s" : ""}
+                              {activeSession && <span style={{ color: "#2D7A4A" }}> · Active @ {activeSession.spot.label}</span>}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Vehicles + sessions — desktop */}
+                        {!mobile && (
+                          <div style={{ fontSize: 12, color: FG_MUTED, minWidth: 0 }}>
+                            <div>{d.vehicles.map((v) => v.licensePlate || v.unitNumber || "—").join(", ")}</div>
+                            <div style={{ color: FG_DIM }}>{d._count.sessions} session{d._count.sessions !== 1 ? "s" : ""}</div>
+                          </div>
+                        )}
+
+                        {/* Status */}
+                        {!mobile && (
+                          activeSession ? (
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A", whiteSpace: "nowrap" }}>
+                              Active · {activeSession.spot.label}
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "4px 10px", borderRadius: 4, background: CARD_BG, color: FG_DIM }}>
+                              Inactive
+                            </span>
+                          )
+                        )}
+
+                        {/* Edit button */}
+                        <button
+                          onClick={() => {
+                            setEditingDriver(d);
+                            setEditForm({ name: d.name, email: d.email, phone: d.phone });
+                          }}
+                          style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Pagination */}
+                {driversTotal > DRIVERS_LIMIT && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
+                    <button onClick={() => setDriversOffset(Math.max(0, driversOffset - DRIVERS_LIMIT))} disabled={driversOffset === 0} style={paginationBtn(driversOffset === 0, mobile)}>
+                      ← Prev
+                    </button>
+                    <span style={{ fontSize: 11, color: FG_DIM }}>
+                      {driversOffset + 1}–{Math.min(driversOffset + DRIVERS_LIMIT, driversTotal)} of {driversTotal}
+                    </span>
+                    <button onClick={() => setDriversOffset(driversOffset + DRIVERS_LIMIT)} disabled={driversOffset + DRIVERS_LIMIT >= driversTotal} style={paginationBtn(driversOffset + DRIVERS_LIMIT >= driversTotal, mobile)}>
+                      Next →
                     </button>
                   </div>
                 )}
