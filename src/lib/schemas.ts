@@ -131,6 +131,7 @@ export const AuditActionSchema = z.enum([
   "REMINDER_SENT", "OVERSTAY_ALERT",
   "SUSPICIOUS_ENTRY",
   "GATE_DENIED",
+  "ALLOWLIST_ENTRY",
 ]);
 
 export const AuditQuerySchema = z.object({

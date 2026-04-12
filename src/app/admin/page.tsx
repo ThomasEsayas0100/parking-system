@@ -52,7 +52,7 @@ const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
   { key: "GATE", label: "Gate", actions: ["GATE_OPEN"] },
   { key: "ADMIN", label: "Admin", actions: ["SPOT_FREED"] },
   { key: "NOTIFICATION", label: "Notification", actions: ["REMINDER_SENT", "OVERSTAY_ALERT"] },
-  { key: "SECURITY", label: "Security", actions: ["SUSPICIOUS_ENTRY", "GATE_DENIED"] },
+  { key: "SECURITY", label: "Security", actions: ["SUSPICIOUS_ENTRY", "GATE_DENIED", "ALLOWLIST_ENTRY"] },
 ];
 
 const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }> = {
@@ -67,6 +67,7 @@ const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }>
   OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
   SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },
   GATE_DENIED:      { color: "#F87171", bg: "#2C1810", label: "Denied" },
+  ALLOWLIST_ENTRY:  { color: "#60A5FA", bg: "#0A1A30", label: "Allow list" },
 };
 
 const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
@@ -981,6 +982,9 @@ export default function AdminDashboard() {
                 Save Settings
               </button>
             </form>
+
+            {/* Allow list management */}
+            <AllowListManager mobile={mobile} />
           </div>
         )}
 
@@ -992,6 +996,118 @@ export default function AdminDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════
 // Sub-components
 // ═══════════════════════════════════════════════════════════════════════════
+
+function AllowListManager({ mobile }: { mobile: boolean }) {
+  type Entry = { id: string; phone: string; name: string; label: string; active: boolean };
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [addName, setAddName] = useState("");
+  const [addPhone, setAddPhone] = useState("");
+  const [addLabel, setAddLabel] = useState("Employee");
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetch("/api/admin/allowlist").then((r) => r.json())
+      .then((d) => setEntries(d.entries ?? []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleAdd() {
+    if (!addName.trim() || !addPhone.trim()) return;
+    await fetch("/api/admin/allowlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: addName, phone: addPhone, label: addLabel }),
+    });
+    setAddName(""); setAddPhone(""); setAddLabel("Employee");
+    load();
+  }
+
+  async function handleToggle(id: string, active: boolean) {
+    await fetch("/api/admin/allowlist", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, active: !active }),
+    });
+    load();
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm("Remove this person from the allow list?")) return;
+    await fetch("/api/admin/allowlist", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    load();
+  }
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 16 }}>
+        Allow List (Employees, Family, etc.)
+      </div>
+
+      {/* Add form */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <input placeholder="Name" value={addName} onChange={(e) => setAddName(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
+        <input placeholder="Phone" value={addPhone} onChange={(e) => setAddPhone(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
+        <select value={addLabel} onChange={(e) => setAddLabel(e.target.value)} style={{ ...inputStyle, width: mobile ? "100%" : 130 }}>
+          <option>Employee</option>
+          <option>Family</option>
+          <option>Vendor</option>
+          <option>Contractor</option>
+        </select>
+        <button onClick={handleAdd} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "#2D7A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+          Add
+        </button>
+      </div>
+
+      {/* List */}
+      {loading ? (
+        <p style={{ color: FG_DIM, fontSize: 13 }}>Loading…</p>
+      ) : entries.length === 0 ? (
+        <p style={{ color: FG_DIM, fontSize: 13 }}>No entries. Add employees or family above.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {entries.map((e) => (
+            <div
+              key={e.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "10px 14px",
+                background: CARD_BG,
+                borderRadius: 8,
+                opacity: e.active ? 1 : 0.5,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: FG }}>{e.name}</div>
+                <div style={{ fontSize: 11, color: FG_DIM }}>{e.phone} · {e.label}</div>
+              </div>
+              <button
+                onClick={() => handleToggle(e.id, e.active)}
+                style={{ padding: "4px 10px", borderRadius: 4, border: `1px solid ${BORDER}`, background: "transparent", color: e.active ? "#2D7A4A" : FG_DIM, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+              >
+                {e.active ? "Active" : "Disabled"}
+              </button>
+              <button
+                onClick={() => handleDelete(e.id)}
+                style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 11, cursor: "pointer" }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function DetailCol({ title, children }: { title: string; children: React.ReactNode }) {
   return (

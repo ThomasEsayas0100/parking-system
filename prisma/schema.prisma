@@ -42,6 +42,16 @@ enum AuditAction {
   OVERSTAY_ALERT
   SUSPICIOUS_ENTRY
   GATE_DENIED
+  ALLOWLIST_ENTRY
+}
+
+model AllowList {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  name      String
+  label     String   @default("Employee")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
 }
 
 model Driver {

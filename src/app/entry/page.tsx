@@ -18,11 +18,14 @@ type State =
   | "checking"        // API in flight
   | "gate_active"     // has active session → gate opening on load
   | "gate_overstay"   // has overstay session → show fee, no gate
+  | "allowlist"       // on allow list → gate opening, no session needed
   | "recognized"      // saved driver, no active session → "Welcome back!"
   | "ask_type"        // no saved driver → "New or existing?"
   | "enter_phone"     // existing user, enter phone number
   | "confirm"         // phone found, no session → "Are you [name]?"
   | "not_found";      // phone not in DB
+
+type AllowListEntry = { name: string; label: string };
 
 type DriverResponse = {
   driver: { id: string; name: string; phone: string; email: string } | null;
@@ -52,12 +55,28 @@ export default function ScanPage() {
   // Single driver slot — populated on recognition or phone confirm
   const [driver, setDriver] = useState<SavedDriver | null>(null);
   const [session, setSession] = useState<DriverActiveSession | null>(null);
+  const [allowEntry, setAllowEntry] = useState<AllowListEntry | null>(null);
   const [phone, setPhone] = useState("");
   const [error, setError] = useState("");
   const [gateTriggered, setGateTriggered] = useState(false);
   const [gateDenied, setGateDenied] = useState(false);
   const phoneRef = useRef<HTMLInputElement>(null);
   const freshScan = useRef(isExternalNavigation());
+
+  // Check allow list — returns true if the phone is allowed (gate opens, no session needed)
+  async function checkAllowList(phoneDigits: string): Promise<boolean> {
+    try {
+      const data = await apiFetch<{ allowed: boolean; name?: string; label?: string }>(
+        `/api/allowlist?phone=${phoneDigits}`
+      );
+      if (data.allowed) {
+        setAllowEntry({ name: data.name!, label: data.label! });
+        setState("allowlist");
+        return true;
+      }
+    } catch { /* not on list — continue normal flow */ }
+    return false;
+  }
 
   // Resolve a verified driver: check for active sessions, route to correct state
   function resolveDriver(d: { id: string; name: string; phone: string }, sessions: DriverActiveSession[]) {
@@ -87,23 +106,45 @@ export default function ScanPage() {
       return;
     }
     setState("checking");
-    apiFetch<DriverResponse>(
-      `/api/drivers?phone=${saved.phone.replace(/\D/g, "")}`
-    )
-      .then((data) => {
-        if (data.driver?.id === saved.id) {
-          resolveDriver(data.driver, data.activeSessions ?? []);
-        } else {
+
+    const digits = saved.phone.replace(/\D/g, "");
+
+    // Check allow list first — if on it, gate opens immediately
+    checkAllowList(digits).then((allowed) => {
+      if (allowed) return;
+
+      // Not on allow list — check as a regular driver
+      apiFetch<DriverResponse>(`/api/drivers?phone=${digits}`)
+        .then((data) => {
+          if (data.driver?.id === saved.id) {
+            resolveDriver(data.driver, data.activeSessions ?? []);
+          } else {
+            clearDriver();
+            setState("ask_type");
+          }
+        })
+        .catch(() => {
           clearDriver();
           setState("ask_type");
-        }
-      })
-      .catch(() => {
-        clearDriver();
-        setState("ask_type");
-      });
+        });
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-trigger gate for allow list entries
+  useEffect(() => {
+    if (state !== "allowlist" || gateTriggered) return;
+    if (!freshScan.current) {
+      setGateDenied(true);
+      return;
+    }
+    setGateTriggered(true);
+    apiPost("/api/gate", {
+      allowListPhone: phone.replace(/\D/g, "") || loadDriver()?.phone?.replace(/\D/g, ""),
+      deviceId: getDeviceId(),
+      direction: "ENTRANCE",
+    }).catch(() => {});
+  }, [state, gateTriggered, phone]);
 
   // Auto-trigger gate when entering gate_active — only on fresh external scan
   useEffect(() => {
@@ -130,6 +171,11 @@ export default function ScanPage() {
     if (digits.length < 7) { setError("Enter a valid phone number"); return; }
     setState("checking");
     try {
+      // Check allow list first
+      const allowed = await checkAllowList(digits);
+      if (allowed) return;
+
+      // Not on allow list — check as driver
       const data = await apiFetch<DriverResponse>(`/api/drivers?phone=${digits}`);
       if (!data.driver) {
         setState("not_found");
@@ -578,6 +624,32 @@ export default function ScanPage() {
             </div>
             <p className="g-eyebrow">Please wait</p>
             <h1 className="g-h1">Verifying<br />your pass…</h1>
+          </div>
+        )}
+
+        {/* ── ALLOW LIST — gate opening, no session ── */}
+        {state === "allowlist" && allowEntry && (
+          <div className="g-body">
+            {gateDenied ? (
+              <>
+                <div className="g-icon-wrap" style={{ background: "rgba(242,240,235,0.06)", border: "1px solid rgba(242,240,235,0.12)", margin: "0 auto 20px" }}>
+                  <span style={{ fontSize: 22, color: "rgba(242,240,235,0.4)" }}>⟳</span>
+                </div>
+                <p className="g-eyebrow">{allowEntry.label}</p>
+                <h1 className="g-h1">Hey,<br /><span className="green">{allowEntry.name.split(" ")[0]}</span>.</h1>
+                <p className="g-sub">Please re-scan the QR code at the gate to open it.</p>
+              </>
+            ) : (
+              <>
+                <div className="g-gate-icon">↑</div>
+                <p className="g-eyebrow">{allowEntry.label}</p>
+                <h1 className="g-h1">Welcome,<br /><span className="green">{allowEntry.name.split(" ")[0]}</span>.</h1>
+                <p className="g-sub">The gate is opening. Drive through when ready.</p>
+              </>
+            )}
+            <div className="g-secondary">
+              <button onClick={reset}>Not {allowEntry.name.split(" ")[0]}? Reset</button>
+            </div>
           </div>
         )}
 

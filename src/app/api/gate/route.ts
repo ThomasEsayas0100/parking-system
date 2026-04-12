@@ -5,7 +5,8 @@ import { log as audit } from "@/lib/audit";
 import { handler, json } from "@/lib/api-handler";
 
 const GateOpenBody = z.object({
-  sessionId: z.string().min(1, "Session ID required"),
+  sessionId: z.string().min(1).optional(),
+  allowListPhone: z.string().min(4).optional(),
   driverId: z.string().optional(),
   deviceId: z.string().optional(),
   direction: z.enum(["ENTRANCE", "EXIT"]).optional(),
@@ -30,10 +31,33 @@ async function deny(
 }
 
 export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
-  const { sessionId, driverId, deviceId, direction } = body;
+  const { sessionId, allowListPhone, driverId, deviceId, direction } = body;
   const ctx = { sessionId, driverId, deviceId, direction };
 
+  // ── Allow list path — no session required ──
+  if (allowListPhone) {
+    const phone = allowListPhone.replace(/\D/g, "");
+    const entry = await prisma.allowList.findUnique({ where: { phone } });
+    if (!entry || !entry.active) {
+      return deny("Not on allow list", { ...ctx, sessionId: undefined });
+    }
+    const result = await triggerGateOpen();
+    const dirLabel = direction === "EXIT" ? "exit" : "entrance";
+    await audit({
+      action: "ALLOWLIST_ENTRY",
+      details: [
+        `Allow list ${dirLabel}: ${entry.name} (${entry.label})`,
+        deviceId ? `device:${deviceId.slice(0, 8)}` : null,
+      ].filter(Boolean).join(" — "),
+    });
+    return json({ ...result, allowList: true, openedAt: new Date().toISOString() });
+  }
+
   // ── Session validation ──
+  if (!sessionId) {
+    return deny("Session ID or allow list phone required", ctx);
+  }
+
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
     select: { id: true, status: true, driverId: true, expectedEnd: true },
