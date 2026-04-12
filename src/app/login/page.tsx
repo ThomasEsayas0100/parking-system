@@ -26,7 +26,9 @@ function LoginForm() {
         const body = await r.json().catch(() => ({}));
         throw new Error(body.error || "Login failed");
       }
-      router.replace(redirectTo);
+      // Full page navigation ensures the auth cookie is set before the
+      // proxy middleware checks it on the next page load
+      window.location.href = redirectTo;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
       setLoading(false);
