@@ -162,9 +162,10 @@ export default function AdminDashboard() {
   const DRIVERS_LIMIT = 30;
 
   // ── Session actions state ──
-  const [sessionAction, setSessionAction] = useState<{ id: string; type: "extend" | "cancel" } | null>(null);
+  const [sessionAction, setSessionAction] = useState<{ id: string; type: "extend" | "cancel" | "close" } | null>(null);
   const [sessionActionHours, setSessionActionHours] = useState(4);
   const [sessionActionReason, setSessionActionReason] = useState("");
+  const [sessionActionEndedAt, setSessionActionEndedAt] = useState("");
   const [sessionActionLoading, setSessionActionLoading] = useState(false);
 
   // ── Overview / lot map state ──
@@ -348,20 +349,29 @@ export default function AdminDashboard() {
     if (!sessionAction) return;
     setSessionActionLoading(true);
     try {
+      const payload: Record<string, unknown> = {
+        sessionId: sessionAction.id,
+        action: sessionAction.type,
+      };
+      if (sessionAction.type === "extend") {
+        payload.hours = sessionActionHours;
+      } else {
+        payload.reason = sessionActionReason;
+      }
+      if (sessionAction.type === "close" && sessionActionEndedAt) {
+        payload.endedAt = new Date(sessionActionEndedAt).toISOString();
+      }
       await fetch("/api/admin/sessions", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: sessionAction.id,
-          action: sessionAction.type,
-          ...(sessionAction.type === "extend" ? { hours: sessionActionHours } : { reason: sessionActionReason }),
-        }),
+        body: JSON.stringify(payload),
       });
       setSessionAction(null);
       setSessionActionHours(4);
       setSessionActionReason("");
+      setSessionActionEndedAt("");
       loadSessions();
-      loadData(); // refresh overview
+      loadData();
     } catch { /* silent */ }
     finally { setSessionActionLoading(false); }
   }
@@ -644,17 +654,43 @@ export default function AdminDashboard() {
                                         <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="Required" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
                                       </>
                                     )}
-                                    <button onClick={handleSessionAction} disabled={sessionActionLoading} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: sessionAction.type === "cancel" ? "#DC2626" : "#2D7A4A", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      {sessionActionLoading ? "..." : sessionAction.type === "extend" ? "Extend" : "Cancel Session"}
+                                    {sessionAction.type === "close" && (
+                                      <>
+                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Driver left on:</span>
+                                        <input
+                                          type="datetime-local"
+                                          value={sessionActionEndedAt}
+                                          onChange={(e) => setSessionActionEndedAt(e.target.value)}
+                                          style={{ ...inputStyle, width: mobile ? "100%" : 220 }}
+                                        />
+                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
+                                        <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="e.g. Driver called — left last Tuesday" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
+                                        <div style={{ width: "100%", fontSize: 11, color: "#F59E0B", marginTop: 2 }}>
+                                          Overstay payments after this date will be removed.
+                                        </div>
+                                      </>
+                                    )}
+                                    <button
+                                      onClick={handleSessionAction}
+                                      disabled={sessionActionLoading}
+                                      style={{
+                                        padding: "6px 14px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#fff",
+                                        background: sessionAction.type === "cancel" ? "#DC2626" : sessionAction.type === "close" ? "#F59E0B" : "#2D7A4A",
+                                      }}
+                                    >
+                                      {sessionActionLoading ? "..." : sessionAction.type === "extend" ? "Extend" : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
                                     </button>
-                                    <button onClick={() => setSessionAction(null)} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
+                                    <button onClick={() => { setSessionAction(null); setSessionActionEndedAt(""); setSessionActionReason(""); }} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
                                       Back
                                     </button>
                                   </div>
                                 ) : (
-                                  <div style={{ display: "flex", gap: 8 }}>
+                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                                     <button onClick={() => setSessionAction({ id: s.id, type: "extend" })} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                       Extend Time
+                                    </button>
+                                    <button onClick={() => setSessionAction({ id: s.id, type: "close" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #F59E0B40", background: "transparent", color: "#F59E0B", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                      Close &amp; Backdate
                                     </button>
                                     <button onClick={() => setSessionAction({ id: s.id, type: "cancel" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                       Cancel Session

@@ -10,17 +10,19 @@ import { handler, json, notFound } from "@/lib/api-handler";
 // ---------------------------------------------------------------------------
 const SessionEditBody = z.object({
   sessionId: z.string().min(1),
-  action: z.enum(["extend", "cancel"]),
+  action: z.enum(["extend", "cancel", "close"]),
   // For extend: how many hours to add
   hours: z.number().int().min(1).max(720).optional(),
-  // For cancel: reason required
+  // For cancel/close: reason required
   reason: z.string().min(1).max(500).optional(),
+  // For close: backdate the session end to this time
+  endedAt: z.string().optional(),
 });
 
 export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
   await requireAdmin();
 
-  const { sessionId, action, hours, reason } = body;
+  const { sessionId, action, hours, reason, endedAt } = body;
 
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
@@ -87,6 +89,53 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
     });
 
     return json({ success: true, action: "cancelled" });
+  }
+
+  if (action === "close") {
+    if (!reason) {
+      return json({ error: "Reason required" }, { status: 400 });
+    }
+
+    if (session.status === "COMPLETED") {
+      return json({ error: "Session already completed" }, { status: 400 });
+    }
+
+    // Parse the backdated end time, default to now
+    const closedAt = endedAt ? new Date(endedAt) : new Date();
+
+    // Validate the date is after session start
+    if (closedAt < session.startedAt) {
+      return json({ error: "End time cannot be before session start" }, { status: 400 });
+    }
+
+    // Delete any overstay payments created after the backdated end time
+    // (they shouldn't have been charged if the driver actually left at closedAt)
+    const deletedPayments = await prisma.payment.deleteMany({
+      where: {
+        sessionId,
+        type: "OVERSTAY",
+        createdAt: { gt: closedAt },
+      },
+    });
+
+    // Complete the session with the backdated end time
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: { status: "COMPLETED", endedAt: closedAt },
+    });
+
+    await freeSpot(session.spotId);
+
+    await audit({
+      action: "SPOT_FREED",
+      sessionId,
+      driverId: session.driverId,
+      vehicleId: session.vehicleId,
+      spotId: session.spotId,
+      details: `ADMIN closed session (backdated to ${closedAt.toISOString()}). Reason: ${reason}. Driver: ${session.driver.name}. ${deletedPayments.count > 0 ? `Removed ${deletedPayments.count} overstay payment(s).` : ""}`,
+    });
+
+    return json({ success: true, action: "closed", endedAt: closedAt.toISOString(), paymentsRemoved: deletedPayments.count });
   }
 
   return json({ error: "Unknown action" }, { status: 400 });
