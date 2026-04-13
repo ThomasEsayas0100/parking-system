@@ -138,7 +138,7 @@ export default function AdminDashboard() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
-  const [tab, setTab] = useState<"overview" | "sessions" | "drivers" | "log" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "sessions" | "payments" | "drivers" | "log" | "settings">("overview");
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
 
@@ -394,6 +394,7 @@ export default function AdminDashboard() {
   const tabs: { key: typeof tab; label: string }[] = [
     { key: "overview", label: "Overview" },
     { key: "sessions", label: "Sessions" },
+    { key: "payments", label: "Payments" },
     { key: "drivers", label: "Drivers" },
     { key: "log", label: "Log" },
     { key: "settings", label: "Settings" },
@@ -725,6 +726,9 @@ export default function AdminDashboard() {
           </div>
         )}
 
+        {/* ═══ PAYMENTS ═══ */}
+        {tab === "payments" && <PaymentsTab mobile={mobile} />}
+
         {/* ═══ DRIVERS ═══ */}
         {tab === "drivers" && (
           <div>
@@ -1035,6 +1039,267 @@ export default function AdminDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════
 // Sub-components
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Payments Tab — internal records + QB cross-reference
+// ═══════════════════════════════════════════════════════════════════════════
+type PaymentRow = {
+  id: string;
+  type: string;
+  amount: number;
+  hours: number | null;
+  stripePaymentId: string;
+  createdAt: string;
+  session: {
+    driver: { name: string; phone: string } | null;
+    vehicle: { licensePlate: string | null; type: string } | null;
+    spot: { label: string } | null;
+  } | null;
+};
+type PaymentSummary = {
+  totalRevenue: number;
+  checkinRevenue: number;
+  monthlyRevenue: number;
+  extensionRevenue: number;
+  overstayRevenue: number;
+  transactionCount: number;
+};
+type QBPaymentRecord = { id: string; date: string; amount: number; customerName: string; memo: string; method: string };
+type QBProfitLoss = { totalIncome: number; totalExpenses: number; netIncome: number } | null;
+
+function PaymentsTab({ mobile }: { mobile: boolean }) {
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
+  const [summary, setSummary] = useState<PaymentSummary | null>(null);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [typeFilter, setTypeFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const LIMIT = 30;
+
+  // QB data
+  const [qbPayments, setQbPayments] = useState<QBPaymentRecord[]>([]);
+  const [qbPL, setQbPL] = useState<QBProfitLoss>(null);
+  const [qbConnected, setQbConnected] = useState(false);
+  const [qbLoading, setQbLoading] = useState(true);
+
+  // Load internal payments
+  useEffect(() => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
+    if (typeFilter) params.set("type", typeFilter);
+    if (search.trim()) params.set("q", search.trim());
+    fetch(`/api/admin/payments?${params}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setPayments(d.payments ?? []);
+        setSummary(d.summary ?? null);
+        setTotal(d.total ?? 0);
+      })
+      .finally(() => setLoading(false));
+  }, [offset, typeFilter, search]);
+
+  // Load QB data
+  useEffect(() => {
+    setQbLoading(true);
+    fetch("/api/admin/qb-data")
+      .then((r) => r.json())
+      .then((d) => {
+        setQbConnected(d.connected);
+        setQbPayments(d.qbPayments ?? []);
+        setQbPL(d.profitLoss ?? null);
+      })
+      .catch(() => setQbConnected(false))
+      .finally(() => setQbLoading(false));
+  }, []);
+
+  // Reset offset on filter change
+  useEffect(() => { setOffset(0); }, [typeFilter, search]);
+
+  // Reconciliation — find QB payments not in our system
+  const internalPaymentIds = new Set(payments.map((p) => p.stripePaymentId));
+  const unmatchedQB = qbPayments.filter((qb) => !internalPaymentIds.has(qb.id));
+
+  const typeLabels: Record<string, string> = {
+    CHECKIN: "Check-in",
+    MONTHLY_CHECKIN: "Monthly",
+    EXTENSION: "Extension",
+    OVERSTAY: "Overstay",
+  };
+
+  return (
+    <div>
+      {/* Summary cards */}
+      {summary && (
+        <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(5, 1fr)", gap: 10, marginBottom: 20 }}>
+          {[
+            { label: "Total Revenue", value: `$${summary.totalRevenue.toFixed(2)}`, color: FG },
+            { label: "Check-ins", value: `$${summary.checkinRevenue.toFixed(2)}` },
+            { label: "Monthly", value: `$${summary.monthlyRevenue.toFixed(2)}` },
+            { label: "Extensions", value: `$${summary.extensionRevenue.toFixed(2)}` },
+            { label: "Overstay", value: `$${summary.overstayRevenue.toFixed(2)}`, color: "#DC2626" },
+          ].map((c) => (
+            <div key={c.label} style={{ background: CARD_BG, borderRadius: 10, padding: "14px 16px", border: `1px solid ${BORDER}` }}>
+              <div style={{ fontSize: 10, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, marginBottom: 4 }}>{c.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: c.color ?? FG_MUTED, fontVariantNumeric: "tabular-nums" }}>{c.value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* QB reconciliation banner */}
+      {qbConnected && !qbLoading && (
+        <div style={{ background: CARD_BG, borderRadius: 10, padding: "14px 16px", border: `1px solid ${BORDER}`, marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                QuickBooks Reconciliation
+              </div>
+              {qbPL && (
+                <div style={{ fontSize: 13, color: FG_MUTED }}>
+                  QB Income: <strong style={{ color: FG }}>${qbPL.totalIncome.toFixed(2)}</strong>
+                  {" · "}Expenses: <strong style={{ color: FG }}>${qbPL.totalExpenses.toFixed(2)}</strong>
+                  {" · "}Net: <strong style={{ color: qbPL.netIncome >= 0 ? "#2D7A4A" : "#DC2626" }}>${qbPL.netIncome.toFixed(2)}</strong>
+                </div>
+              )}
+            </div>
+            {unmatchedQB.length > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#2A1F0A", color: "#F59E0B" }}>
+                {unmatchedQB.length} unmatched QB payment{unmatchedQB.length !== 1 ? "s" : ""}
+              </span>
+            )}
+            {unmatchedQB.length === 0 && qbPayments.length > 0 && (
+              <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A" }}>
+                All matched
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+      {!qbConnected && !qbLoading && (
+        <div style={{ fontSize: 12, color: FG_DIM, marginBottom: 16, padding: "10px 14px", background: CARD_BG, borderRadius: 8, border: `1px solid ${BORDER}` }}>
+          QuickBooks not connected. Go to Settings → QuickBooks Connection to enable reconciliation.
+        </div>
+      )}
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        {["", "CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"].map((t) => (
+          <button key={t || "ALL"} onClick={() => setTypeFilter(t)} style={chip(typeFilter === t, mobile)}>
+            {t ? typeLabels[t] : "All"}
+          </button>
+        ))}
+        <div style={{ flex: 1, minWidth: mobile ? "100%" : 180, maxWidth: mobile ? "100%" : 300 }}>
+          <input type="text" placeholder="Search driver, plate, payment ID…" value={search} onChange={(e) => setSearch(e.target.value)} style={inputStyle} />
+        </div>
+      </div>
+
+      {/* Payment list */}
+      {loading ? (
+        <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>Loading…</p>
+      ) : payments.length === 0 ? (
+        <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>No payments found.</p>
+      ) : (
+        <>
+          <div style={{ fontSize: 11, color: FG_DIM, marginBottom: 10 }}>
+            {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} payments
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            {payments.map((p) => (
+              <div key={p.id} style={{
+                display: "grid",
+                gridTemplateColumns: mobile ? "1fr auto" : "auto 1fr 1fr auto auto",
+                gap: mobile ? 6 : 12,
+                alignItems: "center",
+                padding: mobile ? "10px 12px" : "12px 16px",
+                background: CARD_BG,
+                borderRadius: 8,
+              }}>
+                {/* Type badge */}
+                <span style={{
+                  fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                  padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap",
+                  background: p.type === "OVERSTAY" ? "#2C1810" : p.type === "MONTHLY_CHECKIN" ? "#0A1A30" : "#12261C",
+                  color: p.type === "OVERSTAY" ? "#DC2626" : p.type === "MONTHLY_CHECKIN" ? "#60A5FA" : "#2D7A4A",
+                }}>
+                  {typeLabels[p.type] ?? p.type}
+                </span>
+
+                {/* Driver + vehicle */}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {p.session?.driver?.name ?? "—"}
+                  </div>
+                  {!mobile && (
+                    <div style={{ fontSize: 11, color: FG_DIM }}>
+                      {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"}
+                    </div>
+                  )}
+                  {mobile && (
+                    <div style={{ fontSize: 11, color: FG_DIM }}>
+                      {fmtDate(p.createdAt)} · {p.session?.spot?.label ?? "—"}
+                    </div>
+                  )}
+                </div>
+
+                {/* Date — desktop */}
+                {!mobile && (
+                  <div style={{ fontSize: 12, color: FG_MUTED }}>{fmtDate(p.createdAt)}</div>
+                )}
+
+                {/* Payment ref — desktop */}
+                {!mobile && (
+                  <div style={{ fontSize: 10, color: FG_DIM, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 120 }}>
+                    {p.stripePaymentId.startsWith("free_") ? "Free" : p.stripePaymentId.slice(0, 16)}
+                  </div>
+                )}
+
+                {/* Amount */}
+                <div style={{ fontSize: 14, fontWeight: 700, color: p.type === "OVERSTAY" ? "#DC2626" : FG, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
+                  ${p.amount.toFixed(2)}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Unmatched QB payments */}
+          {unmatchedQB.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#F59E0B", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                Unmatched QuickBooks Payments
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {unmatchedQB.map((qb) => (
+                  <div key={qb.id} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "10px 14px", background: "#2A1F0A", borderRadius: 8, border: "1px solid #F59E0B30",
+                  }}>
+                    <div>
+                      <div style={{ fontSize: 13, color: "#F59E0B", fontWeight: 600 }}>{qb.customerName}</div>
+                      <div style={{ fontSize: 11, color: FG_DIM }}>{qb.date} · {qb.method} · QB#{qb.id}</div>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B", fontVariantNumeric: "tabular-nums" }}>
+                      ${qb.amount.toFixed(2)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Pagination */}
+          {total > LIMIT && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16 }}>
+              <button onClick={() => setOffset(Math.max(0, offset - LIMIT))} disabled={offset === 0} style={paginationBtn(offset === 0, mobile)}>← Newer</button>
+              <span style={{ fontSize: 11, color: FG_DIM }}>{offset + 1}–{Math.min(offset + LIMIT, total)} of {total}</span>
+              <button onClick={() => setOffset(offset + LIMIT)} disabled={offset + LIMIT >= total} style={paginationBtn(offset + LIMIT >= total, mobile)}>Older →</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function QBConnectionStatus() {
   const [status, setStatus] = useState<"loading" | "connected" | "disconnected">("loading");

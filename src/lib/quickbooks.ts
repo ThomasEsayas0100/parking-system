@@ -298,3 +298,101 @@ export async function refundCharge(chargeId: string, amount: number, description
     body: JSON.stringify({ amount: amount.toFixed(2), description }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// QB Reports — for reconciliation with internal records
+// ---------------------------------------------------------------------------
+export type QBPaymentRecord = {
+  id: string;
+  date: string;
+  amount: number;
+  customerName: string;
+  memo: string;
+  method: string; // "Credit Card", "ACH", etc.
+};
+
+/**
+ * Fetch recent payments from QuickBooks for reconciliation.
+ * Uses the Payment entity query, not reports — gives individual transactions.
+ */
+export async function getQBPayments(opts?: {
+  from?: string; // ISO date
+  to?: string;
+  limit?: number;
+}): Promise<QBPaymentRecord[]> {
+  const conditions = ["TotalAmt > '0'"];
+  if (opts?.from) conditions.push(`TxnDate >= '${opts.from.slice(0, 10)}'`);
+  if (opts?.to) conditions.push(`TxnDate <= '${opts.to.slice(0, 10)}'`);
+
+  const query = `SELECT * FROM Payment WHERE ${conditions.join(" AND ")} ORDERBY TxnDate DESC MAXRESULTS ${opts?.limit ?? 100}`;
+
+  const res = await qbFetch<{
+    QueryResponse: {
+      Payment?: Array<{
+        Id: string;
+        TxnDate: string;
+        TotalAmt: number;
+        CustomerRef: { name: string };
+        PrivateNote?: string;
+        PaymentMethodRef?: { name: string };
+        Line?: Array<{ LinkedTxn?: Array<{ TxnId: string; TxnType: string }> }>;
+      }>;
+    };
+  }>(`/query?query=${encodeURIComponent(query)}`);
+
+  const payments = res.QueryResponse.Payment ?? [];
+  return payments.map((p) => ({
+    id: p.Id,
+    date: p.TxnDate,
+    amount: p.TotalAmt,
+    customerName: p.CustomerRef?.name ?? "Unknown",
+    memo: p.PrivateNote ?? "",
+    method: p.PaymentMethodRef?.name ?? "Unknown",
+  }));
+}
+
+/**
+ * Fetch profit/loss summary from QB Reports API.
+ */
+export type QBProfitLoss = {
+  totalIncome: number;
+  totalExpenses: number;
+  netIncome: number;
+  period: { from: string; to: string };
+};
+
+export async function getProfitAndLoss(from: string, to: string): Promise<QBProfitLoss> {
+  const res = await qbFetch<{
+    Header: { StartPeriod: string; EndPeriod: string };
+    Rows: {
+      Row: Array<{
+        Summary?: { ColData: Array<{ value: string }> };
+        group?: string;
+        type?: string;
+      }>;
+    };
+  }>(`/reports/ProfitAndLoss?start_date=${from}&end_date=${to}&minorversion=65`);
+
+  let totalIncome = 0;
+  let totalExpenses = 0;
+  let netIncome = 0;
+
+  for (const row of res.Rows?.Row ?? []) {
+    if (row.Summary) {
+      const val = parseFloat(row.Summary.ColData?.[1]?.value ?? "0");
+      if (row.group === "Income") totalIncome = val;
+      else if (row.group === "Expenses") totalExpenses = val;
+      else if (row.type === "Section" && row.group === "NetIncome") netIncome = val;
+    }
+  }
+
+  // NetIncome might be in a different structure — fall back to calculation
+  if (netIncome === 0) netIncome = totalIncome - totalExpenses;
+
+  return {
+    totalIncome,
+    totalExpenses,
+    netIncome,
+    period: { from: res.Header.StartPeriod, to: res.Header.EndPeriod },
+  };
+}
