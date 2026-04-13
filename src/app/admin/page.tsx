@@ -98,6 +98,15 @@ function sumPayments(payments: { amount: number }[]): number {
   return payments.reduce((s, p) => s + p.amount, 0);
 }
 
+/** Generate a link to view a payment/invoice in QuickBooks. */
+function qbUrl(paymentRefId: string): string | null {
+  if (!paymentRefId || paymentRefId.startsWith("free_") || paymentRefId.startsWith("pi_test")) return null;
+  const base = process.env.NODE_ENV === "production"
+    ? "https://app.qbo.intuit.com"
+    : "https://app.sandbox.qbo.intuit.com";
+  return `${base}/app/invoice?txnId=${paymentRefId}`;
+}
+
 // ---------------------------------------------------------------------------
 // Shared inline style constants
 // ---------------------------------------------------------------------------
@@ -637,6 +646,16 @@ export default function AdminDashboard() {
                                 <span style={{ color: FG, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>${total.toFixed(2)}</span>
                               </div>
                             </DetailCol>
+
+                            {/* View in QB link — only show if payments tab exists */}
+                            <div style={{ gridColumn: mobile ? undefined : "1 / -1", display: "flex", gap: 8, marginTop: 4 }}>
+                              <a
+                                href={`/admin?tab=payments&q=${encodeURIComponent(s.driver.name)}`}
+                                style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none" }}
+                              >
+                                View in Payments →
+                              </a>
+                            </div>
 
                             {/* Admin actions */}
                             {s.status !== "COMPLETED" && (
@@ -1248,11 +1267,18 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                 )}
 
                 {/* Payment ref — desktop */}
-                {!mobile && (
-                  <div style={{ fontSize: 10, color: FG_DIM, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 120 }}>
-                    {p.stripePaymentId.startsWith("free_") ? "Free" : p.stripePaymentId.slice(0, 16)}
-                  </div>
-                )}
+                {!mobile && (() => {
+                  const link = qbUrl(p.stripePaymentId);
+                  return link ? (
+                    <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: "#60A5FA", fontFamily: "monospace", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 120, display: "block" }}>
+                      View in QB ↗
+                    </a>
+                  ) : (
+                    <div style={{ fontSize: 10, color: FG_DIM, fontFamily: "monospace" }}>
+                      {p.stripePaymentId.startsWith("free_") ? "Free" : p.stripePaymentId.slice(0, 16)}
+                    </div>
+                  );
+                })()}
 
                 {/* Amount */}
                 <div style={{ fontSize: 14, fontWeight: 700, color: p.type === "OVERSTAY" ? "#DC2626" : FG, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
@@ -1273,11 +1299,20 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                   <div key={qb.id} style={{
                     display: "flex", justifyContent: "space-between", alignItems: "center",
                     padding: "10px 14px", background: "#2A1F0A", borderRadius: 8, border: "1px solid #F59E0B30",
+                    gap: 12,
                   }}>
-                    <div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, color: "#F59E0B", fontWeight: 600 }}>{qb.customerName}</div>
-                      <div style={{ fontSize: 11, color: FG_DIM }}>{qb.date} · {qb.method} · QB#{qb.id}</div>
+                      <div style={{ fontSize: 11, color: FG_DIM }}>{qb.date} · {qb.method}</div>
                     </div>
+                    <a
+                      href={qbUrl(qb.id) ?? "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}
+                    >
+                      View in QB ↗
+                    </a>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B", fontVariantNumeric: "tabular-nums" }}>
                       ${qb.amount.toFixed(2)}
                     </div>
