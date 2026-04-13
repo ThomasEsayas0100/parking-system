@@ -142,7 +142,7 @@ async function seed() {
     data: {
       sessionId: session.id,
       type: "CHECKIN",
-      stripePaymentId: "pi_test_seed_" + Date.now(),
+      externalPaymentId: "pi_test_seed_" + Date.now(),
       amount: 120.0,
       hours: 8,
     },

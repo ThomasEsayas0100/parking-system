@@ -94,7 +94,7 @@ export async function POST() {
       data: {
         sessionId: activeSession.id,
         type: "CHECKIN",
-        stripePaymentId: "pi_test_seed_001",
+        externalPaymentId: "pi_test_seed_001",
         amount: 120.0,
         hours: 8,
       },

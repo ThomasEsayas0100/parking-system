@@ -36,7 +36,7 @@ export const POST = handler(
       data: {
         sessionId,
         type: "EXTENSION",
-        stripePaymentId: paymentId,
+        externalPaymentId: paymentId,
         amount,
         hours,
       },

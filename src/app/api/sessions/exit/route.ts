@@ -46,7 +46,7 @@ export const POST = handler(
         data: {
           sessionId,
           type: "OVERSTAY",
-          stripePaymentId: overstayPaymentId,
+          externalPaymentId: overstayPaymentId,
           amount: overstayAmount,
           hours: overstayHours,
         },

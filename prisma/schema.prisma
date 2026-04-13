@@ -124,7 +124,7 @@ model Payment {
   sessionId       String
   session         Session     @relation(fields: [sessionId], references: [id])
   type            PaymentType
-  stripePaymentId String
+  externalPaymentId String
   amount          Float
   hours           Float?
   createdAt       DateTime    @default(now())

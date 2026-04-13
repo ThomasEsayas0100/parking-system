@@ -100,7 +100,7 @@ export const POST = handler(
       data: {
         sessionId: session.id,
         type: paymentType,
-        stripePaymentId: paymentId || `free_${Date.now()}`,
+        externalPaymentId: paymentId || `free_${Date.now()}`,
         amount: settings.paymentRequired ? amount : 0,
         hours: isMonthly ? null : hours,
       },

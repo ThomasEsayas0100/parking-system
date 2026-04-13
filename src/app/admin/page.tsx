@@ -1067,7 +1067,7 @@ type PaymentRow = {
   type: string;
   amount: number;
   hours: number | null;
-  stripePaymentId: string;
+  externalPaymentId: string;
   createdAt: string;
   session: {
     driver: { name: string; phone: string } | null;
@@ -1136,7 +1136,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
   useEffect(() => { setOffset(0); }, [typeFilter, search]);
 
   // Reconciliation — find QB payments not in our system
-  const internalPaymentIds = new Set(payments.map((p) => p.stripePaymentId));
+  const internalPaymentIds = new Set(payments.map((p) => p.externalPaymentId));
   const unmatchedQB = qbPayments.filter((qb) => !internalPaymentIds.has(qb.id));
 
   const typeLabels: Record<string, string> = {
@@ -1268,14 +1268,14 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
 
                 {/* Payment ref — desktop */}
                 {!mobile && (() => {
-                  const link = qbUrl(p.stripePaymentId);
+                  const link = qbUrl(p.externalPaymentId);
                   return link ? (
                     <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: "#60A5FA", fontFamily: "monospace", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 120, display: "block" }}>
                       View in QB ↗
                     </a>
                   ) : (
                     <div style={{ fontSize: 10, color: FG_DIM, fontFamily: "monospace" }}>
-                      {p.stripePaymentId.startsWith("free_") ? "Free" : p.stripePaymentId.slice(0, 16)}
+                      {p.externalPaymentId.startsWith("free_") ? "Free" : p.externalPaymentId.slice(0, 16)}
                     </div>
                   );
                 })()}

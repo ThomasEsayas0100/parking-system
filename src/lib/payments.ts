@@ -14,7 +14,7 @@ import { getCharge } from "@/lib/quickbooks";
  * charge ID hasn't already been used for another payment record.
  *
  * Works with QuickBooks Payments charge IDs. The field is named
- * stripePaymentId in the DB for backward compatibility but stores
+ * externalPaymentId in the DB for backward compatibility but stores
  * any payment provider's charge/intent ID.
  *
  * @throws paymentRequired — if charge is missing, not captured, or unverifiable
@@ -34,7 +34,7 @@ export async function verifyAndClaimPayment(paymentId: string): Promise<void> {
 
   // 2. Prevent reuse — same paymentId can't be used twice
   const existing = await prisma.payment.findFirst({
-    where: { stripePaymentId: paymentId },
+    where: { externalPaymentId: paymentId },
   });
   if (existing) {
     throw conflict("This payment has already been used");
