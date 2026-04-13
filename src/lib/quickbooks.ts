@@ -26,30 +26,82 @@ const isProd = process.env.NODE_ENV === "production";
 const API_BASE = isProd ? PROD_BASE : SANDBOX_BASE;
 
 // ---------------------------------------------------------------------------
-// Auth
+// Auth — tokens stored in DB, refreshed automatically when expired
 // ---------------------------------------------------------------------------
-function getAccessToken(): string {
-  const token = process.env.QB_ACCESS_TOKEN;
-  if (!token) throw new Error("QB_ACCESS_TOKEN not configured");
-  return token;
+import { prisma } from "./prisma";
+
+async function getTokens(): Promise<{ accessToken: string; realmId: string }> {
+  const settings = await prisma.settings.findUnique({ where: { id: "default" } });
+  if (!settings?.qbAccessToken || !settings?.qbRealmId) {
+    throw new Error("QuickBooks not connected. Go to Admin → Settings to connect.");
+  }
+
+  // Check if token needs refresh (expires every hour, refresh 5 min early)
+  if (settings.qbTokenExpiresAt && settings.qbRefreshToken) {
+    const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
+    if (settings.qbTokenExpiresAt < fiveMinFromNow) {
+      return refreshAccessToken(settings.qbRefreshToken, settings.qbRealmId);
+    }
+  }
+
+  return { accessToken: settings.qbAccessToken, realmId: settings.qbRealmId };
 }
 
-function getRealmId(): string {
-  const id = process.env.QB_REALM_ID;
-  if (!id) throw new Error("QB_REALM_ID not configured");
-  return id;
+async function refreshAccessToken(
+  refreshToken: string,
+  realmId: string,
+): Promise<{ accessToken: string; realmId: string }> {
+  const clientId = process.env.QB_CLIENT_ID;
+  const clientSecret = process.env.QB_CLIENT_SECRET;
+  if (!clientId || !clientSecret) throw new Error("QB_CLIENT_ID/QB_CLIENT_SECRET not configured");
+
+  const res = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization": `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      "Accept": "application/json",
+    },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`QB token refresh failed (${res.status}). Reconnect in Admin → Settings.`);
+  }
+
+  const data = await res.json() as {
+    access_token: string;
+    refresh_token: string;
+    expires_in: number; // seconds
+  };
+
+  // Store new tokens in DB
+  await prisma.settings.update({
+    where: { id: "default" },
+    data: {
+      qbAccessToken: data.access_token,
+      qbRefreshToken: data.refresh_token,
+      qbTokenExpiresAt: new Date(Date.now() + data.expires_in * 1000),
+    },
+  });
+
+  return { accessToken: data.access_token, realmId };
 }
 
 // ---------------------------------------------------------------------------
 // API helper
 // ---------------------------------------------------------------------------
 async function qbFetch<T = unknown>(path: string, opts?: RequestInit): Promise<T> {
-  const url = `${API_BASE}/v3/company/${getRealmId()}${path}`;
+  const { accessToken, realmId } = await getTokens();
+  const url = `${API_BASE}/v3/company/${realmId}${path}`;
   const res = await fetch(url, {
     ...opts,
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${getAccessToken()}`,
+      "Authorization": `Bearer ${accessToken}`,
       "Accept": "application/json",
       ...(opts?.headers ?? {}),
     },
@@ -191,12 +243,13 @@ const PAYMENTS_PROD = "https://api.intuit.com";
 const PAYMENTS_BASE = isProd ? PAYMENTS_PROD : PAYMENTS_SANDBOX;
 
 async function paymentsFetch<T = unknown>(path: string, opts?: RequestInit): Promise<T> {
+  const { accessToken } = await getTokens();
   const url = `${PAYMENTS_BASE}${path}`;
   const res = await fetch(url, {
     ...opts,
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${getAccessToken()}`,
+      "Authorization": `Bearer ${accessToken}`,
       "Accept": "application/json",
       ...(opts?.headers ?? {}),
     },

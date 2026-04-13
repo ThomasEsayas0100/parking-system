@@ -945,6 +945,9 @@ export default function AdminDashboard() {
                   </label>
                 </div>
               </SettingsGroup>
+              <SettingsGroup title="QuickBooks Connection">
+                <QBConnectionStatus />
+              </SettingsGroup>
               <SettingsGroup title="Hourly Rates">
                 <SettingsField label="Bobtail ($/hr)" value={settingsForm.hourlyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateBobtail: v })} step="0.01" />
                 <SettingsField label="Truck/Trailer ($/hr)" value={settingsForm.hourlyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateTruck: v })} step="0.01" />
@@ -1032,6 +1035,72 @@ export default function AdminDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════
 // Sub-components
 // ═══════════════════════════════════════════════════════════════════════════
+
+function QBConnectionStatus() {
+  const [status, setStatus] = useState<"loading" | "connected" | "disconnected">("loading");
+  const [realmId, setRealmId] = useState("");
+
+  useEffect(() => {
+    fetch("/api/settings").then((r) => r.json()).then((d) => {
+      if (d.settings?.qbRealmId && d.settings?.qbAccessToken) {
+        setStatus("connected");
+        setRealmId(d.settings.qbRealmId);
+      } else {
+        setStatus("disconnected");
+      }
+    }).catch(() => setStatus("disconnected"));
+
+    // Check URL params for connection result
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("qb_connected") === "true") {
+      setStatus("connected");
+      // Clean URL
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    if (params.get("qb_error")) {
+      alert(`QuickBooks connection failed: ${params.get("qb_error")}`);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  if (status === "loading") {
+    return <div style={{ fontSize: 12, color: FG_DIM }}>Checking connection…</div>;
+  }
+
+  if (status === "connected") {
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#2D7A4A" }} />
+          <span style={{ fontSize: 13, color: "#2D7A4A", fontWeight: 600 }}>Connected</span>
+        </div>
+        <div style={{ fontSize: 11, color: FG_DIM }}>
+          Company ID: {realmId}
+        </div>
+        <button
+          onClick={() => window.location.href = "/api/admin/qb-auth"}
+          style={{ marginTop: 10, padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}
+        >
+          Reconnect
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 13, color: FG_MUTED, marginBottom: 12 }}>
+        Connect your QuickBooks account to process payments. Drivers can pay with Apple Pay, PayPal, Venmo, or card.
+      </div>
+      <button
+        onClick={() => window.location.href = "/api/admin/qb-auth"}
+        style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: "#2CA01C", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" }}
+      >
+        Connect to QuickBooks
+      </button>
+    </div>
+  );
+}
 
 function AllowListManager({ mobile }: { mobile: boolean }) {
   type Entry = { id: string; phone: string; name: string; label: string; active: boolean };

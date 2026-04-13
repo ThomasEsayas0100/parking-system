@@ -165,4 +165,9 @@ model Settings {
   // Clickwrap terms — admin editable, version bumped when text changes
   termsVersion          String  @default("1.0")
   termsBody             String  @default("")
+  // QuickBooks OAuth tokens — stored in DB because they expire/refresh
+  qbAccessToken         String  @default("")
+  qbRefreshToken        String  @default("")
+  qbRealmId             String  @default("")
+  qbTokenExpiresAt      DateTime?
 }

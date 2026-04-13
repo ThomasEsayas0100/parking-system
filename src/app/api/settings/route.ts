@@ -6,7 +6,16 @@ import { requireAdmin } from "@/lib/auth";
 
 export const GET = handler({}, async () => {
   const settings = await getSettings();
-  return json({ settings });
+
+  // Strip sensitive QB token fields — expose only connection status
+  const { qbAccessToken, qbRefreshToken, ...safe } = settings;
+  return json({
+    settings: {
+      ...safe,
+      // Boolean flag for UI — "is QB connected?"
+      qbConnected: !!(qbAccessToken && safe.qbRealmId),
+    },
+  });
 });
 
 export const PUT = handler(
@@ -18,6 +27,13 @@ export const PUT = handler(
       update: body,
       create: { id: "default", ...body },
     });
-    return json({ settings });
+
+    const { qbAccessToken, qbRefreshToken, ...safe } = settings;
+    return json({
+      settings: {
+        ...safe,
+        qbConnected: !!(qbAccessToken && safe.qbRealmId),
+      },
+    });
   },
 );
