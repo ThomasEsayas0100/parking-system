@@ -403,38 +403,50 @@ function CheckInContent() {
         vehicleId = vehicle.id;
       }
 
-      let paymentId: string | undefined;
-
       if (settings.paymentRequired) {
-        // TODO: Collect card details and tokenize with QuickBooks Payments
-        // For now, this will fail until QB credentials are configured
-        // and a card collection form is built.
-        const payRes = await fetch("/api/payments/create-intent", {
+        // Create QB invoice and redirect to hosted checkout
+        const durationLabel = durationType === "MONTHLY"
+          ? `${months} month${months > 1 ? "s" : ""}`
+          : `${hours} hour${hours !== 1 ? "s" : ""}`;
+        const description = `Parking: ${vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/Trailer"} for ${durationLabel}`;
+
+        const checkoutRes = await fetch("/api/payments/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            driverName: name,
+            driverPhone: phone,
+            driverEmail: email || undefined,
             amount: totalAmount,
-            description: `Parking: ${vehicleType} for ${durationType === "MONTHLY" ? `${months}mo` : `${hours}h`}`,
-            // cardToken will come from QB client-side tokenization
+            description,
           }),
         });
-        const payJson = await payRes.json();
+        const checkoutData = await checkoutRes.json();
 
-        if (payJson.requiresToken) {
-          // QB Payments needs a card token first — card form not yet built
-          setError("Card payment form coming soon. Disable payment in admin settings for testing.");
+        if (!checkoutRes.ok || !checkoutData.checkoutUrl) {
+          setError(checkoutData.error || "Could not create payment. Please try again.");
           setLoading(false);
           return;
         }
 
-        if (!payRes.ok || !payJson.chargeId) {
-          setError(payJson.error || "Payment failed. Please try again.");
-          setLoading(false);
-          return;
-        }
-        paymentId = payJson.chargeId;
+        // Save pending session info so the callback page can create the session after payment
+        sessionStorage.setItem("pending_session", JSON.stringify({
+          driverId: driver.id,
+          vehicleId,
+          durationType,
+          hours: durationType === "HOURLY" ? hours : undefined,
+          months: durationType === "MONTHLY" ? months : undefined,
+          invoiceId: checkoutData.invoiceId,
+          termsVersion: settings.termsVersion,
+          overstayAuthorized: true,
+        }));
+
+        // Redirect to QB hosted checkout — driver pays there (Apple Pay, PayPal, etc.)
+        window.location.href = checkoutData.checkoutUrl;
+        return;
       }
 
+      // No payment required — create session directly
       const sessionRes = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -443,7 +455,6 @@ function CheckInContent() {
           vehicleId,
           durationType,
           ...(durationType === "HOURLY" ? { hours } : { months }),
-          ...(paymentId ? { paymentId } : {}),
           termsVersion: settings.termsVersion,
           overstayAuthorized: true,
         }),
