@@ -403,24 +403,36 @@ function CheckInContent() {
         vehicleId = vehicle.id;
       }
 
-      let paymentIntentId: string | undefined;
+      let paymentId: string | undefined;
 
       if (settings.paymentRequired) {
+        // TODO: Collect card details and tokenize with QuickBooks Payments
+        // For now, this will fail until QB credentials are configured
+        // and a card collection form is built.
         const payRes = await fetch("/api/payments/create-intent", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             amount: totalAmount,
-            description: `Parking: ${vehicleType} for ${hours}h`,
+            description: `Parking: ${vehicleType} for ${durationType === "MONTHLY" ? `${months}mo` : `${hours}h`}`,
+            // cardToken will come from QB client-side tokenization
           }),
         });
         const payJson = await payRes.json();
-        if (!payRes.ok || !payJson.paymentIntentId) {
-          setError(payJson.error || "Payment setup failed. Please try again.");
+
+        if (payJson.requiresToken) {
+          // QB Payments needs a card token first — card form not yet built
+          setError("Card payment form coming soon. Disable payment in admin settings for testing.");
           setLoading(false);
           return;
         }
-        paymentIntentId = payJson.paymentIntentId;
+
+        if (!payRes.ok || !payJson.chargeId) {
+          setError(payJson.error || "Payment failed. Please try again.");
+          setLoading(false);
+          return;
+        }
+        paymentId = payJson.chargeId;
       }
 
       const sessionRes = await fetch("/api/sessions", {
@@ -431,7 +443,7 @@ function CheckInContent() {
           vehicleId,
           durationType,
           ...(durationType === "HOURLY" ? { hours } : { months }),
-          ...(paymentIntentId ? { paymentId: paymentIntentId } : {}),
+          ...(paymentId ? { paymentId } : {}),
           termsVersion: settings.termsVersion,
           overstayAuthorized: true,
         }),

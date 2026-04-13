@@ -23,6 +23,7 @@
     "jose": "^6.2.2",
     "next": "16.2.1",
     "next-auth": "^4.24.13",
+    "node-quickbooks": "^2.0.50",
     "pg": "^8.20.0",
     "prisma": "^7.5.0",
     "qrcode.react": "^4.2.0",
