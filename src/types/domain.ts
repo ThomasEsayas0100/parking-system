@@ -6,8 +6,10 @@
  * src/generated/prisma — these are for the client/page layer.
  */
 
-// Re-export Prisma enums so pages don't need two imports
-export type { VehicleType, SpotStatus, SessionStatus, PaymentType, AuditAction } from "@/generated/prisma/enums";
+import type { VehicleType, SpotStatus, SessionStatus, PaymentType, AuditAction } from "@/generated/prisma/enums";
+
+// Re-export so pages can import enums from a single module
+export type { VehicleType, SpotStatus, SessionStatus, PaymentType, AuditAction };
 
 // ---------------------------------------------------------------------------
 // Core entities (JSON-serialized API response shapes)
@@ -24,13 +26,13 @@ export type ApiVehicle = {
   id: string;
   unitNumber: string | null;
   licensePlate: string | null;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
+  type: VehicleType;
   nickname: string | null;
 };
 
 export type ApiPayment = {
   id: string;
-  type: "CHECKIN" | "EXTENSION" | "OVERSTAY";
+  type: PaymentType;
   amount: number;
   hours: number | null;
   createdAt: string;
@@ -39,8 +41,8 @@ export type ApiPayment = {
 export type ApiSpot = {
   id: string;
   label: string;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
-  status: "AVAILABLE" | "OCCUPIED";
+  type: VehicleType;
+  status: SpotStatus;
 };
 
 /** Spot with nested active sessions (from GET /api/spots) */
@@ -50,7 +52,7 @@ export type ApiSpotWithSessions = ApiSpot & {
 
 export type ApiSession = {
   id: string;
-  status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  status: SessionStatus;
   startedAt: string;
   expectedEnd: string;
   endedAt: string | null;
@@ -68,14 +70,14 @@ export type ApiSessionWithRelations = ApiSession & {
 /** Lightweight session with spot + vehicle (from GET /api/drivers activeSessions). */
 export type DriverActiveSession = {
   id: string;
-  status: "ACTIVE" | "OVERSTAY";
+  status: Extract<SessionStatus, "ACTIVE" | "OVERSTAY">;
   expectedEnd: string;
   startedAt: string;
-  spot: { label: string; type: string };
+  spot: { label: string; type: VehicleType };
   vehicle: {
     licensePlate: string | null;
     unitNumber: string | null;
-    type: string;
+    type: VehicleType;
     nickname: string | null;
   };
 };
@@ -86,11 +88,11 @@ export type DriverActiveSession = {
 
 export type ApiAuditEntry = {
   id: string;
-  action: string;
+  action: AuditAction;
   details: string | null;
   createdAt: string;
   driver: { name: string; phone: string } | null;
-  vehicle: { licensePlate: string; type: string } | null;
+  vehicle: { licensePlate: string | null; type: VehicleType } | null;
   spot: { label: string } | null;
 };
 
@@ -146,7 +148,7 @@ export type SavedDriver = {
 export type SpotLayout = {
   id: string;
   label: string;
-  type: "BOBTAIL" | "TRUCK_TRAILER";
+  type: VehicleType;
   cx: number;
   cy: number;
   w: number;
@@ -159,7 +161,7 @@ export type SpotLayout = {
 // ---------------------------------------------------------------------------
 
 /** Visual status for a spot on the lot map SVG. */
-export type LotSpotStatus = "VACANT" | "RESERVED" | "OVERDUE" | "COMPANY";
+export type LotSpotStatus = "VACANT" | "RESERVED" | "OVERDUE";
 
 /** Session info attached to a lot spot, with Date objects (not ISO strings). */
 export type LotSpotSession = {
@@ -168,15 +170,15 @@ export type LotSpotSession = {
   vehicle: {
     unitNumber: string | null;
     licensePlate: string | null;
-    type: "BOBTAIL" | "TRUCK_TRAILER";
+    type: VehicleType;
     nickname: string | null;
   };
   startedAt: Date;
   expectedEnd: Date;
   endedAt: Date | null;
-  sessionStatus: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  sessionStatus: SessionStatus;
   reminderSent: boolean;
-  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: Date }[];
+  payments: { id: string; type: PaymentType; amount: number; hours: number | null; createdAt: Date }[];
 };
 
 /** Full spot detail for the SpotDetailPanel (map click → slide-out). */
@@ -199,5 +201,4 @@ export const LOT_STATUS_COLORS: Record<LotSpotStatus, LotSpotColors> = {
   VACANT:   { fill: "#12261C", fillHover: "#1A3324", stroke: "#2D7A4A", label: "rgba(255,255,255,0.5)" },
   RESERVED: { fill: "#1A1A2E", fillHover: "#24244A", stroke: "#6366F1", label: "rgba(99,102,241,0.7)" },
   OVERDUE:  { fill: "#2C1810", fillHover: "#3D2218", stroke: "#DC2626", label: "rgba(220,38,38,0.7)" },
-  COMPANY:  { fill: "#1C1A10", fillHover: "#2A2716", stroke: "#CA8A04", label: "rgba(202,138,4,0.7)" },
 };

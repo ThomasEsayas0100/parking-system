@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 
 import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail } from "@/types/domain";
 import { apiFetch } from "@/lib/fetch";
+import { deriveLotStatus } from "@/lib/lot-status";
 import { useIsMobile } from "@/lib/hooks";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
@@ -299,10 +300,7 @@ export default function AdminDashboard() {
   const lotStatuses = useMemo<Record<string, LotSpotStatus>>(() => {
     const map: Record<string, LotSpotStatus> = {};
     for (const spot of spots) {
-      const session = spot.sessions?.[0];
-      if (!session) map[spot.label] = "VACANT";
-      else if (session.status === "OVERSTAY") map[spot.label] = "OVERDUE";
-      else map[spot.label] = "RESERVED";
+      map[spot.label] = deriveLotStatus(spot.sessions?.[0]);
     }
     return map;
   }, [spots]);

@@ -8,7 +8,6 @@ const STATUS_LABELS: Record<LotSpotStatus, string> = {
   VACANT: "Vacant",
   RESERVED: "Reserved",
   OVERDUE: "Overdue",
-  COMPANY: "Company",
 };
 
 function formatTime(d: Date): string {

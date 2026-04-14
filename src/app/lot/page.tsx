@@ -9,6 +9,7 @@ import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "./SpotDetailPanel";
 import { computePath, pathD, pathTotalLength, ENTRANCE } from "./pathfinding";
 import { apiFetch } from "@/lib/fetch";
+import { deriveLotStatus } from "@/lib/lot-status";
 
 import type {
   ApiSessionWithRelations as ApiSession,
@@ -87,10 +88,7 @@ function LotPage() {
   const statuses = useMemo<Record<string, LotSpotStatus>>(() => {
     const map: Record<string, LotSpotStatus> = {};
     for (const spot of apiSpots) {
-      const session = spot.sessions?.[0];
-      if (!session) map[spot.label] = "VACANT";
-      else if (session.status === "OVERSTAY") map[spot.label] = "OVERDUE";
-      else map[spot.label] = "RESERVED";
+      map[spot.label] = deriveLotStatus(spot.sessions?.[0]);
     }
     return map;
   }, [apiSpots]);
@@ -280,9 +278,6 @@ function LotPage() {
             </span>
             <span style={{ color: "#98989D" }}>
               <span style={{ color: "#6366F1", fontWeight: 600 }}>{counts.reserved}</span> reserved
-            </span>
-            <span style={{ color: "#98989D" }}>
-              <span style={{ color: "#CA8A04", fontWeight: 600 }}>{counts.company}</span> company
             </span>
             <span style={{ color: "#98989D" }}>
               <span style={{ color: "#DC2626", fontWeight: 600 }}>{counts.overdue}</span> overdue

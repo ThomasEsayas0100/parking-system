@@ -1,12 +1,13 @@
 "use client";
 
 import React, { useState, useCallback, useMemo } from "react";
+import type { SpotStatus } from "@/types/domain";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type SpotStatus = "AVAILABLE" | "OCCUPIED";
+export type { SpotStatus };
 
 export type SpotData = {
   id: string;

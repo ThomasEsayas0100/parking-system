@@ -105,14 +105,13 @@ export function countStatuses(
   statuses: Record<string, LotSpotStatus>,
   excludeId?: string | null,
 ) {
-  let vacant = 0, reserved = 0, overdue = 0, company = 0;
+  let vacant = 0, reserved = 0, overdue = 0;
   for (const spot of spots) {
     if (spot.id === excludeId) continue;
     const s = statuses[spot.label] ?? statuses[spot.id];
     if (s === "RESERVED") reserved++;
     else if (s === "OVERDUE") overdue++;
-    else if (s === "COMPANY") company++;
     else vacant++;
   }
-  return { total: spots.length, vacant, reserved, overdue, company };
+  return { total: spots.length, vacant, reserved, overdue };
 }
