@@ -2,26 +2,32 @@
  * Shared payment verification and reuse prevention.
  *
  * Used by sessions/route.ts (check-in), sessions/extend, sessions/exit.
- * Supports both QuickBooks Payments and Stripe (payment provider is
- * determined by the charge ID prefix or env config).
+ * Two flows to verify:
+ *  - Invoice-based (hosted checkout) → verifyAndClaimInvoice
+ *  - Charge-based (direct card tokenization) → verifyAndClaimPayment
+ *
+ * Idempotency is also enforced by the DB-level @@unique on
+ * Payment.externalPaymentId — the findFirst check here is just a fast
+ * path that turns a P2002 into a clean 409 before we do any writes.
  */
 import { prisma } from "@/lib/prisma";
 import { paymentRequired, conflict } from "@/lib/api-handler";
-import { getCharge } from "@/lib/quickbooks";
+import { getCharge, getInvoiceStatus } from "@/lib/quickbooks";
+
+async function assertNotReused(externalId: string): Promise<void> {
+  const existing = await prisma.payment.findFirst({
+    where: { externalPaymentId: externalId },
+  });
+  if (existing) throw conflict("This payment has already been used");
+}
 
 /**
- * Verify that a payment was captured successfully, and that the
- * charge ID hasn't already been used for another payment record.
- *
- * Works with QuickBooks Payments charge IDs. The field is named
- * externalPaymentId in the DB for backward compatibility but stores
- * any payment provider's charge/intent ID.
+ * Verify a QuickBooks **charge** (direct card path — extend, exit overstay).
  *
  * @throws paymentRequired — if charge is missing, not captured, or unverifiable
- * @throws conflict — if the same paymentId was already recorded
+ * @throws conflict — if the same chargeId was already recorded
  */
 export async function verifyAndClaimPayment(paymentId: string): Promise<void> {
-  // 1. Verify charge status with QuickBooks Payments
   try {
     const charge = await getCharge(paymentId);
     if (charge.status !== "CAPTURED") {
@@ -31,12 +37,29 @@ export async function verifyAndClaimPayment(paymentId: string): Promise<void> {
     if (err instanceof Error && err.name === "ApiError") throw err;
     throw paymentRequired("Could not verify payment");
   }
+  await assertNotReused(paymentId);
+}
 
-  // 2. Prevent reuse — same paymentId can't be used twice
-  const existing = await prisma.payment.findFirst({
-    where: { externalPaymentId: paymentId },
-  });
-  if (existing) {
-    throw conflict("This payment has already been used");
+/**
+ * Verify a QuickBooks **invoice** (hosted checkout path — check-in).
+ *
+ * Requires the invoice to be fully paid, not voided, and not partial.
+ * This is the server-side defense-in-depth against a client bypassing
+ * the partial/voided guards in payment-complete/page.tsx.
+ *
+ * @throws paymentRequired — for any state other than fully-paid
+ * @throws conflict — if the invoice was already claimed
+ */
+export async function verifyAndClaimInvoice(invoiceId: string): Promise<void> {
+  let status: Awaited<ReturnType<typeof getInvoiceStatus>>;
+  try {
+    status = await getInvoiceStatus(invoiceId);
+  } catch (err) {
+    if (err instanceof Error && err.name === "ApiError") throw err;
+    throw paymentRequired("Could not verify invoice");
   }
+  if (status.voided) throw paymentRequired("Invoice was voided");
+  if (status.partial) throw paymentRequired("Invoice only partially paid");
+  if (!status.paid) throw paymentRequired("Invoice not paid");
+  await assertNotReused(invoiceId);
 }

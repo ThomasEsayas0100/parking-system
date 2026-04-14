@@ -149,6 +149,9 @@ model Payment {
   refundExternalId  String?       // QB refund receipt/credit memo ID
   createdAt         DateTime      @default(now())
 
+  // Prevent duplicate payment records from double-poll / double-submit.
+  // Free-tier sessions use a UUID so they can't collide.
+  @@unique([externalPaymentId])
   // Admin Payments tab + chart
   @@index([createdAt])
 }

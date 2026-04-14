@@ -12,7 +12,6 @@ import { apiFetch } from "@/lib/fetch";
 import { deriveLotStatus } from "@/lib/lot-status";
 
 import type {
-  ApiSessionWithRelations as ApiSession,
   ApiSpotWithSessions as ApiSpot,
   SpotLayout,
   LotSpotStatus,

@@ -65,11 +65,6 @@ export type ApiSpot = {
   type: VehicleType;
 };
 
-/** Spot with nested active sessions (from GET /api/spots) */
-export type ApiSpotWithSessions = ApiSpot & {
-  sessions: ApiSessionWithRelations[];
-};
-
 export type ApiSession = {
   id: string;
   status: SessionStatus;
@@ -85,6 +80,22 @@ export type ApiSessionWithRelations = ApiSession & {
   vehicle: ApiVehicle;
   spot: ApiSpot;
   payments: ApiPayment[];
+};
+
+/**
+ * Narrower session shape returned under GET /api/spots — only the fields
+ * the lot map consumers read (no redundant `spot` back-reference, no
+ * `payments[]`). If you add a consumer that needs more, widen either the
+ * API include or this type — do not use `ApiSessionWithRelations` here.
+ */
+export type ApiSpotNestedSession = ApiSession & {
+  driver: ApiDriver;
+  vehicle: ApiVehicle;
+};
+
+/** Spot with nested active sessions (from GET /api/spots) */
+export type ApiSpotWithSessions = ApiSpot & {
+  sessions: ApiSpotNestedSession[];
 };
 
 /** Lightweight session with spot + vehicle (from GET /api/drivers activeSessions). */

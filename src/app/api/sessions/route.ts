@@ -1,10 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
-import { verifyAndClaimPayment } from "@/lib/payments";
+import { verifyAndClaimInvoice } from "@/lib/payments";
 import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionCreateSchema, idSchema } from "@/lib/schemas";
@@ -41,7 +42,9 @@ export const POST = handler(
     if (existingSession) throw conflict("This vehicle is already parked");
 
     const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
-    if (!vehicle) throw notFound("Vehicle not found");
+    // 404 (not 403) on ownership mismatch so we don't leak existence of
+    // vehicles belonging to other drivers.
+    if (!vehicle || vehicle.driverId !== driverId) throw notFound("Vehicle not found");
 
     const settings = await getSettings();
 
@@ -55,9 +58,11 @@ export const POST = handler(
     const spot = await assignSpot(vehicle.type);
     if (!spot) throw conflict("No available spots for this vehicle type");
 
-    // Verify payment (skip if payment is disabled in settings)
+    // Verify payment (skip if payment is disabled in settings).
+    // Check-in uses the **invoice** path (hosted checkout), so we
+    // require the invoice to be fully paid — not partial, not voided.
     if (settings.paymentRequired && paymentId) {
-      await verifyAndClaimPayment(paymentId);
+      await verifyAndClaimInvoice(paymentId);
     }
 
     const now = new Date();
@@ -96,7 +101,7 @@ export const POST = handler(
       data: {
         sessionId: session.id,
         type: paymentType,
-        externalPaymentId: paymentId || `free_${Date.now()}`,
+        externalPaymentId: paymentId || `free_${randomUUID()}`,
         amount: settings.paymentRequired ? amount : 0,
         hours: isMonthly ? null : hours,
       },

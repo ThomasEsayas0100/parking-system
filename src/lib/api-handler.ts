@@ -147,6 +147,15 @@ export function handler<
         log.debug("zod validation failed", { ms });
         return errorResponse(400, "Validation failed", err.flatten());
       }
+      // Prisma unique constraint violation → 409. Duck-typed so we don't
+      // import Prisma runtime classes into the API-handler module.
+      if (
+        err instanceof Error &&
+        (err as { code?: string }).code === "P2002"
+      ) {
+        log.debug("prisma unique violation", { ms });
+        return errorResponse(409, "Duplicate — this record already exists");
+      }
       // Unknown error — never leak details in prod
       log.error("unhandled exception", {
         ms,
