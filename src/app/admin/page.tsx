@@ -1089,6 +1089,7 @@ type QBProfitLoss = { totalIncome: number; totalExpenses: number; netIncome: num
 function PaymentsTab({ mobile }: { mobile: boolean }) {
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
+  const [dailyRevenue, setDailyRevenue] = useState<{ date: string; amount: number }[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
@@ -1114,6 +1115,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
         setPayments(d.payments ?? []);
         setSummary(d.summary ?? null);
         setTotal(d.total ?? 0);
+        if (d.dailyRevenue) setDailyRevenue(d.dailyRevenue);
       })
       .finally(() => setLoading(false));
   }, [offset, typeFilter, search]);
@@ -1165,6 +1167,51 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
           ))}
         </div>
       )}
+
+      {/* Revenue chart — last 30 days */}
+      {dailyRevenue.length > 0 && (() => {
+        const maxAmt = Math.max(...dailyRevenue.map((d) => d.amount), 1);
+        const chartW = 100; // percentage-based
+        const chartH = 120;
+        const barW = chartW / dailyRevenue.length;
+        return (
+          <div style={{ background: CARD_BG, borderRadius: 10, padding: "16px 16px 10px", border: `1px solid ${BORDER}`, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Daily Revenue — Last 30 Days
+              </span>
+              <span style={{ fontSize: 12, color: FG_MUTED }}>
+                Peak: ${maxAmt.toFixed(0)}/day
+              </span>
+            </div>
+            <svg width="100%" height={chartH} viewBox={`0 0 ${dailyRevenue.length} ${chartH}`} preserveAspectRatio="none" style={{ display: "block" }}>
+              {dailyRevenue.map((d, i) => {
+                const h = (d.amount / maxAmt) * (chartH - 20);
+                const isToday = i === dailyRevenue.length - 1;
+                return (
+                  <g key={d.date}>
+                    <rect
+                      x={i + 0.1}
+                      y={chartH - h}
+                      width={0.8}
+                      height={h}
+                      rx={0.2}
+                      fill={d.amount === 0 ? `${BORDER}` : isToday ? "#2D7A4A" : "#2D7A4A80"}
+                    />
+                    {/* Show amount on hover via title */}
+                    <title>{`${d.date}: $${d.amount.toFixed(2)}`}</title>
+                    <rect x={i} y={0} width={1} height={chartH} fill="transparent" />
+                  </g>
+                );
+              })}
+            </svg>
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+              <span style={{ fontSize: 9, color: FG_DIM }}>{dailyRevenue[0]?.date.slice(5)}</span>
+              <span style={{ fontSize: 9, color: FG_DIM }}>Today</span>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* QB reconciliation banner */}
       {qbConnected && !qbLoading && (

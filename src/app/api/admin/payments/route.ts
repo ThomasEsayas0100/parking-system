@@ -81,6 +81,28 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
     if (t.type === "OVERSTAY") summary.overstayRevenue = amt;
   }
 
+  // Daily revenue for chart (last 30 days)
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
+  const dailyRaw = await prisma.payment.groupBy({
+    by: ["createdAt"],
+    where: { createdAt: { gte: thirtyDaysAgo } },
+    _sum: { amount: true },
+  });
+
+  // Aggregate by date string (the groupBy returns exact timestamps)
+  const dailyMap: Record<string, number> = {};
+  for (const row of dailyRaw) {
+    const day = new Date(row.createdAt).toISOString().slice(0, 10);
+    dailyMap[day] = (dailyMap[day] ?? 0) + (row._sum.amount ?? 0);
+  }
+
+  // Fill in missing days with 0
+  const dailyRevenue: { date: string; amount: number }[] = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    dailyRevenue.push({ date: d, amount: dailyMap[d] ?? 0 });
+  }
+
   return json({
     payments,
     total,
@@ -88,5 +110,6 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
     offset,
     hasMore: offset + payments.length < total,
     summary,
+    dailyRevenue,
   });
 });
