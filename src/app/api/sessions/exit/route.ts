@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { freeSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
@@ -70,8 +69,6 @@ export const POST = handler(
         data: { status: "COMPLETED", endedAt: now },
       });
     }
-
-    await freeSpot(session.spotId);
 
     // CHECKOUT is the canonical exit event — gate open is implied
     await audit({

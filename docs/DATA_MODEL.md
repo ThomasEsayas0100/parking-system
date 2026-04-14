@@ -9,7 +9,6 @@ Single source of truth for the Prisma schema and the API/view-layer types derive
 | Enum | Values |
 |---|---|
 | `VehicleType` | `BOBTAIL`, `TRUCK_TRAILER` |
-| `SpotStatus` | `AVAILABLE`, `OCCUPIED` |
 | `SessionStatus` | `ACTIVE`, `COMPLETED`, `OVERSTAY` |
 | `PaymentType` | `CHECKIN`, `MONTHLY_CHECKIN`, `EXTENSION`, `OVERSTAY` |
 | `AuditAction` | `CHECKIN`, `CHECKOUT`, `EXTEND`, `OVERSTAY_START`, `OVERSTAY_PAYMENT`, `GATE_OPEN`, `SPOT_FREED`, `REMINDER_SENT`, `OVERSTAY_ALERT`, `SUSPICIOUS_ENTRY`, `GATE_DENIED`, `ALLOWLIST_ENTRY` |
@@ -68,10 +67,11 @@ Physical parking spot. Layout coords (cx/cy/w/h/rot) live here.
 | `id` | `String` | PK, uuid |
 | `label` | `String` | **unique** (e.g. `"A12"`) |
 | `type` | `VehicleType` | |
-| `status` | `SpotStatus` | default `AVAILABLE` |
 | `cx` / `cy` / `w` / `h` / `rot` | `Float` | SVG layout, all default `0` |
 
 Relations: `sessions[]`, `auditLogs[]`.
+
+A spot is "free" iff no Session with status `ACTIVE` or `OVERSTAY` references it. There is no `status` column — occupancy is always derived from the Session table. See `src/lib/spots.ts::assignSpot()`.
 
 #### `Session`
 Time-based reservation. The hotel-room model — driver owns the spot until `expectedEnd` + grace.
@@ -172,7 +172,7 @@ JSON-serialized shapes returned by API routes. Dates are ISO strings (not `Date`
 
 - **`ApiDriver`** — `{ id, name, email, phone }` (no `qbCustomerId`, no timestamps)
 - **`ApiVehicle`** — `{ id, unitNumber, licensePlate, type, nickname }` (no `driverId`, no timestamps)
-- **`ApiSpot`** — `{ id, label, type, status }` (no layout coords)
+- **`ApiSpot`** — `{ id, label, type }` (no layout coords; occupancy derived from nested `sessions`)
 - **`ApiSession`** — `{ id, status, startedAt, expectedEnd, endedAt, reminderSent }` (no FK ids, no terms fields)
 - **`ApiSessionWithRelations`** — `ApiSession & { driver, vehicle, spot, payments }`
 - **`ApiSpotWithSessions`** — `ApiSpot & { sessions: ApiSessionWithRelations[] }`
@@ -193,6 +193,6 @@ JSON-serialized shapes returned by API routes. Dates are ISO strings (not `Date`
 1. **Phone is the driver identity key.** Unique index enforces it.
 2. **Settings is a singleton** — `id = "default"` is the only row.
 3. **Session lifecycle**: `ACTIVE` → `OVERSTAY` (cron) → `COMPLETED` (exit settlement or manager override). `endedAt` is `null` until `COMPLETED`.
-4. **Spot.status is view-level**; the authoritative "is this spot taken right now" check is "does a session with `status IN (ACTIVE, OVERSTAY)` reference it?"
+4. **Spot occupancy has no dedicated column.** A spot is free iff no Session with `status IN (ACTIVE, OVERSTAY)` references it. This is the *only* source of truth — anything else (lot map colors, available counts, assignment logic) derives from here.
 5. **Payment refunds are partial-aware**: `refundedAmount ≤ amount`; `status` flips when fully refunded.
 6. **AllowList bypasses sessions entirely** — no Session/Payment/Spot row is created for allow-list entries.

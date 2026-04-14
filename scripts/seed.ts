@@ -23,18 +23,13 @@ async function seed() {
   const spots = Object.values(defaultState.spots) as EditorSpot[];
   console.log(`Found ${spots.length} spots in default layout`);
 
-  // Complete all active/overstay sessions first
+  // Complete all active/overstay sessions — this implicitly frees every spot,
+  // since occupancy is derived from the Session table (see docs/DATA_MODEL.md).
   const completed = await prisma.session.updateMany({
     where: { status: { in: ["ACTIVE", "OVERSTAY"] } },
     data: { status: "COMPLETED", endedAt: new Date() },
   });
   console.log(`Completed ${completed.count} active sessions`);
-
-  // Free all spots
-  await prisma.spot.updateMany({
-    where: { status: "OCCUPIED" },
-    data: { status: "AVAILABLE" },
-  });
 
   // Upsert each spot: create if new, update layout if existing
   // Use the editor ID as the DB ID so they match exactly
@@ -123,11 +118,6 @@ async function seed() {
     console.log("Truck spot not found in DB!");
     return;
   }
-
-  await prisma.spot.update({
-    where: { id: dbSpot.id },
-    data: { status: "OCCUPIED" },
-  });
 
   const session = await prisma.session.create({
     data: {

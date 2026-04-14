@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { freeSpot } from "@/lib/spots";
 import { requireAdmin } from "@/lib/auth";
 import { log as audit } from "@/lib/audit";
 import { handler, json, notFound } from "@/lib/api-handler";
@@ -71,13 +70,11 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Session already completed" }, { status: 400 });
     }
 
-    // Complete the session and free the spot
+    // Complete the session — spot is implicitly freed (no session referencing it = free)
     await prisma.session.update({
       where: { id: sessionId },
       data: { status: "COMPLETED", endedAt: new Date() },
     });
-
-    await freeSpot(session.spotId);
 
     await audit({
       action: "SPOT_FREED",
@@ -118,13 +115,11 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       },
     });
 
-    // Complete the session with the backdated end time
+    // Complete the session with the backdated end time (spot implicitly freed)
     await prisma.session.update({
       where: { id: sessionId },
       data: { status: "COMPLETED", endedAt: closedAt },
     });
-
-    await freeSpot(session.spotId);
 
     await audit({
       action: "SPOT_FREED",

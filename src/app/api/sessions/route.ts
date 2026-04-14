@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { assignSpot, freeSpot } from "@/lib/spots";
+import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
@@ -50,18 +50,14 @@ export const POST = handler(
       throw conflict("Terms have been updated. Please reload the page and accept the current terms.");
     }
 
-    // Reserve spot BEFORE verifying payment
+    // Find an available spot (pure read — no lock).
+    // If payment fails below, no rollback is needed since we haven't written anything yet.
     const spot = await assignSpot(vehicle.type);
     if (!spot) throw conflict("No available spots for this vehicle type");
 
     // Verify payment (skip if payment is disabled in settings)
     if (settings.paymentRequired && paymentId) {
-      try {
-        await verifyAndClaimPayment(paymentId);
-      } catch (err) {
-        await freeSpot(spot.id);
-        throw err;
-      }
+      await verifyAndClaimPayment(paymentId);
     }
 
     const now = new Date();

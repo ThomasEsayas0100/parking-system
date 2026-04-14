@@ -57,30 +57,23 @@ export async function POST() {
     },
   });
 
-  // Clean up any existing active sessions for this driver
+  // Complete any existing active/overstay sessions (this frees the spots — sessions are
+  // the source of truth for spot occupancy).
   await prisma.session.updateMany({
-    where: { driverId: driver.id, status: "ACTIVE" },
+    where: { status: { in: ["ACTIVE", "OVERSTAY"] } },
     data: { status: "COMPLETED", endedAt: new Date() },
-  });
-
-  // Free up spots
-  await prisma.spot.updateMany({
-    where: { status: "OCCUPIED" },
-    data: { status: "AVAILABLE" },
   });
 
   // Create an active session (truck, 8 hours from now)
   const spot1 = await prisma.spot.findFirst({
-    where: { type: "TRUCK_TRAILER", status: "AVAILABLE" },
+    where: {
+      type: "TRUCK_TRAILER",
+      sessions: { none: { status: { in: ["ACTIVE", "OVERSTAY"] } } },
+    },
   });
 
   let activeSession = null;
   if (spot1) {
-    await prisma.spot.update({
-      where: { id: spot1.id },
-      data: { status: "OCCUPIED" },
-    });
-
     activeSession = await prisma.session.create({
       data: {
         driverId: driver.id,

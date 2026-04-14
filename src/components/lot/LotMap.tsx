@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useState, useCallback, useMemo } from "react";
-import type { SpotStatus } from "@/types/domain";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type { SpotStatus };
+// View-layer occupancy toggle for the lot editor/preview. NOT a DB column —
+// the DB derives "is this spot taken" from the Session table (see docs/DATA_MODEL.md).
+export type SpotStatus = "AVAILABLE" | "OCCUPIED";
 
 export type SpotData = {
   id: string;

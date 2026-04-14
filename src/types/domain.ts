@@ -6,10 +6,10 @@
  * src/generated/prisma — these are for the client/page layer.
  */
 
-import type { VehicleType, SpotStatus, SessionStatus, PaymentType, AuditAction } from "@/generated/prisma/enums";
+import type { VehicleType, SessionStatus, PaymentType, AuditAction } from "@/generated/prisma/enums";
 
 // Re-export so pages can import enums from a single module
-export type { VehicleType, SpotStatus, SessionStatus, PaymentType, AuditAction };
+export type { VehicleType, SessionStatus, PaymentType, AuditAction };
 
 // ---------------------------------------------------------------------------
 // Core entities (JSON-serialized API response shapes)
@@ -42,7 +42,6 @@ export type ApiSpot = {
   id: string;
   label: string;
   type: VehicleType;
-  status: SpotStatus;
 };
 
 /** Spot with nested active sessions (from GET /api/spots) */

@@ -10,7 +10,7 @@ export const GET = handler({}, async () => {
   const [spots, settings] = await Promise.all([
     prisma.spot.findMany({
       orderBy: { label: "asc" },
-      select: { id: true, label: true, type: true, status: true, cx: true, cy: true, w: true, h: true, rot: true },
+      select: { id: true, label: true, type: true, cx: true, cy: true, w: true, h: true, rot: true },
     }),
     prisma.settings.findFirst({ select: { lotGroups: true } }),
   ]);
@@ -87,14 +87,13 @@ export const PUT = handler(
       });
     }
 
-    // Delete spots that are no longer in the layout (unless they have active sessions)
+    // Delete spots that are no longer in the layout — but only if they have no
+    // active/overstay sessions attached (sessions are the source of truth for occupancy).
     const toDelete = [...existingIds].filter((id) => !incomingIds.has(id));
     if (toDelete.length > 0) {
-      // Only delete spots that are AVAILABLE (no active sessions)
       await prisma.spot.deleteMany({
         where: {
           id: { in: toDelete },
-          status: "AVAILABLE",
           sessions: { none: { status: { in: ["ACTIVE", "OVERSTAY"] } } },
         },
       });

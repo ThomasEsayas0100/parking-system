@@ -12,11 +12,6 @@ enum VehicleType {
   TRUCK_TRAILER
 }
 
-enum SpotStatus {
-  AVAILABLE
-  OCCUPIED
-}
-
 enum SessionStatus {
   ACTIVE
   COMPLETED
@@ -88,7 +83,6 @@ model Spot {
   id        String      @id @default(uuid())
   label     String      @unique
   type      VehicleType
-  status    SpotStatus  @default(AVAILABLE)
   cx        Float       @default(0)
   cy        Float       @default(0)
   w         Float       @default(0)

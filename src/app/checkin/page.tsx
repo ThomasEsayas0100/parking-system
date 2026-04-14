@@ -196,12 +196,14 @@ function CheckInContent() {
       });
     }
 
-    // Check spot availability — warn if the lot is full before the driver fills out the form
+    // Check spot availability — warn if the lot is full before the driver fills out the form.
+    // /api/spots returns each spot with its ACTIVE/OVERSTAY sessions; no sessions = free.
     if (!isDemo) {
-      apiFetch<{ spots: { type: string; status: string }[] }>("/api/spots")
+      apiFetch<{ spots: { type: string; sessions: unknown[] }[] }>("/api/spots")
         .then((d) => {
-          const bobtail = d.spots.filter((s) => s.type === "BOBTAIL" && s.status === "AVAILABLE").length;
-          const truck = d.spots.filter((s) => s.type === "TRUCK_TRAILER" && s.status === "AVAILABLE").length;
+          const isFree = (s: { sessions: unknown[] }) => s.sessions.length === 0;
+          const bobtail = d.spots.filter((s) => s.type === "BOBTAIL" && isFree(s)).length;
+          const truck = d.spots.filter((s) => s.type === "TRUCK_TRAILER" && isFree(s)).length;
           setAvailableBobtail(bobtail);
           setAvailableTruck(truck);
         })

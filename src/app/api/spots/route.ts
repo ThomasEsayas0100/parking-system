@@ -5,7 +5,6 @@ import { VehicleTypeSchema } from "@/lib/schemas";
 
 const SpotsQuery = z.object({
   type: VehicleTypeSchema.optional(),
-  status: z.enum(["AVAILABLE", "OCCUPIED"]).optional(),
 });
 
 export const GET = handler(

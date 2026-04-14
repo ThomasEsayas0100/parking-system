@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/prisma";
-import { freeSpot } from "@/lib/spots";
 import { log as audit } from "@/lib/audit";
 import { handler, json, notFound } from "@/lib/api-handler";
 import { SpotOverrideSchema } from "@/lib/schemas";
@@ -40,8 +39,6 @@ export const POST = handler(
           details: `MANAGER OVERRIDE: Spot ${spot.label} freed. Reason: ${reason}. Driver: ${session.driver.name}, Plate: ${session.vehicle.licensePlate}`,
         });
       }
-
-      await freeSpot(spotId);
 
       return json({ success: true, action: "freed", spotLabel: spot.label });
     }
