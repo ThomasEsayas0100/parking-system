@@ -11,6 +11,8 @@ Single source of truth for the Prisma schema and the API/view-layer types derive
 | `VehicleType` | `BOBTAIL`, `TRUCK_TRAILER` |
 | `SessionStatus` | `ACTIVE`, `COMPLETED`, `OVERSTAY` |
 | `PaymentType` | `CHECKIN`, `MONTHLY_CHECKIN`, `EXTENSION`, `OVERSTAY` |
+| `PaymentStatus` | `PENDING`, `COMPLETED`, `PARTIALLY_REFUNDED`, `REFUNDED`, `VOIDED`, `DISPUTED` |
+| `AllowListLabel` | `EMPLOYEE`, `FAMILY`, `VENDOR`, `CONTRACTOR` |
 | `AuditAction` | `CHECKIN`, `CHECKOUT`, `EXTEND`, `OVERSTAY_START`, `OVERSTAY_PAYMENT`, `GATE_OPEN`, `SPOT_FREED`, `REMINDER_SENT`, `OVERSTAY_ALERT`, `SUSPICIOUS_ENTRY`, `GATE_DENIED`, `ALLOWLIST_ENTRY` |
 
 ---

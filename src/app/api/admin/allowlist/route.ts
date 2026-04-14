@@ -2,6 +2,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { handler, json, notFound } from "@/lib/api-handler";
+import { AllowListLabelSchema } from "@/lib/schemas";
 
 // ---------------------------------------------------------------------------
 // GET: list all allow list entries
@@ -20,7 +21,7 @@ export const GET = handler({}, async () => {
 const AddSchema = z.object({
   phone: z.string().min(4).max(20),
   name: z.string().min(1).max(200),
-  label: z.string().min(1).max(100).default("Employee"),
+  label: AllowListLabelSchema.default("EMPLOYEE"),
 });
 
 export const POST = handler({ body: AddSchema }, async ({ body }) => {
@@ -38,7 +39,7 @@ export const POST = handler({ body: AddSchema }, async ({ body }) => {
 const UpdateSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(200).optional(),
-  label: z.string().min(1).max(100).optional(),
+  label: AllowListLabelSchema.optional(),
   active: z.boolean().optional(),
 });
 

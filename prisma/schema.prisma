@@ -25,6 +25,22 @@ enum PaymentType {
   OVERSTAY
 }
 
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  PARTIALLY_REFUNDED
+  REFUNDED
+  VOIDED
+  DISPUTED
+}
+
+enum AllowListLabel {
+  EMPLOYEE
+  FAMILY
+  VENDOR
+  CONTRACTOR
+}
+
 enum AuditAction {
   CHECKIN
   CHECKOUT
@@ -41,18 +57,18 @@ enum AuditAction {
 }
 
 model AllowList {
-  id        String   @id @default(uuid())
-  phone     String   @unique
+  id        String         @id @default(uuid())
+  phone     String         @unique
   name      String
-  label     String   @default("Employee")
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  label     AllowListLabel @default(EMPLOYEE)
+  active    Boolean        @default(true)
+  createdAt DateTime       @default(now())
 }
 
 model Driver {
   id           String    @id @default(uuid())
   name         String
-  email        String
+  email        String?
   phone        String    @unique
   qbCustomerId String?   // QuickBooks customer ID — links to QB customer record
   vehicles     Vehicle[]
@@ -105,28 +121,36 @@ model Session {
   endedAt            DateTime?
   status             SessionStatus @default(ACTIVE)
   reminderSent       Boolean       @default(false)
-  // Terms acceptance (clickwrap consent record)
-  termsVersion       String?
+  // Terms acceptance (clickwrap consent record). "legacy" = pre-consent-tracking row.
+  termsVersion       String        @default("legacy")
   overstayAuthorized Boolean       @default(false)
   payments           Payment[]
   auditLogs          AuditLog[]
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
+
+  // Cron hot path: "find ACTIVE sessions past expectedEnd"
+  @@index([status, expectedEnd])
+  // Driver session history
+  @@index([driverId, status])
 }
 
 model Payment {
-  id                String      @id @default(uuid())
+  id                String        @id @default(uuid())
   sessionId         String
-  session           Session     @relation(fields: [sessionId], references: [id])
+  session           Session       @relation(fields: [sessionId], references: [id])
   type              PaymentType
-  externalPaymentId String      // QB invoice/charge ID
+  externalPaymentId String        // QB invoice/charge ID
   amount            Float
   hours             Float?
-  status            String      @default("COMPLETED") // PENDING, COMPLETED, REFUNDED, VOIDED, DISPUTED
-  refundedAmount    Float       @default(0)
+  status            PaymentStatus @default(COMPLETED)
+  refundedAmount    Float         @default(0)
   refundedAt        DateTime?
-  refundExternalId  String?     // QB refund receipt/credit memo ID
-  createdAt         DateTime    @default(now())
+  refundExternalId  String?       // QB refund receipt/credit memo ID
+  createdAt         DateTime      @default(now())
+
+  // Admin Payments tab + chart
+  @@index([createdAt])
 }
 
 model AuditLog {
@@ -142,6 +166,11 @@ model AuditLog {
   spot      Spot?       @relation(fields: [spotId], references: [id])
   details   String?
   createdAt DateTime    @default(now())
+
+  // Admin Log tab
+  @@index([createdAt(sort: Desc)])
+  @@index([action, createdAt])
+  @@index([driverId, createdAt])
 }
 
 model Settings {
@@ -164,9 +193,9 @@ model Settings {
   // Clickwrap terms — admin editable, version bumped when text changes
   termsVersion          String  @default("1.0")
   termsBody             String  @default("")
-  // QuickBooks OAuth tokens — stored in DB because they expire/refresh
-  qbAccessToken         String  @default("")
-  qbRefreshToken        String  @default("")
-  qbRealmId             String  @default("")
+  // QuickBooks OAuth tokens — null when not connected
+  qbAccessToken         String?
+  qbRefreshToken        String?
+  qbRealmId             String?
   qbTokenExpiresAt      DateTime?
 }

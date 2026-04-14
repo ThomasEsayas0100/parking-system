@@ -5,7 +5,11 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 export const VehicleTypeSchema = z.enum(["BOBTAIL", "TRUCK_TRAILER"]);
 export const SessionStatusSchema = z.enum(["ACTIVE", "COMPLETED", "OVERSTAY"]);
-export const PaymentTypeSchema = z.enum(["CHECKIN", "EXTENSION", "OVERSTAY"]);
+export const PaymentTypeSchema = z.enum(["CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"]);
+export const PaymentStatusSchema = z.enum([
+  "PENDING", "COMPLETED", "PARTIALLY_REFUNDED", "REFUNDED", "VOIDED", "DISPUTED",
+]);
+export const AllowListLabelSchema = z.enum(["EMPLOYEE", "FAMILY", "VENDOR", "CONTRACTOR"]);
 
 export const idSchema = z.string().min(1, "required").max(200);
 export const emailSchema = z.string().email().max(200);

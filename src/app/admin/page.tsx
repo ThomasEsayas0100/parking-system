@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 
-import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail } from "@/types/domain";
+import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail, ApiPaymentWithSession } from "@/types/domain";
 import { apiFetch } from "@/lib/fetch";
 import { deriveLotStatus } from "@/lib/lot-status";
 import { useIsMobile } from "@/lib/hooks";
@@ -1072,23 +1072,7 @@ export default function AdminDashboard() {
 // ═══════════════════════════════════════════════════════════════════════════
 // Payments Tab — internal records + QB cross-reference
 // ═══════════════════════════════════════════════════════════════════════════
-type PaymentRow = {
-  id: string;
-  type: string;
-  amount: number;
-  hours: number | null;
-  externalPaymentId: string;
-  status: string;
-  refundedAmount: number;
-  refundedAt: string | null;
-  refundExternalId: string | null;
-  createdAt: string;
-  session: {
-    driver: { name: string; phone: string; qbCustomerId?: string | null } | null;
-    vehicle: { licensePlate: string | null; type: string } | null;
-    spot: { label: string } | null;
-  } | null;
-};
+type PaymentRow = ApiPaymentWithSession;
 type PaymentSummary = {
   totalRevenue: number;
   checkinRevenue: number;
@@ -1518,7 +1502,7 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
   const [loading, setLoading] = useState(true);
   const [addName, setAddName] = useState("");
   const [addPhone, setAddPhone] = useState("");
-  const [addLabel, setAddLabel] = useState("Employee");
+  const [addLabel, setAddLabel] = useState<"EMPLOYEE" | "FAMILY" | "VENDOR" | "CONTRACTOR">("EMPLOYEE");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -1536,7 +1520,7 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: addName, phone: addPhone, label: addLabel }),
     });
-    setAddName(""); setAddPhone(""); setAddLabel("Employee");
+    setAddName(""); setAddPhone(""); setAddLabel("EMPLOYEE");
     load();
   }
 
@@ -1569,11 +1553,11 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
         <input placeholder="Name" value={addName} onChange={(e) => setAddName(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
         <input placeholder="Phone" value={addPhone} onChange={(e) => setAddPhone(e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-        <select value={addLabel} onChange={(e) => setAddLabel(e.target.value)} style={{ ...inputStyle, width: mobile ? "100%" : 130 }}>
-          <option>Employee</option>
-          <option>Family</option>
-          <option>Vendor</option>
-          <option>Contractor</option>
+        <select value={addLabel} onChange={(e) => setAddLabel(e.target.value as typeof addLabel)} style={{ ...inputStyle, width: mobile ? "100%" : 130 }}>
+          <option value="EMPLOYEE">Employee</option>
+          <option value="FAMILY">Family</option>
+          <option value="VENDOR">Vendor</option>
+          <option value="CONTRACTOR">Contractor</option>
         </select>
         <button onClick={handleAdd} style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: "#2D7A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
           Add
@@ -1602,7 +1586,7 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
             >
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: FG }}>{e.name}</div>
-                <div style={{ fontSize: 11, color: FG_DIM }}>{e.phone} · {e.label}</div>
+                <div style={{ fontSize: 11, color: FG_DIM }}>{e.phone} · {e.label.charAt(0) + e.label.slice(1).toLowerCase()}</div>
               </div>
               <button
                 onClick={() => handleToggle(e.id, e.active)}

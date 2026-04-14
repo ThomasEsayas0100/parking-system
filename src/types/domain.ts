@@ -6,10 +6,17 @@
  * src/generated/prisma — these are for the client/page layer.
  */
 
-import type { VehicleType, SessionStatus, PaymentType, AuditAction } from "@/generated/prisma/enums";
+import type {
+  VehicleType,
+  SessionStatus,
+  PaymentType,
+  PaymentStatus,
+  AllowListLabel,
+  AuditAction,
+} from "@/generated/prisma/enums";
 
 // Re-export so pages can import enums from a single module
-export type { VehicleType, SessionStatus, PaymentType, AuditAction };
+export type { VehicleType, SessionStatus, PaymentType, PaymentStatus, AllowListLabel, AuditAction };
 
 // ---------------------------------------------------------------------------
 // Core entities (JSON-serialized API response shapes)
@@ -35,7 +42,21 @@ export type ApiPayment = {
   type: PaymentType;
   amount: number;
   hours: number | null;
+  externalPaymentId: string;
+  status: PaymentStatus;
+  refundedAmount: number;
+  refundedAt: string | null;
+  refundExternalId: string | null;
   createdAt: string;
+};
+
+/** Payment with full session/driver/vehicle/spot context (admin Payments tab). */
+export type ApiPaymentWithSession = ApiPayment & {
+  session: {
+    driver: { name: string; phone: string; qbCustomerId: string | null } | null;
+    vehicle: { licensePlate: string | null; type: VehicleType } | null;
+    spot: { label: string } | null;
+  } | null;
 };
 
 export type ApiSpot = {

@@ -31,7 +31,9 @@ export async function GET() {
     const message = `Your parking at spot ${session.spot.label} expires at ${expiresAt}. Extend your time here: ${extendUrl}`;
 
     await sendSMS(session.driver.phone, message);
-    await sendEmail(session.driver.email, "Parking Expiry Reminder", message);
+    if (session.driver.email) {
+      await sendEmail(session.driver.email, "Parking Expiry Reminder", message);
+    }
 
     await prisma.session.update({
       where: { id: session.id },
