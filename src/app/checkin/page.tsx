@@ -419,6 +419,8 @@ function CheckInContent() {
             driverEmail: email || undefined,
             amount: totalAmount,
             description,
+            // Prevent duplicate invoices on retry — unique per driver + vehicle + timestamp (minute granularity)
+            idempotencyKey: `${driver.id}_${vehicleId}_${Math.floor(Date.now() / 60000)}`,
           }),
         });
         const checkoutData = await checkoutRes.json();

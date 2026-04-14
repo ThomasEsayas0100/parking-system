@@ -25,6 +25,31 @@ const PROD_BASE = "https://quickbooks.api.intuit.com";
 const isProd = process.env.NODE_ENV === "production";
 const API_BASE = isProd ? PROD_BASE : SANDBOX_BASE;
 
+/**
+ * Validate that QB credentials match the current environment.
+ * Prevents sandbox credentials in production (charges succeed in sandbox
+ * but no real money moves — catastrophic for the business).
+ */
+function validateEnvironment(realmId: string): void {
+  if (!isProd) return; // No validation in dev/test — sandbox is expected
+
+  // QB sandbox realm IDs are typically numeric and short (e.g. "123456789")
+  // Production realm IDs are also numeric but we check the client ID instead:
+  // Sandbox client IDs from Intuit start with "ABEI" prefix
+  const clientId = process.env.QB_CLIENT_ID ?? "";
+  if (clientId.startsWith("ABEI")) {
+    throw new Error(
+      "CRITICAL: QuickBooks sandbox credentials detected in production! " +
+      "Update QB_CLIENT_ID and QB_CLIENT_SECRET to production keys. " +
+      "No real payments will be processed until this is fixed."
+    );
+  }
+
+  if (!realmId) {
+    throw new Error("QB_REALM_ID is empty. Connect QuickBooks in Admin → Settings.");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Auth — tokens stored in DB, refreshed automatically when expired
 // ---------------------------------------------------------------------------
@@ -35,6 +60,9 @@ async function getTokens(): Promise<{ accessToken: string; realmId: string }> {
   if (!settings?.qbAccessToken || !settings?.qbRealmId) {
     throw new Error("QuickBooks not connected. Go to Admin → Settings to connect.");
   }
+
+  // Fail loud if sandbox credentials are used in production
+  validateEnvironment(settings.qbRealmId);
 
   // Check if token needs refresh (expires every hour, refresh 5 min early)
   if (settings.qbTokenExpiresAt && settings.qbRefreshToken) {
@@ -166,9 +194,13 @@ export async function findOrCreateCustomer(opts: {
 // ---------------------------------------------------------------------------
 type QBInvoice = {
   Id: string;
+  TotalAmt: number;
   Balance: number;
   InvoiceLink?: string;
   EmailStatus: string;
+  /** QB marks voided invoices with this metadata */
+  PrivateNote?: string;
+  MetaData?: { LastUpdatedTime: string };
 };
 
 /**
@@ -182,7 +214,30 @@ export async function createInvoiceCheckout(opts: {
   amount: number;
   description: string;
   driverEmail?: string;
+  /** Unique key to prevent duplicate invoices on retry (e.g. driverId + vehicleId + timestamp hash) */
+  idempotencyKey?: string;
 }): Promise<{ invoiceId: string; checkoutUrl: string }> {
+  // Idempotency: check if an unpaid invoice already exists for this customer
+  // with the same amount and memo (prevents duplicates on app crash + retry)
+  if (opts.idempotencyKey) {
+    const existing = await qbFetch<{ QueryResponse: { Invoice?: QBInvoice[] } }>(
+      `/query?query=${encodeURIComponent(
+        `SELECT * FROM Invoice WHERE CustomerRef = '${opts.customerId}' AND Balance > '0' AND PrivateNote = '${opts.idempotencyKey}' MAXRESULTS 1`
+      )}`,
+    );
+    if (existing.QueryResponse.Invoice?.length) {
+      const inv = existing.QueryResponse.Invoice[0];
+      if (inv.InvoiceLink) {
+        return { invoiceId: inv.Id, checkoutUrl: inv.InvoiceLink };
+      }
+      // Invoice exists but no link — refetch with link
+      const refetch = await qbFetch<{ Invoice: QBInvoice }>(`/invoice/${inv.Id}?include=invoiceLink`);
+      if (refetch.Invoice.InvoiceLink) {
+        return { invoiceId: refetch.Invoice.Id, checkoutUrl: refetch.Invoice.InvoiceLink };
+      }
+    }
+  }
+
   // Create invoice
   const invoiceRes = await qbFetch<{ Invoice: QBInvoice }>(
     "/invoice?include=invoiceLink",
@@ -201,10 +256,11 @@ export async function createInvoiceCheckout(opts: {
             },
           },
         ],
-        // Allow online payment
         AllowOnlineACHPayment: true,
         AllowOnlineCreditCardPayment: true,
         CustomerMemo: { value: opts.description },
+        // Store idempotency key as private note (not visible to driver)
+        PrivateNote: opts.idempotencyKey || undefined,
         BillEmail: opts.driverEmail ? { Address: opts.driverEmail } : undefined,
       }),
     },
@@ -224,14 +280,43 @@ export async function createInvoiceCheckout(opts: {
 /**
  * Check if an invoice has been paid.
  */
-export async function getInvoiceStatus(invoiceId: string): Promise<{
+export type InvoiceStatus = {
   paid: boolean;
+  voided: boolean;
+  partial: boolean;
   balance: number;
-}> {
-  const res = await qbFetch<{ Invoice: QBInvoice }>(`/invoice/${invoiceId}`);
+  totalAmount: number;
+  amountPaid: number;
+};
+
+export async function getInvoiceStatus(invoiceId: string): Promise<InvoiceStatus> {
+  let invoice: QBInvoice;
+  try {
+    const res = await qbFetch<{ Invoice: QBInvoice }>(`/invoice/${invoiceId}`);
+    invoice = res.Invoice;
+  } catch (err) {
+    // Invoice not found or deleted — treat as voided
+    if (err instanceof Error && err.message.includes("404")) {
+      return { paid: false, voided: true, partial: false, balance: 0, totalAmount: 0, amountPaid: 0 };
+    }
+    throw err;
+  }
+
+  const totalAmount = invoice.TotalAmt ?? 0;
+  const balance = invoice.Balance ?? 0;
+  const amountPaid = totalAmount - balance;
+
+  // QB doesn't have a "voided" field on the API — a voided invoice has
+  // Balance === 0 AND TotalAmt === 0 (amounts zeroed out on void)
+  const voided = totalAmount === 0 && balance === 0;
+
   return {
-    paid: res.Invoice.Balance === 0,
-    balance: res.Invoice.Balance,
+    paid: !voided && balance === 0,
+    voided,
+    partial: !voided && amountPaid > 0 && balance > 0,
+    balance,
+    totalAmount,
+    amountPaid,
   };
 }
 
