@@ -148,6 +148,13 @@ export type AppSettings = {
   paymentRequired: boolean;
   termsVersion: string;
   termsBody: string;
+  // QuickBooks connection state (computed by /api/settings — QB token fields stripped)
+  qbRealmId: string;
+  qbConnected: boolean;
+  /** ISO string or null. Present so UI can display an expiry warning. */
+  qbTokenExpiresAt: string | null;
+  /** True when the QB access token expires within 14 days. */
+  qbTokenExpiringSoon: boolean;
 };
 
 // ---------------------------------------------------------------------------

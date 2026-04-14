@@ -256,6 +256,10 @@ export async function createInvoiceCheckout(opts: {
             },
           },
         ],
+        // Explicitly suppress tax — our amount IS the total; no tax line.
+        // Without this, QB may silently apply a state tax rate and cause
+        // reconciliation drift between Payment.amount and QB TotalAmt.
+        GlobalTaxCalculation: "NotApplicable",
         AllowOnlineACHPayment: true,
         AllowOnlineCreditCardPayment: true,
         CustomerMemo: { value: opts.description },

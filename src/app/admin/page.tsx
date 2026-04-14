@@ -1433,12 +1433,14 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
 function QBConnectionStatus() {
   const [status, setStatus] = useState<"loading" | "connected" | "disconnected">("loading");
   const [realmId, setRealmId] = useState("");
+  const [tokenExpiringSoon, setTokenExpiringSoon] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings").then((r) => r.json()).then((d) => {
-      if (d.settings?.qbRealmId && d.settings?.qbAccessToken) {
+      if (d.settings?.qbConnected) {
         setStatus("connected");
-        setRealmId(d.settings.qbRealmId);
+        setRealmId(d.settings.qbRealmId ?? "");
+        setTokenExpiringSoon(d.settings.qbTokenExpiringSoon ?? false);
       } else {
         setStatus("disconnected");
       }
@@ -1471,6 +1473,11 @@ function QBConnectionStatus() {
         <div style={{ fontSize: 11, color: FG_DIM }}>
           Company ID: {realmId}
         </div>
+        {tokenExpiringSoon && (
+          <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "#3D2800", border: "1px solid #C07000", fontSize: 12, color: "#FFAB00" }}>
+            ⚠ QB token expires within 14 days — reconnect soon to avoid payment failures.
+          </div>
+        )}
         <button
           onClick={() => window.location.href = "/api/admin/qb-auth"}
           style={{ marginTop: 10, padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}

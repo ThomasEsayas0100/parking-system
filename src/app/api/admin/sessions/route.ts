@@ -70,6 +70,14 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Session already completed" }, { status: 400 });
     }
 
+    // Void all pending/completed payments — cancelled sessions should not
+    // count toward revenue. QB-side charges are the manager's responsibility;
+    // we only update our own records here so dashboards stay accurate.
+    await prisma.payment.updateMany({
+      where: { sessionId, status: { notIn: ["VOIDED", "REFUNDED"] } },
+      data: { status: "VOIDED" },
+    });
+
     // Complete the session — spot is implicitly freed (no session referencing it = free)
     await prisma.session.update({
       where: { id: sessionId },

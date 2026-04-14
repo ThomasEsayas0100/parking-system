@@ -7,13 +7,18 @@ import { requireAdmin } from "@/lib/auth";
 export const GET = handler({}, async () => {
   const settings = await getSettings();
 
-  // Strip sensitive QB token fields — expose only connection status
+  // Strip sensitive QB token fields — expose only connection status + expiry
   const { qbAccessToken, qbRefreshToken, ...safe } = settings;
+  const now = Date.now();
+  const expiresMs = safe.qbTokenExpiresAt ? safe.qbTokenExpiresAt.getTime() : null;
+  // Warn UI when token expires within 14 days (QB refresh tokens live ~100 days)
+  const qbTokenExpiringSoon = expiresMs !== null && expiresMs - now < 14 * 24 * 60 * 60 * 1000;
   return json({
     settings: {
       ...safe,
-      // Boolean flag for UI — "is QB connected?"
+      // Boolean flags for UI
       qbConnected: !!(qbAccessToken && safe.qbRealmId),
+      qbTokenExpiringSoon,
     },
   });
 });
@@ -29,10 +34,14 @@ export const PUT = handler(
     });
 
     const { qbAccessToken, qbRefreshToken, ...safe } = settings;
+    const now = Date.now();
+    const expiresMs = safe.qbTokenExpiresAt ? safe.qbTokenExpiresAt.getTime() : null;
+    const qbTokenExpiringSoon = expiresMs !== null && expiresMs - now < 14 * 24 * 60 * 60 * 1000;
     return json({
       settings: {
         ...safe,
         qbConnected: !!(qbAccessToken && safe.qbRealmId),
+        qbTokenExpiringSoon,
       },
     });
   },

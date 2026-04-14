@@ -109,8 +109,13 @@ export const GET = handler(
             select: {
               id: true,
               type: true,
+              externalPaymentId: true,
               amount: true,
               hours: true,
+              status: true,
+              refundedAmount: true,
+              refundedAt: true,
+              refundExternalId: true,
               createdAt: true,
             },
             orderBy: { createdAt: "asc" },
