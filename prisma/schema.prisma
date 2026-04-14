@@ -55,15 +55,16 @@ model AllowList {
 }
 
 model Driver {
-  id        String    @id @default(uuid())
-  name      String
-  email     String
-  phone     String    @unique
-  vehicles  Vehicle[]
-  sessions  Session[]
-  auditLogs AuditLog[]
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
+  id           String    @id @default(uuid())
+  name         String
+  email        String
+  phone        String    @unique
+  qbCustomerId String?   // QuickBooks customer ID — links to QB customer record
+  vehicles     Vehicle[]
+  sessions     Session[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 model Vehicle {
@@ -120,14 +121,18 @@ model Session {
 }
 
 model Payment {
-  id              String      @id @default(uuid())
-  sessionId       String
-  session         Session     @relation(fields: [sessionId], references: [id])
-  type            PaymentType
-  externalPaymentId String
-  amount          Float
-  hours           Float?
-  createdAt       DateTime    @default(now())
+  id                String      @id @default(uuid())
+  sessionId         String
+  session           Session     @relation(fields: [sessionId], references: [id])
+  type              PaymentType
+  externalPaymentId String      // QB invoice/charge ID
+  amount            Float
+  hours             Float?
+  status            String      @default("COMPLETED") // PENDING, COMPLETED, REFUNDED, VOIDED, DISPUTED
+  refundedAmount    Float       @default(0)
+  refundedAt        DateTime?
+  refundExternalId  String?     // QB refund receipt/credit memo ID
+  createdAt         DateTime    @default(now())
 }
 
 model AuditLog {

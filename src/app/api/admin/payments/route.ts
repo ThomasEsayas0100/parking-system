@@ -40,7 +40,7 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
       include: {
         session: {
           include: {
-            driver: { select: { name: true, phone: true } },
+            driver: { select: { name: true, phone: true, qbCustomerId: true } },
             vehicle: { select: { licensePlate: true, type: true } },
             spot: { select: { label: true } },
           },

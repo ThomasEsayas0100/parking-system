@@ -98,13 +98,25 @@ function sumPayments(payments: { amount: number }[]): number {
   return payments.reduce((s, p) => s + p.amount, 0);
 }
 
-/** Generate a link to view a payment/invoice in QuickBooks. */
-function qbUrl(paymentRefId: string): string | null {
-  if (!paymentRefId || paymentRefId.startsWith("free_") || paymentRefId.startsWith("pi_test")) return null;
-  const base = process.env.NODE_ENV === "production"
-    ? "https://app.qbo.intuit.com"
-    : "https://app.sandbox.qbo.intuit.com";
-  return `${base}/app/invoice?txnId=${paymentRefId}`;
+/**
+ * Generate deep-links into QuickBooks for various entity types.
+ * Returns null for free/test payments that don't exist in QB.
+ */
+const QB_BASE = typeof window !== "undefined" && window.location.hostname === "localhost"
+  ? "https://app.sandbox.qbo.intuit.com"
+  : "https://app.qbo.intuit.com";
+
+const qbLinks = {
+  invoice: (id: string) => `${QB_BASE}/app/invoice?txnId=${id}`,
+  payment: (id: string) => `${QB_BASE}/app/recvpayment?txnId=${id}`,
+  customer: (id: string) => `${QB_BASE}/app/customerdetail?nameId=${id}`,
+  refundReceipt: (id: string) => `${QB_BASE}/app/refundreceipt?txnId=${id}`,
+  creditMemo: (customerId: string) => `${QB_BASE}/app/creditmemo/create?customerId=${customerId}`,
+  dashboard: () => `${QB_BASE}/app/homepage`,
+};
+
+function isRealPayment(externalId: string): boolean {
+  return !!(externalId && !externalId.startsWith("free_") && !externalId.startsWith("pi_test"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,9 +1080,13 @@ type PaymentRow = {
   amount: number;
   hours: number | null;
   externalPaymentId: string;
+  status: string;
+  refundedAmount: number;
+  refundedAt: string | null;
+  refundExternalId: string | null;
   createdAt: string;
   session: {
-    driver: { name: string; phone: string } | null;
+    driver: { name: string; phone: string; qbCustomerId?: string | null } | null;
     vehicle: { licensePlate: string | null; type: string } | null;
     spot: { label: string } | null;
   } | null;
@@ -1167,6 +1183,13 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
           ))}
         </div>
       )}
+
+      {/* QB quick link */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <a href={qbLinks.dashboard()} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#60A5FA", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+          Open QuickBooks ↗
+        </a>
+      </div>
 
       {/* Revenue chart — last 30 days */}
       {dailyRevenue.length > 0 && (() => {
@@ -1271,68 +1294,110 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
             {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} payments
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            {payments.map((p) => (
-              <div key={p.id} style={{
-                display: "grid",
-                gridTemplateColumns: mobile ? "1fr auto" : "auto 1fr 1fr auto auto",
-                gap: mobile ? 6 : 12,
-                alignItems: "center",
-                padding: mobile ? "10px 12px" : "12px 16px",
-                background: CARD_BG,
-                borderRadius: 8,
-              }}>
-                {/* Type badge */}
-                <span style={{
-                  fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
-                  padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap",
-                  background: p.type === "OVERSTAY" ? "#2C1810" : p.type === "MONTHLY_CHECKIN" ? "#0A1A30" : "#12261C",
-                  color: p.type === "OVERSTAY" ? "#DC2626" : p.type === "MONTHLY_CHECKIN" ? "#60A5FA" : "#2D7A4A",
+            {payments.map((p) => {
+              const real = isRealPayment(p.externalPaymentId);
+              const custId = p.session?.driver?.qbCustomerId;
+              const isRefunded = p.status === "REFUNDED";
+              const statusColor = isRefunded ? "#F59E0B" : p.status === "VOIDED" ? "#DC2626" : p.status === "DISPUTED" ? "#EF4444" : undefined;
+
+              return (
+                <div key={p.id} style={{
+                  background: CARD_BG, borderRadius: 8, padding: mobile ? "10px 12px" : "12px 16px",
+                  opacity: isRefunded ? 0.7 : 1,
                 }}>
-                  {typeLabels[p.type] ?? p.type}
-                </span>
+                  {/* Main row */}
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: mobile ? "1fr auto" : "auto 1fr auto auto",
+                    gap: mobile ? 6 : 12,
+                    alignItems: "center",
+                  }}>
+                    {/* Type badge + status */}
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                        padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap",
+                        background: p.type === "OVERSTAY" ? "#2C1810" : p.type === "MONTHLY_CHECKIN" ? "#0A1A30" : "#12261C",
+                        color: p.type === "OVERSTAY" ? "#DC2626" : p.type === "MONTHLY_CHECKIN" ? "#60A5FA" : "#2D7A4A",
+                      }}>
+                        {typeLabels[p.type] ?? p.type}
+                      </span>
+                      {statusColor && (
+                        <span style={{ fontSize: 9, fontWeight: 700, color: statusColor, textTransform: "uppercase" }}>
+                          {p.status}
+                        </span>
+                      )}
+                    </div>
 
-                {/* Driver + vehicle */}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {p.session?.driver?.name ?? "—"}
+                    {/* Driver + vehicle + date */}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {p.session?.driver?.name ?? "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: FG_DIM }}>
+                        {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"} · {fmtDate(p.createdAt)}
+                      </div>
+                    </div>
+
+                    {/* QB actions — desktop */}
+                    {!mobile && (
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10 }}>
+                        {real && (
+                          <a href={qbLinks.invoice(p.externalPaymentId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
+                            Invoice ↗
+                          </a>
+                        )}
+                        {real && custId && (
+                          <a href={qbLinks.customer(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
+                            Customer ↗
+                          </a>
+                        )}
+                        {real && !isRefunded && custId && (
+                          <a href={qbLinks.creditMemo(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
+                            Refund ↗
+                          </a>
+                        )}
+                        {real && p.refundExternalId && (
+                          <a href={qbLinks.refundReceipt(p.refundExternalId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
+                            View Refund ↗
+                          </a>
+                        )}
+                        {!real && (
+                          <span style={{ color: FG_DIM }}>
+                            {p.externalPaymentId.startsWith("free_") ? "Free" : "Test"}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Amount */}
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{
+                        fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                        color: isRefunded ? "#F59E0B" : p.type === "OVERSTAY" ? "#DC2626" : FG,
+                        textDecoration: isRefunded ? "line-through" : undefined,
+                      }}>
+                        ${p.amount.toFixed(2)}
+                      </div>
+                      {p.refundedAmount > 0 && (
+                        <div style={{ fontSize: 10, color: "#F59E0B" }}>
+                          -${p.refundedAmount.toFixed(2)} refunded
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  {!mobile && (
-                    <div style={{ fontSize: 11, color: FG_DIM }}>
-                      {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"}
-                    </div>
-                  )}
-                  {mobile && (
-                    <div style={{ fontSize: 11, color: FG_DIM }}>
-                      {fmtDate(p.createdAt)} · {p.session?.spot?.label ?? "—"}
+
+                  {/* Mobile actions row */}
+                  {mobile && real && (
+                    <div style={{ display: "flex", gap: 10, marginTop: 6, fontSize: 10 }}>
+                      <a href={qbLinks.invoice(p.externalPaymentId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none" }}>Invoice ↗</a>
+                      {custId && <a href={qbLinks.customer(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none" }}>Customer ↗</a>}
+                      {!isRefunded && custId && <a href={qbLinks.creditMemo(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none" }}>Refund ↗</a>}
                     </div>
                   )}
                 </div>
-
-                {/* Date — desktop */}
-                {!mobile && (
-                  <div style={{ fontSize: 12, color: FG_MUTED }}>{fmtDate(p.createdAt)}</div>
-                )}
-
-                {/* Payment ref — desktop */}
-                {!mobile && (() => {
-                  const link = qbUrl(p.externalPaymentId);
-                  return link ? (
-                    <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 10, color: "#60A5FA", fontFamily: "monospace", textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 120, display: "block" }}>
-                      View in QB ↗
-                    </a>
-                  ) : (
-                    <div style={{ fontSize: 10, color: FG_DIM, fontFamily: "monospace" }}>
-                      {p.externalPaymentId.startsWith("free_") ? "Free" : p.externalPaymentId.slice(0, 16)}
-                    </div>
-                  );
-                })()}
-
-                {/* Amount */}
-                <div style={{ fontSize: 14, fontWeight: 700, color: p.type === "OVERSTAY" ? "#DC2626" : FG, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
-                  ${p.amount.toFixed(2)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Unmatched QB payments */}
@@ -1353,7 +1418,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                       <div style={{ fontSize: 11, color: FG_DIM }}>{qb.date} · {qb.method}</div>
                     </div>
                     <a
-                      href={qbUrl(qb.id) ?? "#"}
+                      href={qbLinks.payment(qb.id)}
                       target="_blank"
                       rel="noopener noreferrer"
                       style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}

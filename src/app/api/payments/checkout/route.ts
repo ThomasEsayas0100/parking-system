@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { prisma } from "@/lib/prisma";
 import { findOrCreateCustomer, createInvoiceCheckout } from "@/lib/quickbooks";
 import { handler, json } from "@/lib/api-handler";
 import { RATE_LIMITS } from "@/lib/rate-limit";
@@ -29,6 +30,13 @@ export const POST = handler(
       name: driverName,
       phone: driverPhone,
       email: driverEmail,
+    });
+
+    // Store QB customer ID on the driver for future cross-referencing
+    const phone = driverPhone.replace(/\D/g, "");
+    await prisma.driver.updateMany({
+      where: { phone },
+      data: { qbCustomerId: customer.Id },
     });
 
     const { invoiceId, checkoutUrl } = await createInvoiceCheckout({
