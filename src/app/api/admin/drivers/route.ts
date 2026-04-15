@@ -66,7 +66,7 @@ export const GET = handler({ query: DriversQuery }, async ({ query }) => {
 const DriverUpdateBody = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(200).optional(),
-  email: z.string().email().optional(),
+  email: z.union([z.string().email(), z.literal("")]).optional(),
   phone: z.string().min(4).max(20).optional(),
 });
 

@@ -9,6 +9,7 @@ import { useIsMobile } from "@/lib/hooks";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
+import PhoneInput, { digitsOnly } from "@/components/PhoneInput";
 
 type Spot = ApiSpotWithSessions;
 type AuditEntry = ApiAuditEntry;
@@ -183,6 +184,7 @@ export default function AdminDashboard() {
   const [driversLoading, setDriversLoading] = useState(false);
   const [editingDriver, setEditingDriver] = useState<DriverRow | null>(null);
   const [editForm, setEditForm] = useState({ name: "", email: "", phone: "" });
+  const [editErrors, setEditErrors] = useState<{ name?: string; email?: string; phone?: string }>({});
   const DRIVERS_LIMIT = 30;
 
   // ── Session actions state ──
@@ -337,10 +339,19 @@ export default function AdminDashboard() {
   }, [spots, lotStatuses]);
 
   // ── Handlers ──
-  async function handleSeedSpots() {
-    const res = await fetch("/api/spots/seed", { method: "POST" });
+  async function handleSeedTestData() {
+    const res = await fetch("/api/dev/seed", { method: "POST" });
+    const d = await res.json();
+    if (res.ok) { loadData(); console.log("Dev seed:", d); }
+    else alert(d.error || "Failed to seed test data");
+  }
+
+  async function handleClearTestData() {
+    if (!confirm("Clear all drivers, vehicles, sessions, and payments?")) return;
+    const res = await fetch("/api/dev/clear", { method: "POST" });
+    const d = await res.json();
     if (res.ok) loadData();
-    else { const d = await res.json(); alert(d.error || "Failed to seed spots"); }
+    else alert(d.error || "Failed to clear data");
   }
 
   async function handleOverride(spotId: string) {
@@ -400,11 +411,25 @@ export default function AdminDashboard() {
   // ── Driver update ──
   async function handleSaveDriver() {
     if (!editingDriver) return;
-    await fetch("/api/admin/drivers", {
+
+    const errors: typeof editErrors = {};
+    if (!editForm.name.trim()) errors.name = "Name is required";
+    const phoneDigits = digitsOnly(editForm.phone);
+    if (phoneDigits.length < 10) errors.phone = "Enter a valid 10-digit phone number";
+    if (editForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(editForm.email)) errors.email = "Enter a valid email address";
+    if (Object.keys(errors).length > 0) { setEditErrors(errors); return; }
+    setEditErrors({});
+
+    const body: Record<string, string> = { id: editingDriver.id };
+    if (editForm.name)  body.name  = editForm.name.trim();
+    if (editForm.phone) body.phone = editForm.phone;
+    if (editForm.email) body.email = editForm.email;
+    const res = await fetch("/api/admin/drivers", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: editingDriver.id, ...editForm }),
+      body: JSON.stringify(body),
     });
+    if (!res.ok) { const d = await res.json(); alert(d.error || "Failed to save driver"); return; }
     setEditingDriver(null);
     loadDrivers();
   }
@@ -471,10 +496,15 @@ export default function AdminDashboard() {
                 <span style={{ color: FG, fontWeight: 700 }}>{lotCounts.total}</span> total
               </span>
 
-              {spots.length === 0 && (
-                <button onClick={handleSeedSpots} style={{ padding: "8px 16px", background: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: 6, color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                  Seed Spots
-                </button>
+              {process.env.NODE_ENV !== "production" && (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={handleSeedTestData} style={{ padding: "8px 16px", background: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: 6, color: "#f59e0b", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    Seed Test Data
+                  </button>
+                  <button onClick={handleClearTestData} style={{ padding: "8px 16px", background: CARD_BG, border: `1px solid #ef4444`, borderRadius: 6, color: "#ef4444", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    Clear Data
+                  </button>
+                </div>
               )}
             </div>
 
@@ -783,15 +813,18 @@ export default function AdminDashboard() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <div>
                     <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Name</label>
-                    <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={inputStyle} />
+                    <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} style={{ ...inputStyle, borderColor: editErrors.name ? "#ef4444" : undefined }} />
+                    {editErrors.name && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 3 }}>{editErrors.name}</div>}
                   </div>
                   <div>
-                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Email</label>
-                    <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} style={inputStyle} />
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Email <span style={{ color: FG_MUTED, fontWeight: 400 }}>(optional)</span></label>
+                    <input type="email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} style={{ ...inputStyle, borderColor: editErrors.email ? "#ef4444" : undefined }} />
+                    {editErrors.email && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 3 }}>{editErrors.email}</div>}
                   </div>
                   <div>
                     <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Phone</label>
-                    <input value={editForm.phone} onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })} style={inputStyle} />
+                    <PhoneInput value={editForm.phone} onChange={(v) => setEditForm({ ...editForm, phone: v })} style={{ ...inputStyle, borderColor: editErrors.phone ? "#ef4444" : undefined }} />
+                    {editErrors.phone && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 3 }}>{editErrors.phone}</div>}
                   </div>
                   <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                     <button onClick={handleSaveDriver} style={{ padding: "8px 18px", borderRadius: 6, border: "none", background: "#2D7A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
@@ -873,6 +906,7 @@ export default function AdminDashboard() {
                           onClick={() => {
                             setEditingDriver(d);
                             setEditForm({ name: d.name, email: d.email, phone: d.phone });
+                            setEditErrors({});
                           }}
                           style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
                         >
