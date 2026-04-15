@@ -28,9 +28,9 @@ enum PaymentType {
 enum PaymentStatus {
   PENDING
   COMPLETED
-  PARTIALLY_REFUNDED
+  PARTIALLY_REFUNDED // reserved for future refund API — nothing writes this today
   REFUNDED
-  VOIDED
+  VOIDED   // set by admin cancel (M3); QB-side voids must be synced manually (M2 gap)
   DISPUTED
 }
 
