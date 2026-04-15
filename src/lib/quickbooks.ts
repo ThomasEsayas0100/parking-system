@@ -163,10 +163,11 @@ export async function findOrCreateCustomer(opts: {
   phone: string;
   email?: string;
 }): Promise<QBCustomer> {
-  // Search by phone first
+  // Search by DisplayName — QB doesn't support querying on nested objects like PrimaryPhone
   const digits = opts.phone.replace(/\D/g, "");
+  const displayName = `${opts.name} (${digits})`;
   const searchRes = await qbFetch<{ QueryResponse: { Customer?: QBCustomer[] } }>(
-    `/query?query=${encodeURIComponent(`SELECT * FROM Customer WHERE PrimaryPhone = '${digits}' MAXRESULTS 1`)}`,
+    `/query?query=${encodeURIComponent(`SELECT * FROM Customer WHERE DisplayName = '${displayName}' MAXRESULTS 1`)}`,
   );
 
   if (searchRes.QueryResponse.Customer?.length) {
@@ -214,31 +215,7 @@ export async function createInvoiceCheckout(opts: {
   amount: number;
   description: string;
   driverEmail?: string;
-  /** Unique key to prevent duplicate invoices on retry (e.g. driverId + vehicleId + timestamp hash) */
-  idempotencyKey?: string;
 }): Promise<{ invoiceId: string; checkoutUrl: string }> {
-  // Idempotency: check if an unpaid invoice already exists for this customer
-  // with the same amount and memo (prevents duplicates on app crash + retry)
-  if (opts.idempotencyKey) {
-    const existing = await qbFetch<{ QueryResponse: { Invoice?: QBInvoice[] } }>(
-      `/query?query=${encodeURIComponent(
-        `SELECT * FROM Invoice WHERE CustomerRef = '${opts.customerId}' AND Balance > '0' AND PrivateNote = '${opts.idempotencyKey}' MAXRESULTS 1`
-      )}`,
-    );
-    if (existing.QueryResponse.Invoice?.length) {
-      const inv = existing.QueryResponse.Invoice[0];
-      if (inv.InvoiceLink) {
-        return { invoiceId: inv.Id, checkoutUrl: inv.InvoiceLink };
-      }
-      // Invoice exists but no link — refetch with link
-      const refetch = await qbFetch<{ Invoice: QBInvoice }>(`/invoice/${inv.Id}?include=invoiceLink`);
-      if (refetch.Invoice.InvoiceLink) {
-        return { invoiceId: refetch.Invoice.Id, checkoutUrl: refetch.Invoice.InvoiceLink };
-      }
-    }
-  }
-
-  // Create invoice
   const invoiceRes = await qbFetch<{ Invoice: QBInvoice }>(
     "/invoice?include=invoiceLink",
     {
@@ -263,16 +240,16 @@ export async function createInvoiceCheckout(opts: {
         AllowOnlineACHPayment: true,
         AllowOnlineCreditCardPayment: true,
         CustomerMemo: { value: opts.description },
-        // Store idempotency key as private note (not visible to driver)
-        PrivateNote: opts.idempotencyKey || undefined,
         BillEmail: opts.driverEmail ? { Address: opts.driverEmail } : undefined,
       }),
     },
   );
 
   const invoice = invoiceRes.Invoice;
+  console.log("[QB] Invoice created:", invoice.Id, "InvoiceLink:", invoice.InvoiceLink);
+
   if (!invoice.InvoiceLink) {
-    throw new Error("Invoice created but no checkout link returned. Ensure QB Payments is enabled.");
+    throw new Error("Invoice created but no checkout link returned. Ensure QB Payments is enabled on this company.");
   }
 
   return {
@@ -305,6 +282,15 @@ export async function getInvoiceStatus(invoiceId: string): Promise<InvoiceStatus
     }
     throw err;
   }
+
+  console.log("[QB] Invoice raw response:", JSON.stringify({
+    Id: invoice.Id,
+    TotalAmt: invoice.TotalAmt,
+    Balance: invoice.Balance,
+    EmailStatus: invoice.EmailStatus,
+    PrivateNote: invoice.PrivateNote,
+    MetaData: invoice.MetaData,
+  }));
 
   const totalAmount = invoice.TotalAmt ?? 0;
   const balance = invoice.Balance ?? 0;

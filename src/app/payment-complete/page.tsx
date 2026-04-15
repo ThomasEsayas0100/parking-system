@@ -29,10 +29,11 @@ type PendingSession = {
 
 export default function PaymentCompletePage() {
   const router = useRouter();
-  const [status, setStatus] = useState<"checking" | "creating" | "done" | "voided" | "partial" | "error">("checking");
+  const [status, setStatus] = useState<"waiting" | "checking" | "creating" | "done" | "voided" | "partial" | "error">("waiting");
   const [error, setError] = useState("");
+  const pendingRef = useRef<PendingSession | null>(null);
   const pollCount = useRef(0);
-  const maxPolls = 30; // 30 x 2s = 60 seconds max wait
+  const maxPolls = 20; // 20 x 2s = 40 seconds
 
   useEffect(() => {
     const raw = sessionStorage.getItem("pending_session");
@@ -41,23 +42,24 @@ export default function PaymentCompletePage() {
       setStatus("error");
       return;
     }
-
-    let pending: PendingSession;
     try {
-      pending = JSON.parse(raw);
+      const pending = JSON.parse(raw) as PendingSession;
+      if (!pending.invoiceId) throw new Error("missing invoiceId");
+      pendingRef.current = pending;
     } catch {
       setError("Invalid session data. Please check in again.");
       setStatus("error");
-      return;
     }
+  }, []);
 
-    if (!pending.invoiceId) {
-      setError("No invoice ID found. Please check in again.");
-      setStatus("error");
-      return;
-    }
+  const confirmPayment = async () => {
+    const pending = pendingRef.current;
+    if (!pending) return;
 
-    // Poll for payment completion
+    pollCount.current = 0;
+    setStatus("checking");
+    setError("");
+
     const poll = async () => {
       pollCount.current++;
       try {
@@ -68,11 +70,8 @@ export default function PaymentCompletePage() {
           balance: number;
           totalAmount: number;
           amountPaid: number;
-        }>(
-          `/api/payments/status?invoiceId=${pending.invoiceId}`,
-        );
+        }>(`/api/payments/status?invoiceId=${pending.invoiceId}`);
 
-        // Invoice was voided/cancelled in QB — stop polling, show error
         if (data.voided) {
           sessionStorage.removeItem("pending_session");
           setError("This payment was cancelled. Please check in again to start a new session.");
@@ -80,17 +79,14 @@ export default function PaymentCompletePage() {
           return;
         }
 
-        // Partial payment — stop polling, show warning
         if (data.partial) {
-          setError(`Partial payment received ($${data.amountPaid.toFixed(2)} of $${data.totalAmount.toFixed(2)}). Please contact the manager to complete your payment.`);
+          setError(`Partial payment received ($${data.amountPaid.toFixed(2)} of $${data.totalAmount.toFixed(2)}). Please contact the manager.`);
           setStatus("partial");
           return;
         }
 
         if (data.paid) {
-          // Payment confirmed — create the session
           setStatus("creating");
-
           const sessionRes = await fetch("/api/sessions", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -99,43 +95,38 @@ export default function PaymentCompletePage() {
               vehicleId: pending.vehicleId,
               durationType: pending.durationType,
               ...(pending.durationType === "HOURLY" ? { hours: pending.hours } : { months: pending.months }),
-              paymentId: pending.invoiceId, // store invoice ID as payment reference
+              paymentId: pending.invoiceId,
               termsVersion: pending.termsVersion,
               overstayAuthorized: pending.overstayAuthorized,
             }),
           });
           const sessionData = await sessionRes.json();
-
           if (!sessionRes.ok) {
             setError(sessionData.error || "Session creation failed after payment.");
             setStatus("error");
             return;
           }
-
-          // Clean up and redirect
           sessionStorage.removeItem("pending_session");
           setStatus("done");
           router.push(`/confirmation?sessionId=${sessionData.session.id}`);
           return;
         }
 
-        // Not paid yet — keep polling (up to max)
+        // Not paid yet — keep polling
         if (pollCount.current < maxPolls) {
           setTimeout(poll, 2000);
         } else {
-          setError("Payment verification timed out. If you completed payment, please contact the manager.");
-          setStatus("error");
+          setError("Payment not found yet. If you completed payment, tap the button again in a moment.");
+          setStatus("waiting");
         }
       } catch {
-        setError("Could not verify payment. Please contact the manager.");
-        setStatus("error");
+        setError("Could not verify payment. Please try again or contact the manager.");
+        setStatus("waiting");
       }
     };
 
-    // Start polling after a short delay (give QB time to process)
-    setTimeout(poll, 1500);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    setTimeout(poll, 1000);
+  };
 
   return (
     <div style={{
@@ -148,6 +139,28 @@ export default function PaymentCompletePage() {
       fontFamily: "var(--font-body)",
     }}>
       <div style={{ textAlign: "center", maxWidth: 400 }}>
+        {status === "waiting" && (
+          <>
+            <div style={{ fontSize: 48, marginBottom: 24 }}>💳</div>
+            <h1 style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
+              Complete your payment
+            </h1>
+            <p style={{ fontSize: 14, color: "var(--fg-muted)", marginBottom: 24 }}>
+              Finish payment on QuickBooks, then return here and tap the button below to confirm your spot.
+            </p>
+            {error && <p style={{ fontSize: 13, color: "var(--error)", marginBottom: 16 }}>{error}</p>}
+            <button
+              onClick={confirmPayment}
+              style={{ padding: "14px 28px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 16, cursor: "pointer", width: "100%" }}
+            >
+              I've paid — confirm my spot
+            </button>
+            <p style={{ fontSize: 12, color: "var(--fg-subtle)", marginTop: 12 }}>
+              Tap after completing payment on QuickBooks
+            </p>
+          </>
+        )}
+
         {status === "checking" && (
           <>
             <div style={{
@@ -163,7 +176,7 @@ export default function PaymentCompletePage() {
               Verifying payment…
             </h1>
             <p style={{ fontSize: 14, color: "var(--fg-muted)" }}>
-              Confirming your payment with QuickBooks. This usually takes a few seconds.
+              Confirming your payment with QuickBooks.
             </p>
           </>
         )}

@@ -421,8 +421,6 @@ function CheckInContent() {
             driverEmail: email || undefined,
             amount: totalAmount,
             description,
-            // Prevent duplicate invoices on retry — unique per driver + vehicle + timestamp (minute granularity)
-            idempotencyKey: `${driver.id}_${vehicleId}_${Math.floor(Date.now() / 60000)}`,
           }),
         });
         const checkoutData = await checkoutRes.json();
@@ -446,7 +444,15 @@ function CheckInContent() {
         }));
 
         // Redirect to QB hosted checkout — driver pays there (Apple Pay, PayPal, etc.)
-        window.location.href = checkoutData.checkoutUrl;
+        // In QB sandbox the InvoiceLink goes to developer.intuit.com (no real checkout page).
+        // Skip straight to /payment-complete so the driver uses the "I've paid" button.
+        const isSandboxLink = checkoutData.checkoutUrl.includes("developer.intuit.com");
+        console.log("[Checkout] checkoutUrl:", checkoutData.checkoutUrl, "sandbox:", isSandboxLink);
+        if (isSandboxLink) {
+          window.location.href = "/payment-complete";
+        } else {
+          window.location.href = checkoutData.checkoutUrl;
+        }
         return;
       }
 
