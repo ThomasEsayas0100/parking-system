@@ -33,7 +33,7 @@ async function isAdmin(request: NextRequest): Promise<boolean> {
 // Paths that require admin auth
 const PROTECTED_PAGE_PREFIXES = ["/admin", "/lot", "/lot-editor"];
 const PROTECTED_API_PREFIXES = ["/api/admin", "/api/dev"];
-const PROTECTED_API_PATHS = ["/api/spots/seed"];
+const PROTECTED_API_PATHS: string[] = [];
 // /api/settings PUT is admin-only; GET is public-ish (used by checkin for rates)
 const PROTECTED_API_METHOD_RULES: { path: string; methods: string[] }[] = [
   { path: "/api/settings", methods: ["PUT"] },
@@ -96,7 +96,6 @@ export const config = {
     // Protected API prefixes
     "/api/admin/:path*",
     "/api/dev/:path*",
-    "/api/spots/seed",
     "/api/settings",
   ],
 };
