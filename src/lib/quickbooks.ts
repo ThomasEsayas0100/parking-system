@@ -380,6 +380,39 @@ export async function getCharge(chargeId: string): Promise<ChargeResponse> {
   return paymentsFetch<ChargeResponse>(`/quickbooks/v4/payments/charges/${chargeId}`);
 }
 
+export type ChargeRefund = { id: string; amount: number; created: string };
+
+/**
+ * Fetch a charge and any refunds issued against it in a single function.
+ * Used by the QB reconciliation endpoint to detect voided/refunded charges.
+ */
+export async function getChargeWithRefunds(chargeId: string): Promise<{
+  status: string;
+  amount: number;
+  refunds: ChargeRefund[];
+}> {
+  const [chargeResult, refundsResult] = await Promise.allSettled([
+    paymentsFetch<ChargeResponse>(`/quickbooks/v4/payments/charges/${chargeId}`),
+    paymentsFetch<{ refunds?: Array<{ id: string; amount: string; created: string }> }>(
+      `/quickbooks/v4/payments/charges/${chargeId}/refunds`,
+    ),
+  ]);
+
+  const charge = chargeResult.status === "fulfilled" ? chargeResult.value : null;
+  const rawRefunds =
+    refundsResult.status === "fulfilled" ? (refundsResult.value.refunds ?? []) : [];
+
+  return {
+    status: charge?.status ?? "UNKNOWN",
+    amount: charge ? parseFloat(charge.amount) : 0,
+    refunds: rawRefunds.map((r) => ({
+      id: r.id,
+      amount: parseFloat(r.amount),
+      created: r.created,
+    })),
+  };
+}
+
 export async function refundCharge(chargeId: string, amount: number, description?: string) {
   return paymentsFetch(`/quickbooks/v4/payments/charges/${chargeId}/refunds`, {
     method: "POST",

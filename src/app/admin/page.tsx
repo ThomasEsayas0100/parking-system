@@ -1101,6 +1101,28 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
   const [qbConnected, setQbConnected] = useState(false);
   const [qbLoading, setQbLoading] = useState(true);
 
+  // QB reconciliation
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<{
+    checked: number;
+    updated: number;
+    errors: { paymentId: string; error: string }[];
+  } | null>(null);
+  const [syncKey, setSyncKey] = useState(0);
+
+  const syncWithQB = useCallback(() => {
+    setSyncing(true);
+    setSyncResult(null);
+    fetch("/api/admin/qb-reconcile", { method: "POST" })
+      .then((r) => r.json())
+      .then((d) => {
+        setSyncResult({ checked: d.checked, updated: d.updated, errors: d.errors ?? [] });
+        if (d.updated > 0) setSyncKey((k) => k + 1); // refresh payment list
+      })
+      .catch(() => setSyncResult({ checked: 0, updated: 0, errors: [{ paymentId: "", error: "Sync failed — QB may not be connected" }] }))
+      .finally(() => setSyncing(false));
+  }, []);
+
   // Load internal payments
   useEffect(() => {
     setLoading(true);
@@ -1116,7 +1138,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
         if (d.dailyRevenue) setDailyRevenue(d.dailyRevenue);
       })
       .finally(() => setLoading(false));
-  }, [offset, typeFilter, search]);
+  }, [offset, typeFilter, search, syncKey]);
 
   // Load QB data
   useEffect(() => {
@@ -1234,17 +1256,44 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                 </div>
               )}
             </div>
-            {unmatchedQB.length > 0 && (
-              <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#2A1F0A", color: "#F59E0B" }}>
-                {unmatchedQB.length} unmatched QB payment{unmatchedQB.length !== 1 ? "s" : ""}
-              </span>
-            )}
-            {unmatchedQB.length === 0 && qbPayments.length > 0 && (
-              <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A" }}>
-                All matched
-              </span>
-            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {unmatchedQB.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#2A1F0A", color: "#F59E0B" }}>
+                  {unmatchedQB.length} unmatched QB payment{unmatchedQB.length !== 1 ? "s" : ""}
+                </span>
+              )}
+              {unmatchedQB.length === 0 && qbPayments.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A" }}>
+                  All matched
+                </span>
+              )}
+              {/* Sync internal payment statuses with QB ground truth */}
+              <button
+                onClick={syncWithQB}
+                disabled={syncing}
+                style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: syncing ? FG_DIM : FG_MUTED, cursor: syncing ? "default" : "pointer" }}
+              >
+                {syncing ? "Syncing…" : "Sync with QB"}
+              </button>
+            </div>
           </div>
+          {/* Sync result summary */}
+          {syncResult && (
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}`, fontSize: 12 }}>
+              {syncResult.errors.length > 0 && syncResult.updated === 0 ? (
+                <span style={{ color: "#DC2626" }}>
+                  Sync error: {syncResult.errors[0]?.error ?? "Unknown error"}
+                </span>
+              ) : (
+                <span style={{ color: syncResult.updated > 0 ? "#F59E0B" : "#2D7A4A" }}>
+                  {syncResult.updated > 0
+                    ? `Updated ${syncResult.updated} payment${syncResult.updated !== 1 ? "s" : ""} (checked ${syncResult.checked})`
+                    : `All ${syncResult.checked} payment${syncResult.checked !== 1 ? "s" : ""} in sync`}
+                  {syncResult.errors.length > 0 && ` · ${syncResult.errors.length} error(s)`}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
       {!qbConnected && !qbLoading && (
