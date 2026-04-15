@@ -103,7 +103,9 @@ function sumPayments(payments: { amount: number }[]): number {
  * Generate deep-links into QuickBooks for various entity types.
  * Returns null for free/test payments that don't exist in QB.
  */
-const QB_BASE = typeof window !== "undefined" && window.location.hostname === "localhost"
+// Use sandbox QB dashboard links in dev/test; production links in prod.
+// process.env.NODE_ENV is inlined by Next.js at build time — safe client-side.
+const QB_BASE = process.env.NODE_ENV !== "production"
   ? "https://app.sandbox.qbo.intuit.com"
   : "https://app.qbo.intuit.com";
 
