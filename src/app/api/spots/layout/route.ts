@@ -2,13 +2,15 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { handler, json } from "@/lib/api-handler";
+import { applyLayoutAndCreateVersion } from "@/lib/lot-layout";
 
 // ---------------------------------------------------------------------------
-// GET: load full lot layout (spots with positions + editor groups)
+// GET: load current lot layout (non-archived spots only + editor groups)
 // ---------------------------------------------------------------------------
 export const GET = handler({}, async () => {
   const [spots, settings] = await Promise.all([
     prisma.spot.findMany({
+      where: { archivedAt: null },
       orderBy: { label: "asc" },
       select: { id: true, label: true, type: true, cx: true, cy: true, w: true, h: true, rot: true },
     }),
@@ -44,68 +46,32 @@ const SpotSchema = z.object({
 const LayoutSaveSchema = z.object({
   spots: z.array(SpotSchema),
   groups: z.any(), // JSON blob — groups are editor UI metadata
+  message: z.string().max(200).optional(),
+  restoredFromId: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------
-// PUT: save full lot layout (admin only)
+// PUT: save full lot layout (admin only).
+// Creates a LotLayoutVersion row for every save and archives spots that are
+// removed from the layout — see src/lib/lot-layout.ts for details.
 // ---------------------------------------------------------------------------
 export const PUT = handler(
   { body: LayoutSaveSchema },
   async ({ body }) => {
-    await requireAdmin();
+    const auth = await requireAdmin();
 
-    const { spots: incoming, groups } = body;
-    const incomingIds = new Set(incoming.map((s) => s.id));
-
-    // Get existing spot IDs from DB
-    const existing = await prisma.spot.findMany({ select: { id: true } });
-    const existingIds = new Set(existing.map((s) => s.id));
-
-    // Upsert all incoming spots
-    for (const spot of incoming) {
-      await prisma.spot.upsert({
-        where: { id: spot.id },
-        create: {
-          id: spot.id,
-          label: spot.label,
-          type: spot.type,
-          cx: spot.cx,
-          cy: spot.cy,
-          w: spot.w,
-          h: spot.h,
-          rot: spot.rot,
-        },
-        update: {
-          label: spot.label,
-          type: spot.type,
-          cx: spot.cx,
-          cy: spot.cy,
-          w: spot.w,
-          h: spot.h,
-          rot: spot.rot,
-        },
-      });
-    }
-
-    // Delete spots that are no longer in the layout — but only if they have no
-    // active/overstay sessions attached (sessions are the source of truth for occupancy).
-    const toDelete = [...existingIds].filter((id) => !incomingIds.has(id));
-    if (toDelete.length > 0) {
-      await prisma.spot.deleteMany({
-        where: {
-          id: { in: toDelete },
-          sessions: { none: { status: { in: ["ACTIVE", "OVERSTAY"] } } },
-        },
-      });
-    }
-
-    // Save groups to Settings
-    await prisma.settings.upsert({
-      where: { id: "default" },
-      create: { lotGroups: groups },
-      update: { lotGroups: groups },
+    const result = await applyLayoutAndCreateVersion({
+      spots: body.spots,
+      groups: body.groups,
+      message: body.message ?? null,
+      restoredFromId: body.restoredFromId ?? null,
+      createdBy: auth.sub || "admin",
     });
 
-    return json({ ok: true, spotCount: incoming.length });
+    return json({
+      ok: true,
+      spotCount: body.spots.length,
+      version: result.version,
+    });
   },
 );

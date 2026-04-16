@@ -11,7 +11,9 @@ export const GET = handler(
   { query: SpotsQuery },
   async ({ query }) => {
     const spots = await prisma.spot.findMany({
-      where: query,
+      // Live lot map — hide archived spots so removed-from-layout rows don't
+      // show up. History endpoints return snapshots verbatim.
+      where: { ...query, archivedAt: null },
       orderBy: { label: "asc" },
       include: {
         sessions: {
