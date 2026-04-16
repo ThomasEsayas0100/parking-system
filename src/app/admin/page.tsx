@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail, ApiPaymentWithSession } from "@/types/domain";
 import { apiFetch, apiPost } from "@/lib/fetch";
 import { deriveLotStatus } from "@/lib/lot-status";
+import { getSessionSpotLabel } from "@/lib/sessions";
 import { useIsMobile } from "@/lib/hooks";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
@@ -43,7 +44,7 @@ type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY";
 // ---------------------------------------------------------------------------
 // Log tab config
 // ---------------------------------------------------------------------------
-type LogFilter = "ALL" | "ENTRY" | "EXIT" | "EXTEND" | "OVERSTAY" | "GATE" | "ADMIN" | "NOTIFICATION" | "SECURITY";
+type LogFilter = "ALL" | "ENTRY" | "EXIT" | "EXTEND" | "OVERSTAY" | "GATE" | "ADMIN" | "LAYOUT" | "NOTIFICATION" | "SECURITY";
 
 const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
   { key: "ALL", label: "All", actions: [] },
@@ -53,6 +54,7 @@ const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
   { key: "OVERSTAY", label: "Overstay", actions: ["OVERSTAY_START", "OVERSTAY_PAYMENT"] },
   { key: "GATE", label: "Gate", actions: ["GATE_OPEN"] },
   { key: "ADMIN", label: "Admin", actions: ["SPOT_FREED"] },
+  { key: "LAYOUT", label: "Layout", actions: ["LAYOUT_SAVED", "LAYOUT_RESTORED"] },
   { key: "NOTIFICATION", label: "Notification", actions: ["REMINDER_SENT", "OVERSTAY_ALERT"] },
   { key: "SECURITY", label: "Security", actions: ["SUSPICIOUS_ENTRY", "GATE_DENIED", "ALLOWLIST_ENTRY"] },
 ];
@@ -70,6 +72,8 @@ const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }>
   SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },
   GATE_DENIED:      { color: "#F87171", bg: "#2C1810", label: "Denied" },
   ALLOWLIST_ENTRY:  { color: "#60A5FA", bg: "#0A1A30", label: "Allow list" },
+  LAYOUT_SAVED:     { color: "#A78BFA", bg: "#1A1233", label: "Layout saved" },
+  LAYOUT_RESTORED:  { color: "#A78BFA", bg: "#1A1233", label: "Layout restored" },
 };
 
 const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
@@ -356,6 +360,7 @@ export default function AdminDashboard() {
               endedAt: session.endedAt ? new Date(session.endedAt) : null,
               sessionStatus: session.status,
               reminderSent: session.reminderSent,
+              spotLabelSnapshot: session.spotLabelSnapshot ?? "",
               payments: [],
             }
           : null,
@@ -716,7 +721,7 @@ export default function AdminDashboard() {
                         >
                           {/* Spot */}
                           <div>
-                            <div style={{ fontSize: mobile ? 14 : 15, fontWeight: 700, color: FG }}>{s.spot.label}</div>
+                            <div style={{ fontSize: mobile ? 14 : 15, fontWeight: 700, color: FG }}>{getSessionSpotLabel(s)}</div>
                             <div style={{ fontSize: mobile ? 10 : 10, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                               {s.spot.type === "BOBTAIL" ? "Bob" : "Truck"}
                             </div>
@@ -1868,7 +1873,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                         {p.session?.driver?.name ?? "—"}
                       </div>
                       <div style={{ fontSize: 11, color: FG_DIM }}>
-                        {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"} · {fmtDate(p.createdAt)}
+                        {p.session?.vehicle?.licensePlate ?? "—"} · {getSessionSpotLabel(p.session)} · {fmtDate(p.createdAt)}
                       </div>
                     </div>
 

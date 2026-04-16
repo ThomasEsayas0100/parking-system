@@ -400,44 +400,8 @@ export function useEditorReducer() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // Load layout from API on mount
-  useEffect(() => {
-    fetch("/api/spots/layout")
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.spots && Object.keys(data.spots).length > 0) {
-          // Derive counters from existing spot IDs
-          let maxT = 0, maxB = 0, maxG = 0;
-          for (const id of Object.keys(data.spots)) {
-            if (id.startsWith("T")) maxT = Math.max(maxT, parseInt(id.slice(1)) || 0);
-            if (id.startsWith("B")) maxB = Math.max(maxB, parseInt(id.slice(1)) || 0);
-          }
-          const groups = Array.isArray(data.groups) ? data.groups : [];
-          for (const g of groups) {
-            if (typeof g.id === "string" && g.id.startsWith("G")) {
-              maxG = Math.max(maxG, parseInt(g.id.slice(1)) || 0);
-            }
-          }
-          dispatch({
-            type: "LOAD_STATE",
-            state: {
-              spots: data.spots,
-              groups,
-              nextTruckNum: maxT + 1,
-              nextBobtailNum: maxB + 1,
-              nextGroupNum: maxG + 1,
-            },
-          });
-        }
-        // If API returns empty, keep the default state from initState
-      })
-      .catch(() => {
-        // API failed — keep default state (first-time setup or offline)
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
-  // Compute saved snapshot — updated after API load or save
+  // Saved-snapshot marker — updated after API load or save. Used to drive
+  // hasUnsavedChanges.
   const [currentSavedSnapshot, setCurrentSavedSnapshot] = useState(() =>
     JSON.stringify({
       spots: state.spots,
@@ -448,20 +412,46 @@ export function useEditorReducer() {
     })
   );
 
-  // Sync saved snapshot when state loads from API
-  useEffect(() => {
-    if (!loading) {
-      setCurrentSavedSnapshot(JSON.stringify({
-        spots: state.spots,
-        groups: state.groups,
-        nextTruckNum: state.nextTruckNum,
-        nextBobtailNum: state.nextBobtailNum,
-        nextGroupNum: state.nextGroupNum,
-      }));
+  // Shared loader — used by initial mount and by the History drawer after a
+  // restore action to refresh the editor's view.
+  const loadFromApi = useCallback(async () => {
+    try {
+      const r = await fetch("/api/spots/layout");
+      const data = await r.json();
+      if (data.spots && Object.keys(data.spots).length > 0) {
+        // Derive counters from existing spot IDs
+        let maxT = 0, maxB = 0, maxG = 0;
+        for (const id of Object.keys(data.spots)) {
+          if (id.startsWith("T")) maxT = Math.max(maxT, parseInt(id.slice(1)) || 0);
+          if (id.startsWith("B")) maxB = Math.max(maxB, parseInt(id.slice(1)) || 0);
+        }
+        const groups = Array.isArray(data.groups) ? data.groups : [];
+        for (const g of groups) {
+          if (typeof g.id === "string" && g.id.startsWith("G")) {
+            maxG = Math.max(maxG, parseInt(g.id.slice(1)) || 0);
+          }
+        }
+        const loaded = {
+          spots: data.spots,
+          groups,
+          nextTruckNum: maxT + 1,
+          nextBobtailNum: maxB + 1,
+          nextGroupNum: maxG + 1,
+        };
+        dispatch({ type: "LOAD_STATE", state: loaded });
+        // Sync the saved marker so freshly-loaded state isn't dirty.
+        setCurrentSavedSnapshot(JSON.stringify(loaded));
+      }
+      // If API returns empty, keep the default state from initState
+    } catch {
+      // API failed — keep default state (first-time setup or offline)
     }
-    // Only run once after initial API load completes
+  }, []);
+
+  useEffect(() => {
+    loadFromApi().finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
+  }, []);
 
   // Detect unsaved changes
   const currentJSON = useMemo(() => JSON.stringify({
@@ -474,23 +464,30 @@ export function useEditorReducer() {
 
   const hasUnsavedChanges = currentJSON !== currentSavedSnapshot;
 
-  // Save to API (replaces localStorage.setItem)
-  const saveSnapshot = useCallback(async () => {
-    setSaving(true);
-    try {
-      const spotsArray = Object.values(state.spots);
-      await fetch("/api/spots/layout", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spots: spotsArray, groups: state.groups }),
-      });
-      setCurrentSavedSnapshot(currentJSON);
-    } catch {
-      // Save failed — changes remain unsaved, user can retry
-    } finally {
-      setSaving(false);
-    }
-  }, [state.spots, state.groups, currentJSON]);
+  // Save to API — creates a LotLayoutVersion row on the server.
+  const saveSnapshot = useCallback(
+    async (opts?: { message?: string }) => {
+      setSaving(true);
+      try {
+        const spotsArray = Object.values(state.spots);
+        await fetch("/api/spots/layout", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            spots: spotsArray,
+            groups: state.groups,
+            ...(opts?.message ? { message: opts.message } : {}),
+          }),
+        });
+        setCurrentSavedSnapshot(currentJSON);
+      } catch {
+        // Save failed — changes remain unsaved, user can retry
+      } finally {
+        setSaving(false);
+      }
+    },
+    [state.spots, state.groups, currentJSON],
+  );
 
   const discardChanges = useCallback(() => {
     try {
@@ -533,5 +530,5 @@ export function useEditorReducer() {
     return JSON.stringify({ spots: Object.values(state.spots), groups: state.groups }, null, 2);
   }, [state.spots, state.groups]);
 
-  return { state, dispatch, resetToDefaults, exportJSON, saveSnapshot, hasUnsavedChanges, discardChanges, loading, saving };
+  return { state, dispatch, resetToDefaults, exportJSON, saveSnapshot, loadFromApi, hasUnsavedChanges, discardChanges, loading, saving };
 }

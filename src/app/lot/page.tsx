@@ -7,6 +7,7 @@ import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import EditorSidebar from "@/components/lot/editor/EditorSidebar";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "./SpotDetailPanel";
+import LotHistoryDrawer from "./LotHistoryDrawer";
 import { computePath, pathD, pathTotalLength, ENTRANCE } from "./pathfinding";
 import { apiFetch } from "@/lib/fetch";
 import { deriveLotStatus } from "@/lib/lot-status";
@@ -112,6 +113,7 @@ function LotPage() {
               endedAt: session.endedAt ? new Date(session.endedAt) : null,
               sessionStatus: session.status,
               reminderSent: session.reminderSent,
+              spotLabelSnapshot: session.spotLabelSnapshot ?? "",
               payments: [],
             }
           : null,
@@ -123,6 +125,8 @@ function LotPage() {
   // Status view state
   const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
 
   // ---------------------------------------------------------------------------
   // Pathfinding (demo mode only)
@@ -160,7 +164,18 @@ function LotPage() {
 
   // ---------------------------------------------------------------------------
   const handleSave = useCallback(async () => {
-    await editor.saveSnapshot();
+    const msg = saveMessage.trim();
+    await editor.saveSnapshot(msg ? { message: msg } : undefined);
+    setSaveMessage("");
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }, [editor, saveMessage]);
+
+  const handleHistoryRestored = useCallback(async () => {
+    // Restore created a new version on the server. Reload editor state so
+    // what the user sees matches what was restored, then close the drawer.
+    await editor.loadFromApi();
+    setHistoryOpen(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }, [editor]);
@@ -456,6 +471,23 @@ function LotPage() {
           <span style={{ fontSize: 14 }}>&larr;</span> Back to Lot
         </button>
 
+        {/* History button — always visible in edit mode */}
+        {isEdit && (
+          <button
+            onClick={() => setHistoryOpen(true)}
+            style={{
+              position: "absolute", top: 16, right: 16,
+              padding: "6px 12px", fontSize: 11, fontWeight: 500,
+              background: "#2C2C2E", color: "#F2F2F7",
+              border: "1px solid #3A3A3C", borderRadius: 6,
+              cursor: "pointer", fontFamily: "var(--font-body)",
+              zIndex: 100,
+            }}
+          >
+            History
+          </button>
+        )}
+
         {/* Floating save bar */}
         {isEdit && editor.hasUnsavedChanges && (
           <div style={{
@@ -471,8 +503,22 @@ function LotPage() {
             borderRadius: 6,
             fontFamily: "var(--font-body)",
             zIndex: 100,
+            maxWidth: "calc(100vw - 32px)",
           }}>
             <span style={{ fontSize: 11, color: "#98989D", fontWeight: 500 }}>Unsaved changes</span>
+            <input
+              type="text"
+              value={saveMessage}
+              onChange={(e) => setSaveMessage(e.target.value)}
+              placeholder="Note (optional)"
+              maxLength={200}
+              style={{
+                padding: "5px 10px", fontSize: 11,
+                background: "#1C1C1E", color: "#F2F2F7",
+                border: "1px solid #3A3A3C", borderRadius: 4,
+                width: 180, fontFamily: "var(--font-body)",
+              }}
+            />
             <button
               onClick={handleDiscard}
               style={{
@@ -498,6 +544,12 @@ function LotPage() {
           </div>
         )}
       </div>
+
+      <LotHistoryDrawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onRestored={handleHistoryRestored}
+      />
 
       {/* Bottom bar — collapses in edit mode */}
       <div style={{
