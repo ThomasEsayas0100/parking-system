@@ -34,9 +34,20 @@ export default function PaymentCompletePage() {
   const router = useRouter();
   const [status, setStatus] = useState<"waiting" | "checking" | "creating" | "done" | "voided" | "partial" | "error">("waiting");
   const [error, setError] = useState("");
+  const [managerPhone, setManagerPhone] = useState<string>("");
   const pendingRef = useRef<PendingSession | null>(null);
   const pollCount = useRef(0);
   const maxPolls = 20; // 20 x 2s = 40 seconds
+
+  // Manager contact for the error screen. If QB polling dies (network flap,
+  // token refresh mid-flight) a driver who just paid needs a human to call.
+  useEffect(() => {
+    apiFetch<{ settings: { managerPhone?: string } }>("/api/settings")
+      .then((d) => {
+        if (d.settings?.managerPhone) setManagerPhone(d.settings.managerPhone);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const raw = sessionStorage.getItem("pending_session");
@@ -146,11 +157,19 @@ export default function PaymentCompletePage() {
         if (pollCount.current < maxPolls) {
           setTimeout(poll, 2000);
         } else {
-          setError("Payment not found yet. If you completed payment, tap the button again in a moment.");
+          setError(
+            managerPhone
+              ? `Payment not found yet. Tap the button again, or if you already paid, call the manager at ${managerPhone}.`
+              : "Payment not found yet. If you completed payment, tap the button again in a moment.",
+          );
           setStatus("waiting");
         }
       } catch {
-        setError("Could not verify payment. Please try again or contact the manager.");
+        setError(
+          managerPhone
+            ? `Could not verify payment. Try again, or call the manager at ${managerPhone} if you already paid.`
+            : "Could not verify payment. Please try again or contact the manager.",
+        );
         setStatus("waiting");
       }
     };
@@ -289,9 +308,33 @@ export default function PaymentCompletePage() {
             <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
               Something went wrong
             </h1>
-            <p style={{ fontSize: 14, color: "var(--error)", marginBottom: 24 }}>
+            <p style={{ fontSize: 14, color: "var(--error)", marginBottom: 16 }}>
               {error}
             </p>
+            {managerPhone ? (
+              <div style={{
+                padding: "12px 14px",
+                background: "#FFF7ED",
+                border: "1px solid #F59E0B",
+                borderRadius: 8,
+                marginBottom: 20,
+                textAlign: "left",
+              }}>
+                <div style={{ fontSize: 12, color: "#92400E", fontWeight: 600, marginBottom: 4 }}>
+                  Already paid? Call the manager · ¿Ya pagaste? Llama al encargado
+                </div>
+                <a
+                  href={`tel:${managerPhone}`}
+                  style={{ fontSize: 16, fontWeight: 700, color: "#B45309", textDecoration: "none" }}
+                >
+                  📞 {managerPhone}
+                </a>
+              </div>
+            ) : (
+              <p style={{ fontSize: 12, color: "var(--fg-muted)", marginBottom: 20 }}>
+                If you already paid, please contact the lot manager on site.
+              </p>
+            )}
             <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
               <Link
                 href="/checkin"
