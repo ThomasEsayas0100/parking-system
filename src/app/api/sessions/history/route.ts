@@ -35,6 +35,33 @@ export const GET = handler(
       offset,
     } = query;
 
+    // spotLabel + q both emit OR clauses. If we spread them into the same
+    // object only one survives — so collect into AND.
+    const andClauses: Prisma.SessionWhereInput[] = [];
+    if (spotLabel) {
+      // Match either the snapshot (historical) or the spot's current label
+      // (for sessions created before snapshotting was added).
+      andClauses.push({
+        OR: [
+          { spotLabelSnapshot: { contains: spotLabel, mode: "insensitive" } },
+          { spot: { label: { contains: spotLabel, mode: "insensitive" } } },
+        ],
+      });
+    }
+    if (q) {
+      andClauses.push({
+        OR: [
+          { driver: { name: { contains: q, mode: "insensitive" } } },
+          { driver: { phone: { contains: q, mode: "insensitive" } } },
+          { driver: { email: { contains: q, mode: "insensitive" } } },
+          { vehicle: { licensePlate: { contains: q, mode: "insensitive" } } },
+          { vehicle: { unitNumber: { contains: q, mode: "insensitive" } } },
+          { spotLabelSnapshot: { contains: q, mode: "insensitive" } },
+          { spot: { label: { contains: q, mode: "insensitive" } } },
+        ],
+      });
+    }
+
     const where: Prisma.SessionWhereInput = {
       ...(driverId ? { driverId } : {}),
       ...(vehicleId ? { vehicleId } : {}),
@@ -58,33 +85,7 @@ export const GET = handler(
             },
           }
         : {}),
-      ...(spotLabel
-        ? {
-            spot: {
-              label: { contains: spotLabel, mode: "insensitive" },
-            },
-          }
-        : {}),
-      ...(q
-        ? {
-            OR: [
-              { driver: { name: { contains: q, mode: "insensitive" } } },
-              { driver: { phone: { contains: q, mode: "insensitive" } } },
-              { driver: { email: { contains: q, mode: "insensitive" } } },
-              {
-                vehicle: {
-                  licensePlate: { contains: q, mode: "insensitive" },
-                },
-              },
-              {
-                vehicle: {
-                  unitNumber: { contains: q, mode: "insensitive" },
-                },
-              },
-              { spot: { label: { contains: q, mode: "insensitive" } } },
-            ],
-          }
-        : {}),
+      ...(andClauses.length ? { AND: andClauses } : {}),
     };
 
     const [sessions, total] = await Promise.all([

@@ -128,6 +128,7 @@ export async function POST() {
         expectedEnd: def.expectedEnd,
         status: def.status,
         termsVersion: "1.0",
+        spotLabelSnapshot: def.spot.label,
       },
     });
 

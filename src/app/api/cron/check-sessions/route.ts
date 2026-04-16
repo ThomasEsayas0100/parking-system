@@ -4,6 +4,7 @@ import { getSettings } from "@/lib/settings";
 import { sendSMS, sendEmail } from "@/lib/notifications";
 import { log as audit } from "@/lib/audit";
 import { ceilHours } from "@/lib/rates";
+import { getSessionSpotLabel } from "@/lib/sessions";
 
 // This endpoint should be called periodically (e.g., every 5 minutes via Vercel Cron or external cron)
 export async function GET() {
@@ -30,7 +31,8 @@ export async function GET() {
     // Keeps the session token out of SMS/carrier logs.
     const extendUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/extend`;
 
-    const message = `Your parking at spot ${session.spot.label} expires at ${expiresAt}. Extend your time: ${extendUrl}`;
+    const spotLabel = getSessionSpotLabel(session);
+    const message = `Your parking at spot ${spotLabel} expires at ${expiresAt}. Extend your time: ${extendUrl}`;
 
     await sendSMS(session.driver.phone, message);
     if (session.driver.email) {
@@ -47,7 +49,7 @@ export async function GET() {
       sessionId: session.id,
       driverId: session.driverId,
       spotId: session.spotId,
-      details: `Expiry reminder sent to ${session.driver.name} (${session.driver.phone}) — spot ${session.spot.label}`,
+      details: `Expiry reminder sent to ${session.driver.name} (${session.driver.phone}) — spot ${spotLabel}`,
     });
   }
 
@@ -77,7 +79,7 @@ export async function GET() {
           sessionId: s.id,
           driverId: s.driverId,
           spotId: s.spotId,
-          details: `Overstay began at spot ${s.spot.label} — ${s.driver.name} (${s.driver.phone})`,
+          details: `Overstay began at spot ${getSessionSpotLabel(s)} — ${s.driver.name} (${s.driver.phone})`,
         })
       )
     );
@@ -97,7 +99,7 @@ export async function GET() {
   if (unalertedOverstays.length > 0 && settings.managerEmail) {
     const lines = unalertedOverstays.map((s) => {
       const overHours = ceilHours(new Date(s.expectedEnd), now);
-      return `- Spot ${s.spot.label}: ${s.driver.name} (${s.driver.phone}) — ${overHours}h overstay`;
+      return `- Spot ${getSessionSpotLabel(s)}: ${s.driver.name} (${s.driver.phone}) — ${overHours}h overstay`;
     });
 
     const body = `The following vehicles have overstayed:\n\n${lines.join("\n")}`;

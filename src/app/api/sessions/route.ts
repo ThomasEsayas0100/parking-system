@@ -102,6 +102,9 @@ export const POST = handler(
           expectedEnd,
           termsVersion,
           overstayAuthorized,
+          // Freeze the spot label at check-in time so future renames can't
+          // rewrite this session's history. See src/lib/sessions.ts.
+          spotLabelSnapshot: spot.label,
           payments: {
             create: {
               type: paymentType,

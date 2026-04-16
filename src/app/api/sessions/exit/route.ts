@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
+import { getSessionSpotLabel } from "@/lib/sessions";
 import { verifyAndClaimPayment } from "@/lib/payments";
 import { overstayRate, ceilHours } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
@@ -92,7 +93,7 @@ export const POST = handler(
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `Checked out from spot ${session.spot.label}, plate: ${session.vehicle.licensePlate}`,
+      details: `Checked out from spot ${getSessionSpotLabel(session)}, plate: ${session.vehicle.licensePlate}`,
     });
 
     triggerGateOpen();

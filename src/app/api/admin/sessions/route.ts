@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
 import { log as audit } from "@/lib/audit";
+import { getSessionSpotLabel } from "@/lib/sessions";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
@@ -95,7 +96,7 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `ADMIN cancelled session. Reason: ${reason}. Driver: ${session.driver.name}, Spot: ${session.spot.label}`,
+      details: `ADMIN cancelled session. Reason: ${reason}. Driver: ${session.driver.name}, Spot: ${getSessionSpotLabel(session)}`,
     });
 
     return json({ success: true, action: "cancelled" });
@@ -311,6 +312,8 @@ export const POST = handler(
         status: "ACTIVE",
         termsVersion: settings.termsVersion,
         overstayAuthorized: false,
+        // Freeze the spot label at check-in (see src/lib/sessions.ts).
+        spotLabelSnapshot: spot.label,
         payments: {
           create: {
             id: randomUUID(),
