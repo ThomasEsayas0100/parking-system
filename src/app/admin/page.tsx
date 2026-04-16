@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 
 import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail, ApiPaymentWithSession } from "@/types/domain";
-import { apiFetch } from "@/lib/fetch";
+import { apiFetch, apiPost } from "@/lib/fetch";
 import { deriveLotStatus } from "@/lib/lot-status";
 import { useIsMobile } from "@/lib/hooks";
 import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
@@ -132,6 +132,7 @@ const BORDER = "#3A3A3C";
 const FG = "#F5F5F7";
 const FG_MUTED = "#8E8E93";
 const FG_DIM = "#636366";
+const ACCENT = "#2D7A4A";
 const RADIUS = 12;
 
 const chip = (active: boolean, mobile: boolean): React.CSSProperties => ({
@@ -193,6 +194,31 @@ export default function AdminDashboard() {
   const [sessionActionReason, setSessionActionReason] = useState("");
   const [sessionActionEndedAt, setSessionActionEndedAt] = useState("");
   const [sessionActionLoading, setSessionActionLoading] = useState(false);
+
+  // ── New session modal ────────────────────────────────────────────────────
+  type NsForm = {
+    name: string; phone: string; email: string;
+    vehicleType: "BOBTAIL" | "TRUCK_TRAILER";
+    licensePlate: string; unitNumber: string; nickname: string;
+    durationType: "HOURLY" | "MONTHLY";
+    hours: number; months: number;
+    spotMode: "auto" | "manual"; spotId: string;
+    invoiceId: string;
+  };
+  const NS_DEFAULT: NsForm = {
+    name: "", phone: "", email: "",
+    vehicleType: "TRUCK_TRAILER",
+    licensePlate: "", unitNumber: "", nickname: "",
+    durationType: "HOURLY", hours: 4, months: 1,
+    spotMode: "auto", spotId: "",
+    invoiceId: "",
+  };
+  const [nsOpen, setNsOpen] = useState(false);
+  const [nsForm, setNsForm] = useState<NsForm>(NS_DEFAULT);
+  const [nsErrors, setNsErrors] = useState<Record<string, string>>({});
+  const [nsSubmitting, setNsSubmitting] = useState(false);
+  type InvoiceVerify = { status: "idle" | "checking" | "ok" | "error"; message: string };
+  const [nsInvoice, setNsInvoice] = useState<InvoiceVerify>({ status: "idle", message: "" });
 
   // ── Overview / lot map state ──
   const editor = useEditorReducer();
@@ -376,6 +402,93 @@ export default function AdminDashboard() {
     loadData();
   }
 
+  // ── Available spots (for new session modal) ────────────────────────────
+  const availableSpots = useMemo(
+    () => spots.filter((s) => s.sessions.length === 0),
+    [spots]
+  );
+
+  // ── New session handlers ────────────────────────────────────────────────
+  function nsSetField<K extends keyof NsForm>(k: K, v: NsForm[K]) {
+    setNsForm((f) => ({ ...f, [k]: v }));
+    if (k === "invoiceId") setNsInvoice({ status: "idle", message: "" });
+    setNsErrors((e) => { const next = { ...e }; delete next[k]; return next; });
+  }
+
+  async function handleVerifyInvoice() {
+    const id = nsForm.invoiceId.trim();
+    if (!id) return;
+    setNsInvoice({ status: "checking", message: "" });
+    try {
+      const data = await apiFetch<{
+        paid: boolean; voided: boolean; partial: boolean;
+        totalAmount: number; amountPaid: number;
+      }>(`/api/payments/status?invoiceId=${encodeURIComponent(id)}`);
+      if (data.voided) {
+        setNsInvoice({ status: "error", message: "Invoice was voided" });
+      } else if (data.partial) {
+        setNsInvoice({ status: "error", message: `Partial only — $${data.amountPaid.toFixed(2)} of $${data.totalAmount.toFixed(2)}` });
+      } else if (data.paid) {
+        setNsInvoice({ status: "ok", message: `Paid — $${data.totalAmount.toFixed(2)}` });
+      } else {
+        setNsInvoice({ status: "error", message: "Invoice not yet paid in QB" });
+      }
+    } catch {
+      setNsInvoice({ status: "error", message: "Could not verify — check the invoice ID" });
+    }
+  }
+
+  const nsPaymentRequired = settingsForm?.paymentRequired ?? true;
+
+  function validateNs(): boolean {
+    const errs: Record<string, string> = {};
+    const digits = digitsOnly(nsForm.phone);
+    if (!nsForm.name.trim()) errs.name = "Required";
+    if (digits.length !== 10) errs.phone = "Must be 10 digits";
+    if (nsForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nsForm.email)) errs.email = "Invalid email";
+    if (!nsForm.licensePlate.trim() && !nsForm.unitNumber.trim()) errs.licensePlate = "Provide plate or unit number";
+    if (nsForm.durationType === "HOURLY" && (nsForm.hours < 1 || nsForm.hours > 72)) errs.hours = "1–72 hours";
+    if (nsForm.durationType === "MONTHLY" && (nsForm.months < 1 || nsForm.months > 12)) errs.months = "1–12 months";
+    if (nsForm.spotMode === "manual" && !nsForm.spotId) errs.spotId = "Select a spot";
+    // Invoice only required when payments are enabled
+    if (nsPaymentRequired) {
+      if (!nsForm.invoiceId.trim()) errs.invoiceId = "Required";
+      else if (nsInvoice.status !== "ok") errs.invoiceId = "Must be verified before submitting";
+    }
+    setNsErrors(errs);
+    return Object.keys(errs).length === 0;
+  }
+
+  async function handleNewSession() {
+    if (!validateNs() || nsSubmitting) return;
+    setNsSubmitting(true);
+    setNsErrors({});
+    try {
+      await apiPost("/api/admin/sessions", {
+        name: nsForm.name.trim(),
+        phone: digitsOnly(nsForm.phone),
+        email: nsForm.email.trim() || undefined,
+        vehicleType: nsForm.vehicleType,
+        licensePlate: nsForm.licensePlate.trim() || undefined,
+        unitNumber: nsForm.unitNumber.trim() || undefined,
+        nickname: nsForm.nickname.trim() || undefined,
+        durationType: nsForm.durationType,
+        hours: nsForm.durationType === "HOURLY" ? nsForm.hours : undefined,
+        months: nsForm.durationType === "MONTHLY" ? nsForm.months : undefined,
+        spotId: nsForm.spotMode === "manual" ? nsForm.spotId : undefined,
+        invoiceId: nsPaymentRequired ? nsForm.invoiceId.trim() : undefined,
+      });
+      setNsOpen(false);
+      setNsForm(NS_DEFAULT);
+      setNsInvoice({ status: "idle", message: "" });
+      loadSessions();
+    } catch (err) {
+      setNsErrors({ _: err instanceof Error ? err.message : "Something went wrong" });
+    } finally {
+      setNsSubmitting(false);
+    }
+  }
+
   // ── Session actions ──
   async function handleSessionAction() {
     if (!sessionAction) return;
@@ -553,6 +666,13 @@ export default function AdminDashboard() {
                   style={inputStyle}
                 />
               </div>
+
+              <button
+                onClick={() => { setNsForm(NS_DEFAULT); setNsErrors({}); setNsInvoice({ status: "idle", message: "" }); setNsOpen(true); }}
+                style={{ padding: "8px 16px", background: ACCENT, color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}
+              >
+                + New Session
+              </button>
             </div>
 
             {/* Results */}
@@ -716,22 +836,32 @@ export default function AdminDashboard() {
                                         <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="Required" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
                                       </>
                                     )}
-                                    {sessionAction.type === "close" && (
-                                      <>
-                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Driver left on:</span>
-                                        <input
-                                          type="datetime-local"
-                                          value={sessionActionEndedAt}
-                                          onChange={(e) => setSessionActionEndedAt(e.target.value)}
-                                          style={{ ...inputStyle, width: mobile ? "100%" : 220 }}
-                                        />
-                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
-                                        <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="e.g. Driver called — left last Tuesday" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-                                        <div style={{ width: "100%", fontSize: 11, color: "#F59E0B", marginTop: 2 }}>
-                                          Overstay payments after this date will be removed.
-                                        </div>
-                                      </>
-                                    )}
+                                    {sessionAction.type === "close" && (() => {
+                                      const started = new Date(s.startedAt);
+                                      const minDt = started.toISOString().slice(0, 16);
+                                      const maxDt = new Date().toISOString().slice(0, 16);
+                                      return (
+                                        <>
+                                          <span style={{ fontSize: 12, color: FG_MUTED }}>Driver left on:</span>
+                                          <input
+                                            type="datetime-local"
+                                            value={sessionActionEndedAt}
+                                            onChange={(e) => setSessionActionEndedAt(e.target.value)}
+                                            min={minDt}
+                                            max={maxDt}
+                                            style={{ ...inputStyle, width: mobile ? "100%" : 220 }}
+                                          />
+                                          <span style={{ fontSize: 10, color: FG_DIM, width: "100%" }}>
+                                            Between {started.toLocaleString()} and now
+                                          </span>
+                                          <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
+                                          <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="e.g. Driver called — left last Tuesday" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
+                                          <div style={{ width: "100%", fontSize: 11, color: "#F59E0B", marginTop: 2 }}>
+                                            Overstay payments after this date will be removed.
+                                          </div>
+                                        </>
+                                      );
+                                    })()}
                                     <button
                                       onClick={handleSessionAction}
                                       disabled={sessionActionLoading}
@@ -1097,6 +1227,342 @@ export default function AdminDashboard() {
         )}
 
       </div>
+
+      {/* ═══ NEW SESSION MODAL ═══ */}
+      {nsOpen && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setNsOpen(false); }}
+          style={{
+            position: "fixed", inset: 0,
+            background: "rgba(0,0,0,0.72)",
+            zIndex: 200,
+            display: "flex", alignItems: "flex-start", justifyContent: "center",
+            padding: "24px 16px 40px",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{
+            width: "100%", maxWidth: 560,
+            background: DARK_BG,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 16,
+            overflow: "hidden",
+            flexShrink: 0,
+          }}>
+            {/* Header */}
+            <div style={{ padding: "18px 24px", borderBottom: `1px solid ${BORDER}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <p style={{ fontSize: 12, color: FG_DIM, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 2 }}>Admin</p>
+                <h2 style={{ fontSize: 18, fontWeight: 700, color: FG, margin: 0 }}>New Session</h2>
+              </div>
+              <button onClick={() => setNsOpen(false)} style={{ background: "none", border: "none", color: FG_DIM, fontSize: 22, cursor: "pointer", padding: "2px 6px", lineHeight: 1 }}>×</button>
+            </div>
+
+            <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
+
+              {/* ── Driver ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Driver</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ gridColumn: "1/-1" }}>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>
+                      Full Name <span style={{ color: "#EF4444" }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={nsForm.name}
+                      onChange={(e) => nsSetField("name", e.target.value)}
+                      placeholder="John Doe"
+                      style={{ ...inputStyle, ...(nsErrors.name ? { borderColor: "#EF4444" } : {}) }}
+                    />
+                    {nsErrors.name && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>{nsErrors.name}</p>}
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>
+                      Phone <span style={{ color: "#EF4444" }}>*</span>
+                    </label>
+                    <PhoneInput
+                      value={nsForm.phone}
+                      onChange={(v) => nsSetField("phone", v)}
+                      placeholder="(555) 867-5309"
+                      style={{ ...inputStyle, ...(nsErrors.phone ? { borderColor: "#EF4444" } : {}) }}
+                    />
+                    {nsErrors.phone && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>{nsErrors.phone}</p>}
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Email</label>
+                    <input
+                      type="email"
+                      value={nsForm.email}
+                      onChange={(e) => nsSetField("email", e.target.value)}
+                      placeholder="driver@example.com"
+                      style={{ ...inputStyle, ...(nsErrors.email ? { borderColor: "#EF4444" } : {}) }}
+                    />
+                    {nsErrors.email && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>{nsErrors.email}</p>}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: BORDER }} />
+
+              {/* ── Vehicle ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Vehicle</p>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ gridColumn: "1/-1" }}>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 6 }}>Type <span style={{ color: "#EF4444" }}>*</span></label>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      {(["TRUCK_TRAILER", "BOBTAIL"] as const).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => nsSetField("vehicleType", t)}
+                          style={{
+                            flex: 1, padding: "8px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                            border: `1px solid ${nsForm.vehicleType === t ? ACCENT : BORDER}`,
+                            background: nsForm.vehicleType === t ? "rgba(45,122,74,0.18)" : "transparent",
+                            color: nsForm.vehicleType === t ? ACCENT : FG_DIM,
+                          }}
+                        >
+                          {t === "TRUCK_TRAILER" ? "Truck / Trailer" : "Bobtail"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>License Plate†</label>
+                    <input
+                      type="text"
+                      value={nsForm.licensePlate}
+                      onChange={(e) => nsSetField("licensePlate", e.target.value.toUpperCase())}
+                      placeholder="ABC-1234"
+                      style={{ ...inputStyle, ...(nsErrors.licensePlate ? { borderColor: "#EF4444" } : {}) }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Unit Number†</label>
+                    <input
+                      type="text"
+                      value={nsForm.unitNumber}
+                      onChange={(e) => nsSetField("unitNumber", e.target.value)}
+                      placeholder="UNIT-001"
+                      style={inputStyle}
+                    />
+                  </div>
+                  {nsErrors.licensePlate && (
+                    <p style={{ fontSize: 11, color: "#EF4444", gridColumn: "1/-1", marginTop: -6 }}>{nsErrors.licensePlate}</p>
+                  )}
+                  <div style={{ gridColumn: "1/-1" }}>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Nickname <span style={{ color: FG_DIM, fontWeight: 400 }}>(optional)</span></label>
+                    <input
+                      type="text"
+                      value={nsForm.nickname}
+                      onChange={(e) => nsSetField("nickname", e.target.value)}
+                      placeholder="e.g. Red Kenworth"
+                      style={inputStyle}
+                    />
+                  </div>
+                  <p style={{ fontSize: 10, color: FG_DIM, gridColumn: "1/-1", marginTop: -4 }}>
+                    † At least one of license plate or unit number is required.
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ height: 1, background: BORDER }} />
+
+              {/* ── Duration ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Duration</p>
+                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                  {(["HOURLY", "MONTHLY"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => nsSetField("durationType", t)}
+                      style={{
+                        flex: 1, padding: "8px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                        border: `1px solid ${nsForm.durationType === t ? ACCENT : BORDER}`,
+                        background: nsForm.durationType === t ? "rgba(45,122,74,0.18)" : "transparent",
+                        color: nsForm.durationType === t ? ACCENT : FG_DIM,
+                      }}
+                    >
+                      {t === "HOURLY" ? "Hourly (1–72h)" : "Monthly (1–12mo)"}
+                    </button>
+                  ))}
+                </div>
+                {nsForm.durationType === "HOURLY" ? (
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Hours <span style={{ color: "#EF4444" }}>*</span></label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <button type="button" onClick={() => nsSetField("hours", Math.max(1, nsForm.hours - 1))}
+                        style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>−</button>
+                      <input
+                        type="number" min={1} max={72}
+                        value={nsForm.hours}
+                        onChange={(e) => nsSetField("hours", Math.min(72, Math.max(1, Number(e.target.value) || 1)))}
+                        style={{ ...inputStyle, width: 70, textAlign: "center" }}
+                      />
+                      <button type="button" onClick={() => nsSetField("hours", Math.min(72, nsForm.hours + 1))}
+                        style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>+</button>
+                      <span style={{ fontSize: 13, color: FG_DIM }}>hours</span>
+                    </div>
+                    {nsErrors.hours && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 4 }}>{nsErrors.hours}</p>}
+                  </div>
+                ) : (
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Months <span style={{ color: "#EF4444" }}>*</span></label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <button type="button" onClick={() => nsSetField("months", Math.max(1, nsForm.months - 1))}
+                        style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>−</button>
+                      <input
+                        type="number" min={1} max={12}
+                        value={nsForm.months}
+                        onChange={(e) => nsSetField("months", Math.min(12, Math.max(1, Number(e.target.value) || 1)))}
+                        style={{ ...inputStyle, width: 70, textAlign: "center" }}
+                      />
+                      <button type="button" onClick={() => nsSetField("months", Math.min(12, nsForm.months + 1))}
+                        style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>+</button>
+                      <span style={{ fontSize: 13, color: FG_DIM }}>months</span>
+                    </div>
+                    {nsErrors.months && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 4 }}>{nsErrors.months}</p>}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ height: 1, background: BORDER }} />
+
+              {/* ── Spot ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Spot Assignment</p>
+                <div style={{ display: "flex", gap: 8, marginBottom: nsForm.spotMode === "manual" ? 12 : 0 }}>
+                  {(["auto", "manual"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => nsSetField("spotMode", m)}
+                      style={{
+                        flex: 1, padding: "8px 12px", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                        border: `1px solid ${nsForm.spotMode === m ? ACCENT : BORDER}`,
+                        background: nsForm.spotMode === m ? "rgba(45,122,74,0.18)" : "transparent",
+                        color: nsForm.spotMode === m ? ACCENT : FG_DIM,
+                      }}
+                    >
+                      {m === "auto" ? "Auto-assign" : "Select spot"}
+                    </button>
+                  ))}
+                </div>
+                {nsForm.spotMode === "manual" && (
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Available Spot <span style={{ color: "#EF4444" }}>*</span></label>
+                    <select
+                      value={nsForm.spotId}
+                      onChange={(e) => nsSetField("spotId", e.target.value)}
+                      style={{ ...inputStyle, width: "100%", cursor: "pointer", ...(nsErrors.spotId ? { borderColor: "#EF4444" } : {}) }}
+                    >
+                      <option value="">— Select a spot —</option>
+                      {availableSpots
+                        .filter((s) =>
+                          nsForm.vehicleType === "BOBTAIL"
+                            ? true // bobtails can overflow to truck spots
+                            : s.type === "TRUCK_TRAILER"
+                        )
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.label} ({s.type === "TRUCK_TRAILER" ? "Truck" : "Bobtail"})
+                          </option>
+                        ))}
+                    </select>
+                    {nsErrors.spotId && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>{nsErrors.spotId}</p>}
+                    {availableSpots.length === 0 && (
+                      <p style={{ fontSize: 11, color: "#F59E0B", marginTop: 4 }}>No available spots — all spots occupied.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ height: 1, background: BORDER }} />
+
+              {/* ── QB Invoice ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 4 }}>QuickBooks Invoice</p>
+                {!nsPaymentRequired && (
+                  <p style={{ fontSize: 11, color: "#F59E0B", marginBottom: 12 }}>
+                    Payments are disabled — invoice is optional. A free session will be created.
+                  </p>
+                )}
+                {nsPaymentRequired && (
+                  <p style={{ fontSize: 11, color: FG_DIM, marginBottom: 12 }}>
+                    The invoice must exist and be fully paid in QB before submitting. Verify it here first.
+                  </p>
+                )}
+                <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                  <input
+                    type="text"
+                    value={nsForm.invoiceId}
+                    onChange={(e) => nsSetField("invoiceId", e.target.value.trim())}
+                    placeholder="QB invoice ID (e.g. 150)"
+                    style={{ ...inputStyle, flex: 1, ...(nsErrors.invoiceId ? { borderColor: "#EF4444" } : {}) }}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleVerifyInvoice}
+                    disabled={!nsForm.invoiceId.trim() || nsInvoice.status === "checking"}
+                    style={{
+                      padding: "0 18px", borderRadius: 8, border: `1px solid ${BORDER}`,
+                      background: "transparent", color: FG, fontSize: 13, fontWeight: 600,
+                      cursor: !nsForm.invoiceId.trim() || nsInvoice.status === "checking" ? "default" : "pointer",
+                      opacity: !nsForm.invoiceId.trim() ? 0.5 : 1,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {nsInvoice.status === "checking" ? "Checking…" : "Verify"}
+                  </button>
+                </div>
+                {nsInvoice.status === "ok" && (
+                  <p style={{ fontSize: 12, color: "#30D158", fontWeight: 600 }}>✓ {nsInvoice.message}</p>
+                )}
+                {nsInvoice.status === "error" && (
+                  <p style={{ fontSize: 12, color: "#EF4444" }}>✕ {nsInvoice.message}</p>
+                )}
+                {nsErrors.invoiceId && nsInvoice.status !== "ok" && (
+                  <p style={{ fontSize: 11, color: "#EF4444", marginTop: 2 }}>{nsErrors.invoiceId}</p>
+                )}
+              </div>
+
+              {/* ── Submit ── */}
+              {nsErrors._ && (
+                <p style={{ fontSize: 13, color: "#EF4444", padding: "10px 14px", background: "rgba(239,68,68,0.1)", borderRadius: 8, border: "1px solid rgba(239,68,68,0.25)" }}>
+                  {nsErrors._}
+                </p>
+              )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={handleNewSession}
+                  disabled={nsSubmitting}
+                  style={{
+                    flex: 1, padding: "14px 20px", background: nsSubmitting ? FG_DIM : ACCENT, color: "#fff",
+                    border: "none", borderRadius: 10, fontWeight: 700, fontSize: 15,
+                    cursor: nsSubmitting ? "default" : "pointer",
+                  }}
+                >
+                  {nsSubmitting ? "Creating session…" : "Create Session"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setNsOpen(false)}
+                  style={{ padding: "14px 18px", background: "transparent", color: FG_DIM, border: `1px solid ${BORDER}`, borderRadius: 10, fontSize: 14, cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1605,34 +2071,68 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const [feedback, setFeedback] = useState<{ msg: string; ok: boolean } | null>(null);
+
   async function handleAdd() {
     if (!addName.trim() || !addPhone.trim()) return;
-    await fetch("/api/admin/allowlist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: addName, phone: addPhone, label: addLabel }),
-    });
-    setAddName(""); setAddPhone(""); setAddLabel("EMPLOYEE");
-    load();
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/admin/allowlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: addName, phone: addPhone, label: addLabel }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: "Add failed" }));
+        setFeedback({ msg: body.error ?? "Add failed", ok: false });
+        return;
+      }
+      setAddName(""); setAddPhone(""); setAddLabel("EMPLOYEE");
+      setFeedback({ msg: "Added", ok: true });
+      load();
+    } catch {
+      setFeedback({ msg: "Network error — try again", ok: false });
+    }
   }
 
   async function handleToggle(id: string, active: boolean) {
-    await fetch("/api/admin/allowlist", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, active: !active }),
-    });
-    load();
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/admin/allowlist", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, active: !active }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: "Update failed" }));
+        setFeedback({ msg: body.error ?? "Update failed", ok: false });
+        return;
+      }
+      load();
+    } catch {
+      setFeedback({ msg: "Network error — try again", ok: false });
+    }
   }
 
   async function handleDelete(id: string) {
     if (!confirm("Remove this person from the allow list?")) return;
-    await fetch("/api/admin/allowlist", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
-    load();
+    setFeedback(null);
+    try {
+      const res = await fetch("/api/admin/allowlist", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: "Delete failed" }));
+        setFeedback({ msg: body.error ?? "Delete failed", ok: false });
+        return;
+      }
+      setFeedback({ msg: "Removed", ok: true });
+      load();
+    } catch {
+      setFeedback({ msg: "Network error — try again", ok: false });
+    }
   }
 
   return (
@@ -1640,6 +2140,12 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
       <div style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 16 }}>
         Allow List (Employees, Family, etc.)
       </div>
+
+      {feedback && (
+        <p style={{ fontSize: 12, color: feedback.ok ? "#30D158" : "#EF4444", marginBottom: 12 }}>
+          {feedback.msg}
+        </p>
+      )}
 
       {/* Add form */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>

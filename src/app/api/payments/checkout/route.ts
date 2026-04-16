@@ -23,15 +23,18 @@ export const POST = handler(
   { body: CheckoutSchema, rateLimit: RATE_LIMITS.auth },
   async ({ body }) => {
     const { driverName, driverPhone, driverEmail, amount, description } = body;
+    // Normalize phone to digits-only once — DB stores digits-only, QB uses
+    // the same format in the display name. Without this, updateMany could
+    // silently match 0 rows and we'd create duplicate QB customers.
+    const phone = driverPhone.replace(/\D/g, "");
 
     const customer = await findOrCreateCustomer({
       name: driverName,
-      phone: driverPhone,
+      phone,
       email: driverEmail,
     });
 
     // Store QB customer ID on the driver for future cross-referencing
-    const phone = driverPhone.replace(/\D/g, "");
     await prisma.driver.updateMany({
       where: { phone },
       data: { qbCustomerId: customer.Id },

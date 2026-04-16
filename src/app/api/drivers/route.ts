@@ -1,10 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { handler, json } from "@/lib/api-handler";
 import { DriverUpsertSchema, DriverLookupSchema } from "@/lib/schemas";
+import { RATE_LIMITS } from "@/lib/rate-limit";
 
 // GET: look up driver by email or phone (used by /entry, /exit and "remember me")
+// Rate-limited to prevent phone enumeration.
 export const GET = handler(
-  { query: DriverLookupSchema },
+  { query: DriverLookupSchema, rateLimit: RATE_LIMITS.auth },
   async ({ query }) => {
     const { email } = query;
     const phone = query.phone ? query.phone.replace(/\D/g, "") : undefined;

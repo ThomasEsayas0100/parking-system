@@ -72,6 +72,8 @@ export type ApiSession = {
   expectedEnd: string;
   endedAt: string | null;
   reminderSent: boolean;
+  termsVersion: string;
+  overstayAuthorized: boolean;
 };
 
 /** Session with all included relations (from most GET endpoints) */

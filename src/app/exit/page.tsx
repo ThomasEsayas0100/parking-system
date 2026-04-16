@@ -116,7 +116,7 @@ function ExitContent() {
         try {
           const exitData = await apiPost<OverstayInfo & { success?: boolean }>(
             "/api/sessions/exit",
-            { sessionId: activeSession.id }
+            { sessionId: activeSession.id, driverId: apiDriver.id }
           );
           if (exitData.requiresPayment) {
             setOverstayInfo(exitData);
@@ -230,6 +230,7 @@ function ExitContent() {
         "/api/sessions/exit",
         {
           sessionId: overstayInfo.sessionId,
+          driverId: driver?.id,
           overstayPaymentId: payData.paymentIntentId,
         }
       );
@@ -327,7 +328,7 @@ function GateOpeningView() {
   return (
     <div style={styles.center}>
       <div style={styles.gateIcon}>↑</div>
-      <p style={{ ...styles.heading, color: "#2D7A4A" }}>Gate opening…</p>
+      <p style={{ ...styles.heading, color: "#2D7A4A" }}>Gate opening… · Puerta abierta…</p>
       <p style={styles.hint}>Please proceed through the gate.</p>
     </div>
   );
@@ -354,7 +355,7 @@ function GateOpenedView({
 
       <div style={styles.center}>
         <div style={styles.gateIcon}>↑</div>
-        <p style={{ ...styles.heading, color: "#2D7A4A", marginBottom: 8 }}>Gate opening</p>
+        <p style={{ ...styles.heading, color: "#2D7A4A", marginBottom: 8 }}>Gate opening · Puerta abierta</p>
         <p style={styles.hint}>Drive safe! Your spot is still reserved.</p>
       </div>
 
@@ -421,7 +422,7 @@ function ActiveSessionView({
       <WelcomeBar name={driver.name} onNotYou={onNotYou} />
 
       <div style={styles.card}>
-        <div style={styles.cardLabel}>Active session</div>
+        <div style={styles.cardLabel}>Active session · Sesión activa</div>
         <div style={styles.cardRow}>
           <span style={styles.cardKey}>Spot</span>
           <span style={styles.cardVal}>{session.spot.label}</span>
@@ -567,7 +568,7 @@ function NoSessionView({
       <WelcomeBar name={driver.name} onNotYou={onNotYou} />
 
       <div style={{ ...styles.card, borderColor: "#444" }}>
-        <div style={styles.cardLabel}>No active session</div>
+        <div style={styles.cardLabel}>No active session · Sin sesión activa</div>
         <p style={{ ...styles.hint, margin: 0, lineHeight: 1.6 }}>
           We couldn&apos;t find an active parking session for your account.
           If you believe this is an error, please contact staff.

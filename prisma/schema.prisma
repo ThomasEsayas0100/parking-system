@@ -121,6 +121,7 @@ model Session {
   endedAt            DateTime?
   status             SessionStatus @default(ACTIVE)
   reminderSent       Boolean       @default(false)
+  overstayAlertSent  Boolean       @default(false)
   // Terms acceptance (clickwrap consent record). "legacy" = pre-consent-tracking row.
   termsVersion       String        @default("legacy")
   overstayAuthorized Boolean       @default(false)
