@@ -184,6 +184,7 @@ same session → `SUSPICIOUS_ENTRY` logged.
 | `/api/admin/qb-auth/callback` | GET | OAuth callback, exchanges code for tokens |
 | `/api/admin/qb-data` | GET | QB payments + P&L for reconciliation |
 | `/api/cron/check-sessions` | GET | Expiry reminders, OVERSTAY detection, manager alerts |
+| `/api/cron/void-pending-invoices` | GET | Voids QB parking invoices that have sat unpaid >30min (matches `pending_session` client TTL) |
 | `/api/dev/seed` | POST | Seed test data (dev only) |
 | `/api/auth/login` | POST | Admin login |
 | `/api/auth/logout` | POST | Clear auth cookie |
@@ -212,8 +213,8 @@ same session → `SUSPICIOUS_ENTRY` logged.
 
 **Enums**: `VehicleType` (BOBTAIL, TRUCK_TRAILER), `SpotStatus` (AVAILABLE, OCCUPIED),
 `SessionStatus` (ACTIVE, COMPLETED, OVERSTAY), `PaymentType` (CHECKIN, MONTHLY_CHECKIN,
-EXTENSION, OVERSTAY), `AuditAction` (14 values including GATE_DENIED, SUSPICIOUS_ENTRY,
-ALLOWLIST_ENTRY, LAYOUT_SAVED, LAYOUT_RESTORED).
+EXTENSION, OVERSTAY), `AuditAction` (15 values including GATE_DENIED, SUSPICIOUS_ENTRY,
+ALLOWLIST_ENTRY, LAYOUT_SAVED, LAYOUT_RESTORED, PAYMENT_EXPIRED).
 
 **Key models**:
 - `Driver` — phone (unique), name, email, qbCustomerId (QB link)
