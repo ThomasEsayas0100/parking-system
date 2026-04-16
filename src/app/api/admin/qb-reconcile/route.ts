@@ -77,12 +77,21 @@ export const POST = handler({}, async () => {
     }
   }
 
+  // Stamp last-synced even if nothing changed — the admin still ran a sync
+  // against QB, which is what the Payments tab display is communicating.
+  const syncedAt = new Date();
+  await prisma.settings.update({
+    where: { id: "default" },
+    data: { qbLastSyncedAt: syncedAt },
+  });
+
   return json({
     checked: payments.length,
     updated: changes.length,
     unchanged: payments.length - changes.length - errors.length,
     changes,
     errors,
+    syncedAt: syncedAt.toISOString(),
   });
 });
 

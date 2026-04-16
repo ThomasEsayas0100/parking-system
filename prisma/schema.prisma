@@ -56,6 +56,7 @@ enum AuditAction {
   ALLOWLIST_ENTRY
   LAYOUT_SAVED
   LAYOUT_RESTORED
+  PAYMENT_EXPIRED
 }
 
 model AllowList {
@@ -214,6 +215,10 @@ model Settings {
   qbRefreshToken        String?
   qbRealmId             String?
   qbTokenExpiresAt      DateTime?
+  // Stamped when /api/admin/qb-reconcile completes successfully. Rendered on
+  // the admin Payments tab so the admin can tell at a glance whether the
+  // payment list reflects fresh QB data or is days stale.
+  qbLastSyncedAt        DateTime?
 }
 
 // Google-Docs-style version history for the lot layout. Each save creates one

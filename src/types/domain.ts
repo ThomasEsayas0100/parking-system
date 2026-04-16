@@ -164,6 +164,8 @@ export type AppSettings = {
   qbTokenExpiresAt: string | null;
   /** True when the QB access token expires within 14 days. */
   qbTokenExpiringSoon: boolean;
+  /** ISO string of last successful reconcile run, or null if never synced. */
+  qbLastSyncedAt: string | null;
 };
 
 // ---------------------------------------------------------------------------

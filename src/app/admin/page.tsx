@@ -92,6 +92,17 @@ function fmtDate(iso: string | null): string {
   });
 }
 
+function fmtRelative(iso: string): string {
+  const sec = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const d = Math.round(hr / 24);
+  return `${d}d ago`;
+}
+
 function calcDuration(start: string, end: string | null): string {
   const ms = (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime();
   const hrs = Math.floor(ms / 3600000);
@@ -1615,7 +1626,16 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
     updated: number;
     errors: { paymentId: string; error: string }[];
   } | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncKey, setSyncKey] = useState(0);
+
+  // Bootstrap last-synced from /api/settings so the badge is populated on
+  // first paint, not only after a fresh sync.
+  useEffect(() => {
+    apiFetch<{ settings: { qbLastSyncedAt?: string | null } }>("/api/settings")
+      .then((d) => setLastSyncedAt(d.settings?.qbLastSyncedAt ?? null))
+      .catch(() => {});
+  }, []);
 
   const syncWithQB = useCallback(() => {
     setSyncing(true);
@@ -1624,6 +1644,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
       .then((r) => r.json())
       .then((d) => {
         setSyncResult({ checked: d.checked, updated: d.updated, errors: d.errors ?? [] });
+        if (d.syncedAt) setLastSyncedAt(d.syncedAt);
         if (d.updated > 0) setSyncKey((k) => k + 1); // refresh payment list
       })
       .catch(() => setSyncResult({ checked: 0, updated: 0, errors: [{ paymentId: "", error: "Sync failed — QB may not be connected" }] }))
@@ -1772,6 +1793,12 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
               {unmatchedQB.length === 0 && qbPayments.length > 0 && (
                 <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A" }}>
                   All matched
+                </span>
+              )}
+              {/* Last-synced timestamp — so the admin can trust the data. */}
+              {lastSyncedAt && (
+                <span style={{ fontSize: 11, color: FG_DIM }}>
+                  Synced {fmtRelative(lastSyncedAt)}
                 </span>
               )}
               {/* Sync internal payment statuses with QB ground truth */}
