@@ -207,13 +207,15 @@ export async function findOrCreateCustomer(opts: {
 // ---------------------------------------------------------------------------
 type QBInvoice = {
   Id: string;
+  DocNumber?: string;
+  SyncToken?: string;
   TotalAmt: number;
   Balance: number;
   InvoiceLink?: string;
   EmailStatus: string;
   /** QB marks voided invoices with this metadata */
   PrivateNote?: string;
-  MetaData?: { LastUpdatedTime: string };
+  MetaData?: { LastUpdatedTime: string; CreateTime?: string };
 };
 
 /**
@@ -222,6 +224,25 @@ type QBInvoice = {
  * The invoiceLink is a hosted page where the customer can pay via
  * Apple Pay, PayPal, Venmo, credit/debit card, or ACH.
  */
+// All parking invoices get a DocNumber with this prefix so they're
+// distinguishable from any non-parking QB activity (fuel, payroll, etc.)
+// during reconciliation and P&L reporting. Max DocNumber length in QB is 21
+// chars; "PRK-" + 12 hex chars is well under that limit.
+export const PARKING_INVOICE_DOCNUMBER_PREFIX = "PRK-";
+
+export function isParkingInvoiceDocNumber(docNumber: string | null | undefined): boolean {
+  return typeof docNumber === "string" && docNumber.startsWith(PARKING_INVOICE_DOCNUMBER_PREFIX);
+}
+
+function generateParkingDocNumber(): string {
+  // 12 hex chars of randomness — collisions are astronomically unlikely for
+  // a single lot, and the prefix already disambiguates us from other activity.
+  const rand = Array.from({ length: 12 }, () =>
+    Math.floor(Math.random() * 16).toString(16),
+  ).join("");
+  return `${PARKING_INVOICE_DOCNUMBER_PREFIX}${rand}`;
+}
+
 export async function createInvoiceCheckout(opts: {
   customerId: string;
   amount: number;
@@ -234,6 +255,9 @@ export async function createInvoiceCheckout(opts: {
       method: "POST",
       body: JSON.stringify({
         CustomerRef: { value: opts.customerId },
+        // Tag every parking invoice with a recognizable DocNumber so the
+        // reconciliation loop and the cleanup cron can filter to "ours only".
+        DocNumber: generateParkingDocNumber(),
         Line: [
           {
             Amount: opts.amount,
@@ -320,6 +344,52 @@ export async function getInvoiceStatus(invoiceId: string): Promise<InvoiceStatus
     totalAmount,
     amountPaid,
   };
+}
+
+/**
+ * Void a QB invoice. Used by the invoice-TTL cron to clean up abandoned
+ * checkouts. QB voids zero out TotalAmt + Balance but keep the row — our
+ * existing voided-detection in getInvoiceStatus picks it up correctly.
+ */
+export async function voidInvoice(invoiceId: string): Promise<void> {
+  // `/invoice?operation=void` expects Id + SyncToken on the body.
+  const { Invoice } = await qbFetch<{ Invoice: QBInvoice }>(`/invoice/${invoiceId}`);
+  await qbFetch<{ Invoice: QBInvoice }>(
+    `/invoice?operation=void`,
+    {
+      method: "POST",
+      body: JSON.stringify({ Id: Invoice.Id, SyncToken: Invoice.SyncToken }),
+    },
+  );
+}
+
+/**
+ * Fetch unpaid parking invoices older than `olderThanMinutes`. Used by the
+ * invoice-TTL cron to find expired checkout invoices for voiding. Filters by
+ * our DocNumber prefix so non-parking QB activity is never touched.
+ */
+export async function getUnpaidParkingInvoicesOlderThan(olderThanMinutes: number): Promise<Array<{
+  id: string;
+  docNumber: string;
+  totalAmount: number;
+  balance: number;
+  createdAt: string;
+}>> {
+  const cutoff = new Date(Date.now() - olderThanMinutes * 60_000).toISOString();
+  // QB's MetaData.CreateTime is ISO-ish; comparison with string literal works
+  // for ISO dates because lexical order matches chronological order.
+  const query = `SELECT * FROM Invoice WHERE DocNumber LIKE '${PARKING_INVOICE_DOCNUMBER_PREFIX}%' AND Balance > '0' AND MetaData.CreateTime < '${cutoff}' MAXRESULTS 100`;
+  const res = await qbFetch<{
+    QueryResponse: { Invoice?: QBInvoice[] };
+  }>(`/query?query=${encodeURIComponent(query)}`);
+  const invoices = res.QueryResponse.Invoice ?? [];
+  return invoices.map((inv) => ({
+    id: inv.Id,
+    docNumber: inv.DocNumber ?? "",
+    totalAmount: inv.TotalAmt ?? 0,
+    balance: inv.Balance ?? 0,
+    createdAt: inv.MetaData?.CreateTime ?? "",
+  }));
 }
 
 // ---------------------------------------------------------------------------
