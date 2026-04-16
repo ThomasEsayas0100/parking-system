@@ -5,6 +5,8 @@
  * - Parses JSON response body
  * - Extracts server error messages when available
  * - Provides a typed ApiError class for catch blocks
+ * - On 401 for /api/admin/* routes, redirects to the admin login page
+ *   so an expired JWT doesn't show up as a silent empty UI
  */
 
 export class ApiError extends Error {
@@ -37,6 +39,22 @@ export async function apiFetch<T = unknown>(
     } catch {
       // response wasn't JSON — use status-based message
     }
+
+    // Admin JWT expired (or not present). Force a re-login on the browser
+    // side so the admin doesn't see every tab silently emptied. The proxy
+    // middleware already redirects page navigations to /login, but XHR
+    // calls from an open admin page just get 401 JSON — this closes that gap.
+    if (res.status === 401 && typeof window !== "undefined") {
+      const isAdminRoute =
+        url.startsWith("/api/admin/") ||
+        url.startsWith("/api/dev/") ||
+        window.location.pathname.startsWith("/admin");
+      if (isAdminRoute && !window.location.pathname.startsWith("/login")) {
+        const next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = `/login?next=${next}&sessionExpired=1`;
+      }
+    }
+
     throw new ApiError(message, res.status);
   }
   return res.json() as Promise<T>;

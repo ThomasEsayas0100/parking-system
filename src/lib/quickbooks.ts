@@ -22,6 +22,18 @@
 const SANDBOX_BASE = "https://sandbox-quickbooks.api.intuit.com";
 const PROD_BASE = "https://quickbooks.api.intuit.com";
 
+/**
+ * Thrown when QB is unreachable or tokens can't be acquired/refreshed.
+ * Callers should catch this and map to a 503 so the driver sees a
+ * "temporarily unavailable" message instead of a generic 500.
+ */
+export class QBAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "QBAuthError";
+  }
+}
+
 const isProd = process.env.NODE_ENV === "production";
 const API_BASE = isProd ? PROD_BASE : SANDBOX_BASE;
 
@@ -46,7 +58,7 @@ function validateEnvironment(realmId: string): void {
   }
 
   if (!realmId) {
-    throw new Error("QB_REALM_ID is empty. Connect QuickBooks in Admin → Settings.");
+    throw new QBAuthError("QB_REALM_ID is empty. Connect QuickBooks in Admin → Settings.");
   }
 }
 
@@ -58,7 +70,7 @@ import { prisma } from "./prisma";
 async function getTokens(): Promise<{ accessToken: string; realmId: string }> {
   const settings = await prisma.settings.findUnique({ where: { id: "default" } });
   if (!settings?.qbAccessToken || !settings?.qbRealmId) {
-    throw new Error("QuickBooks not connected. Go to Admin → Settings to connect.");
+    throw new QBAuthError("QuickBooks not connected. Go to Admin → Settings to connect.");
   }
 
   // Fail loud if sandbox credentials are used in production
@@ -81,7 +93,7 @@ async function refreshAccessToken(
 ): Promise<{ accessToken: string; realmId: string }> {
   const clientId = process.env.QB_CLIENT_ID;
   const clientSecret = process.env.QB_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error("QB_CLIENT_ID/QB_CLIENT_SECRET not configured");
+  if (!clientId || !clientSecret) throw new QBAuthError("QB_CLIENT_ID/QB_CLIENT_SECRET not configured");
 
   const res = await fetch("https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer", {
     method: "POST",
@@ -97,7 +109,7 @@ async function refreshAccessToken(
   });
 
   if (!res.ok) {
-    throw new Error(`QB token refresh failed (${res.status}). Reconnect in Admin → Settings.`);
+    throw new QBAuthError(`QB token refresh failed (${res.status}). Reconnect in Admin → Settings.`);
   }
 
   const data = await res.json() as {

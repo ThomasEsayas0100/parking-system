@@ -7,6 +7,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("next") || "/admin";
+  const sessionExpired = searchParams.get("sessionExpired") === "1";
 
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +100,21 @@ function LoginForm() {
             }}
           />
         </label>
+
+        {sessionExpired && !error && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "#F59E0B",
+              padding: "6px 10px",
+              background: "#2A1F0A",
+              border: "1px solid #F59E0B",
+              borderRadius: 4,
+            }}
+          >
+            Your session expired — please sign in again.
+          </div>
+        )}
 
         {error && (
           <div

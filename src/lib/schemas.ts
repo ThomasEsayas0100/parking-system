@@ -82,12 +82,14 @@ export type SessionCreateInput = z.infer<typeof SessionCreateSchema>;
 
 export const SessionExtendSchema = z.object({
   sessionId: idSchema,
+  driverId: idSchema,
   hours: z.number().int().min(1).max(72),
   paymentId: z.string().min(1).max(200),
 });
 
 export const SessionExitSchema = z.object({
   sessionId: idSchema,
+  driverId: idSchema,
   overstayPaymentId: z.string().min(1).max(200).optional(),
 });
 
@@ -104,10 +106,10 @@ export type PaymentIntentCreateInput = z.infer<typeof PaymentIntentCreateSchema>
 // Settings
 // ---------------------------------------------------------------------------
 export const SettingsUpdateSchema = z.object({
-  hourlyRateBobtail: z.number().min(0).max(1000).optional(),
-  hourlyRateTruck: z.number().min(0).max(1000).optional(),
-  overstayRateBobtail: z.number().min(0).max(1000).optional(),
-  overstayRateTruck: z.number().min(0).max(1000).optional(),
+  hourlyRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  hourlyRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  overstayRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  overstayRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   gracePeriodMinutes: z.number().int().min(0).max(1440).optional(),
   reminderMinutesBefore: z.number().int().min(0).max(1440).optional(),
   totalSpotsBobtail: z.number().int().min(0).max(10000).optional(),

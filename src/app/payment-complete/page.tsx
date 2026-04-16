@@ -25,7 +25,10 @@ type PendingSession = {
   invoiceId: string;
   termsVersion: string;
   overstayAuthorized: boolean;
+  createdAt?: number;
 };
+
+const PENDING_SESSION_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 
 export default function PaymentCompletePage() {
   const router = useRouter();
@@ -45,8 +48,23 @@ export default function PaymentCompletePage() {
     try {
       const pending = JSON.parse(raw) as PendingSession;
       if (!pending.invoiceId) throw new Error("missing invoiceId");
+
+      // Reject data older than 30 minutes — likely an abandoned session
+      // left in sessionStorage. Without this, a returning driver can get
+      // stuck polling a dead invoice forever.
+      if (
+        pending.createdAt &&
+        Date.now() - pending.createdAt > PENDING_SESSION_MAX_AGE_MS
+      ) {
+        sessionStorage.removeItem("pending_session");
+        setError("Your previous check-in has expired. Please start a new one.");
+        setStatus("error");
+        return;
+      }
+
       pendingRef.current = pending;
     } catch {
+      sessionStorage.removeItem("pending_session");
       setError("Invalid session data. Please check in again.");
       setStatus("error");
     }
@@ -80,7 +98,13 @@ export default function PaymentCompletePage() {
         }
 
         if (data.partial) {
-          setError(`Partial payment received ($${data.amountPaid.toFixed(2)} of $${data.totalAmount.toFixed(2)}). Please contact the manager.`);
+          // Partial payment is a dead-end for this driver on this invoice.
+          // Drop the pending data so they don't get re-polled into the same
+          // state on a subsequent visit.
+          sessionStorage.removeItem("pending_session");
+          setError(
+            `Partial payment received ($${data.amountPaid.toFixed(2)} of $${data.totalAmount.toFixed(2)}). Please contact the manager with invoice #${pending.invoiceId}.`
+          );
           setStatus("partial");
           return;
         }
@@ -102,13 +126,19 @@ export default function PaymentCompletePage() {
           });
           const sessionData = await sessionRes.json();
           if (!sessionRes.ok) {
+            // If the backend rejected for a reason that won't be fixed by
+            // retrying (duplicate payment, conflict), clearing the stale
+            // pending_session prevents an infinite retry loop.
+            if (sessionRes.status === 409) {
+              sessionStorage.removeItem("pending_session");
+            }
             setError(sessionData.error || "Session creation failed after payment.");
             setStatus("error");
             return;
           }
           sessionStorage.removeItem("pending_session");
           setStatus("done");
-          router.push(`/confirmation?sessionId=${sessionData.session.id}`);
+          router.push(`/confirmation`);
           return;
         }
 
@@ -147,13 +177,17 @@ export default function PaymentCompletePage() {
             </h1>
             <p style={{ fontSize: 14, color: "var(--fg-muted)", marginBottom: 24 }}>
               Finish payment on QuickBooks, then return here and tap the button below to confirm your spot.
+              <br />
+              <span style={{ fontSize: 12, color: "var(--fg-subtle)" }}>
+                Completa tu pago en QuickBooks, luego regresa aquí y presiona el botón para confirmar tu lugar.
+              </span>
             </p>
             {error && <p style={{ fontSize: 13, color: "var(--error)", marginBottom: 16 }}>{error}</p>}
             <button
               onClick={confirmPayment}
               style={{ padding: "14px 28px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 16, cursor: "pointer", width: "100%" }}
             >
-              I've paid — confirm my spot
+              I've paid — confirm my spot · Ya pagué — confirmar mi lugar
             </button>
             <p style={{ fontSize: 12, color: "var(--fg-subtle)", marginTop: 12 }}>
               Tap after completing payment on QuickBooks
@@ -173,7 +207,7 @@ export default function PaymentCompletePage() {
               margin: "0 auto 24px",
             }} />
             <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Verifying payment…
+              Verifying payment… · Verificando pago…
             </h1>
             <p style={{ fontSize: 14, color: "var(--fg-muted)" }}>
               Confirming your payment with QuickBooks.

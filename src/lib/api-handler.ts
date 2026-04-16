@@ -31,6 +31,8 @@ export const conflict = (msg: string) => new ApiError(409, msg);
 export const paymentRequired = (msg: string) => new ApiError(402, msg);
 export const tooManyRequests = (msg = "Too many requests", retryAfterSec = 0) =>
   new ApiError(429, msg, { retryAfterSec });
+export const serviceUnavailable = (msg = "Service unavailable") =>
+  new ApiError(503, msg);
 
 // ---------------------------------------------------------------------------
 // Response shape
@@ -155,6 +157,15 @@ export function handler<
       ) {
         log.debug("prisma unique violation", { ms });
         return errorResponse(409, "Duplicate — this record already exists");
+      }
+      // QB auth / connectivity failure → 503. Duck-typed via err.name so
+      // we don't create a circular import from quickbooks.ts.
+      if (err instanceof Error && err.name === "QBAuthError") {
+        log.error("QB auth failure", { msg: err.message, ms });
+        return errorResponse(
+          503,
+          "Payment service temporarily unavailable. Please try again in a moment."
+        );
       }
       // Unknown error — never leak details in prod
       log.error("unhandled exception", {

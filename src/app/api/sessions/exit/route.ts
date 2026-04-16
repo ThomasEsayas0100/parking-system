@@ -4,19 +4,24 @@ import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
 import { verifyAndClaimPayment } from "@/lib/payments";
 import { overstayRate, ceilHours } from "@/lib/rates";
-import { handler, json, notFound } from "@/lib/api-handler";
+import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionExitSchema } from "@/lib/schemas";
 
 export const POST = handler(
   { body: SessionExitSchema },
   async ({ body }) => {
-    const { sessionId, overstayPaymentId } = body;
+    const { sessionId, driverId, overstayPaymentId } = body;
 
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       include: { spot: true, vehicle: true },
     });
-    if (!session || !["ACTIVE", "OVERSTAY"].includes(session.status)) {
+    // 404 on both missing and ownership mismatch — don't leak existence
+    if (
+      !session ||
+      session.driverId !== driverId ||
+      !["ACTIVE", "OVERSTAY"].includes(session.status)
+    ) {
       throw notFound("No active session found");
     }
 
@@ -41,20 +46,30 @@ export const POST = handler(
 
       await verifyAndClaimPayment(overstayPaymentId);
 
-      await prisma.payment.create({
-        data: {
-          sessionId,
-          type: "OVERSTAY",
-          externalPaymentId: overstayPaymentId,
-          amount: overstayAmount,
-          hours: overstayHours,
-        },
-      });
-
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: { status: "COMPLETED", endedAt: now },
-      });
+      // Atomic: payment + session-complete in one transaction.
+      // P2002 on concurrent overstay payment → clean 409.
+      try {
+        await prisma.$transaction([
+          prisma.payment.create({
+            data: {
+              sessionId,
+              type: "OVERSTAY",
+              externalPaymentId: overstayPaymentId,
+              amount: overstayAmount,
+              hours: overstayHours,
+            },
+          }),
+          prisma.session.update({
+            where: { id: sessionId },
+            data: { status: "COMPLETED", endedAt: now },
+          }),
+        ]);
+      } catch (err) {
+        if (err instanceof Error && (err as { code?: string }).code === "P2002") {
+          throw conflict("This payment has already been used");
+        }
+        throw err;
+      }
 
       await audit({
         action: "OVERSTAY_PAYMENT",

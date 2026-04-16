@@ -304,6 +304,8 @@ export default function ScanPage() {
         }
         .g-h1 span { color: #2D7A4A; }
         .g-h1 .green { color: #34C759; }
+        .g-h1 .amber { color: #F59E0B; }
+        .g-eyebrow.amber { color: #F59E0B; }
 
         .g-sub {
           font-size: 15px;
@@ -632,10 +634,10 @@ export default function ScanPage() {
           <div className="g-body">
             {gateDenied ? (
               <>
-                <div className="g-icon-wrap" style={{ background: "rgba(242,240,235,0.06)", border: "1px solid rgba(242,240,235,0.12)", margin: "0 auto 20px" }}>
-                  <span style={{ fontSize: 22, color: "rgba(242,240,235,0.4)" }}>⟳</span>
+                <div className="g-icon-wrap" style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.28)", margin: "0 auto 20px" }}>
+                  <span style={{ fontSize: 22, color: "#F59E0B" }}>↻</span>
                 </div>
-                <p className="g-eyebrow">{allowEntry.label}</p>
+                <p className="g-eyebrow amber">{allowEntry.label}</p>
                 <h1 className="g-h1">Hey,<br /><span className="green">{allowEntry.name.split(" ")[0]}</span>.</h1>
                 <p className="g-sub">Please re-scan the QR code at the gate to open it.</p>
               </>
@@ -658,10 +660,10 @@ export default function ScanPage() {
           <div className="g-body">
             {gateDenied ? (
               <>
-                <div className="g-icon-wrap" style={{ background: "rgba(242,240,235,0.06)", border: "1px solid rgba(242,240,235,0.12)", margin: "0 auto 20px" }}>
-                  <span style={{ fontSize: 22, color: "rgba(242,240,235,0.4)" }}>⟳</span>
+                <div className="g-icon-wrap" style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.28)", margin: "0 auto 20px" }}>
+                  <span style={{ fontSize: 22, color: "#F59E0B" }}>↻</span>
                 </div>
-                <p className="g-eyebrow">Session active</p>
+                <p className="g-eyebrow amber">Re-scan required</p>
                 <h1 className="g-h1">Hey,<br /><span className="green">{driver.name.split(" ")[0]}</span>.</h1>
                 <p className="g-sub" style={{ marginBottom: 24 }}>
                   Please re-scan the QR code at the gate to open it.
@@ -703,7 +705,7 @@ export default function ScanPage() {
               </div>
             </div>
 
-            <Link href={`/extend?sessionId=${session.id}`} className="g-btn g-btn-ghost" style={{ textAlign: "center", justifyContent: "center" }}>
+            <Link href={`/extend`} className="g-btn g-btn-ghost" style={{ textAlign: "center", justifyContent: "center" }}>
               Extend parking time
             </Link>
 
@@ -744,7 +746,7 @@ export default function ScanPage() {
               </div>
             </div>
 
-            <Link href={`/exit?sessionId=${session.id}`} className="g-btn g-btn-primary" style={{ justifyContent: "center" }}>
+            <Link href={`/exit`} className="g-btn g-btn-primary" style={{ justifyContent: "center" }}>
               Settle overstay & open gate
             </Link>
 
@@ -854,10 +856,10 @@ export default function ScanPage() {
         {/* ── NOT FOUND ── */}
         {state === "not_found" && (
           <div className="g-body">
-            <div className="g-icon-wrap" style={{ background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.18)" }}>
-              <span style={{ fontSize: 22 }}>?</span>
+            <div className="g-icon-wrap" style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.28)" }}>
+              <span style={{ fontSize: 22, color: "#F59E0B" }}>?</span>
             </div>
-            <p className="g-eyebrow">No account found</p>
+            <p className="g-eyebrow amber">No account found</p>
             <h1 className="g-h1">Number<br />not on file</h1>
             <p className="g-sub">
               We couldn&apos;t find an account for{" "}

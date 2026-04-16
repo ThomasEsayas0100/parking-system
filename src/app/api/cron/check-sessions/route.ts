@@ -26,9 +26,11 @@ export async function GET() {
 
   for (const session of sessionsNeedingReminder) {
     const expiresAt = new Date(session.expectedEnd).toLocaleString();
-    const extendUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/extend?sessionId=${session.id}`;
+    // No sessionId in URL — /extend reads the driver's active session from localStorage.
+    // Keeps the session token out of SMS/carrier logs.
+    const extendUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/extend`;
 
-    const message = `Your parking at spot ${session.spot.label} expires at ${expiresAt}. Extend your time here: ${extendUrl}`;
+    const message = `Your parking at spot ${session.spot.label} expires at ${expiresAt}. Extend your time: ${extendUrl}`;
 
     await sendSMS(session.driver.phone, message);
     if (session.driver.email) {
@@ -49,7 +51,7 @@ export async function GET() {
     });
   }
 
-  // 2. Notify manager about overstayed vehicles
+  // 2. Flip ACTIVE → OVERSTAY for sessions past the grace period
   const graceThreshold = new Date(
     now.getTime() - settings.gracePeriodMinutes * 60 * 1000
   );
@@ -62,8 +64,6 @@ export async function GET() {
     include: { driver: true, spot: true },
   });
 
-  // Mark overstayed sessions — ACTIVE → OVERSTAY so the spot stays
-  // occupied on the map but shows as overdue until the driver exits
   if (overstayedSessions.length > 0) {
     await prisma.session.updateMany({
       where: { id: { in: overstayedSessions.map((s) => s.id) }, status: "ACTIVE" },
@@ -83,8 +83,19 @@ export async function GET() {
     );
   }
 
-  if (overstayedSessions.length > 0 && settings.managerEmail) {
-    const lines = overstayedSessions.map((s) => {
+  // 3. Notify manager — only for sessions whose alert has NOT been sent yet.
+  // This prevents duplicate alerts when the cron runs multiple times before
+  // a driver exits.
+  const unalertedOverstays = await prisma.session.findMany({
+    where: {
+      status: "OVERSTAY",
+      overstayAlertSent: false,
+    },
+    include: { driver: true, spot: true },
+  });
+
+  if (unalertedOverstays.length > 0 && settings.managerEmail) {
+    const lines = unalertedOverstays.map((s) => {
       const overHours = ceilHours(new Date(s.expectedEnd), now);
       return `- Spot ${s.spot.label}: ${s.driver.name} (${s.driver.phone}) — ${overHours}h overstay`;
     });
@@ -94,17 +105,23 @@ export async function GET() {
     await sendEmail(settings.managerEmail, "Overstay Alert", body);
 
     if (settings.managerPhone) {
-      await sendSMS(settings.managerPhone, `Overstay alert: ${overstayedSessions.length} vehicle(s) past time. Check dashboard.`);
+      await sendSMS(settings.managerPhone, `Overstay alert: ${unalertedOverstays.length} vehicle(s) past time. Check dashboard.`);
     }
+
+    // Mark alerts as sent so we don't re-notify on next cron run
+    await prisma.session.updateMany({
+      where: { id: { in: unalertedOverstays.map((s) => s.id) } },
+      data: { overstayAlertSent: true },
+    });
 
     await audit({
       action: "OVERSTAY_ALERT",
-      details: `Manager notified: ${overstayedSessions.length} vehicle(s) overstayed — ${settings.managerEmail}`,
+      details: `Manager notified: ${unalertedOverstays.length} vehicle(s) overstayed — ${settings.managerEmail}`,
     });
   }
 
   return NextResponse.json({
     remindersSent: sessionsNeedingReminder.length,
-    overstayAlerts: overstayedSessions.length,
+    overstayAlerts: unalertedOverstays.length,
   });
 }

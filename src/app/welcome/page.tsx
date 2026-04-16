@@ -88,7 +88,7 @@ function WelcomeContent() {
 
   async function handleOpenGate(session: ActiveSession) {
     if (isOverstayed(session)) {
-      router.push(`/exit?sessionId=${session.id}`);
+      router.push(`/exit`);
       return;
     }
 
@@ -101,7 +101,7 @@ function WelcomeContent() {
         deviceId: getDeviceId(),
         direction: "ENTRANCE",
       });
-      router.push(`/confirmation?sessionId=${session.id}&gateOpened=true`);
+      router.push(`/confirmation?gateOpened=true`);
     } catch {
       setGateError("Gate could not be opened. Please try again.");
       setGateLoading(null);
@@ -312,7 +312,7 @@ function WelcomeContent() {
                       style={{ color: "var(--accent)" }}
                       onClick={(e) => {
                         e.stopPropagation();
-                        router.push(`/extend?sessionId=${s.id}`);
+                        router.push(`/extend`);
                       }}
                     >
                       Extend time / Extender tiempo

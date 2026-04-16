@@ -176,6 +176,12 @@ function CheckInContent() {
   }, [existingDriverId, isDemo, isLocked, router, searchParams]);
 
   useEffect(() => {
+    // Starting a fresh check-in → drop any abandoned pending_session
+    // from a prior attempt so it can't be reused later.
+    try {
+      sessionStorage.removeItem("pending_session");
+    } catch {}
+
     if (!isDemo) {
       apiFetch<{ settings: Settings }>("/api/settings")
         .then((d) => setSettings(d.settings))
@@ -431,7 +437,9 @@ function CheckInContent() {
           return;
         }
 
-        // Save pending session info so the callback page can create the session after payment
+        // Save pending session info so the callback page can create the session after payment.
+        // Include createdAt so payment-complete can reject stale data (>30 min old)
+        // left behind from abandoned sessions.
         sessionStorage.setItem("pending_session", JSON.stringify({
           driverId: driver.id,
           vehicleId,
@@ -441,6 +449,7 @@ function CheckInContent() {
           invoiceId: checkoutData.invoiceId,
           termsVersion: settings.termsVersion,
           overstayAuthorized: true,
+          createdAt: Date.now(),
         }));
 
         // Redirect to QB hosted checkout — driver pays there (Apple Pay, PayPal, etc.)
@@ -477,7 +486,7 @@ function CheckInContent() {
         return;
       }
 
-      router.push(`/confirmation?sessionId=${sessionData.session.id}`);
+      router.push(`/confirmation`);
     } catch {
       setError("Something went wrong. Please try again. / Algo salió mal.");
       setLoading(false);

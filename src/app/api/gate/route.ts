@@ -4,13 +4,17 @@ import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
 import { handler, json } from "@/lib/api-handler";
 
-const GateOpenBody = z.object({
-  sessionId: z.string().min(1).optional(),
-  allowListPhone: z.string().min(4).optional(),
-  driverId: z.string().optional(),
-  deviceId: z.string().optional(),
-  direction: z.enum(["ENTRANCE", "EXIT"]).optional(),
-});
+const GateOpenBody = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+    allowListPhone: z.string().min(4).optional(),
+    driverId: z.string().min(1).optional(),
+    deviceId: z.string().optional(),
+    direction: z.enum(["ENTRANCE", "EXIT"]).optional(),
+  })
+  .refine((d) => d.allowListPhone || (d.sessionId && d.driverId), {
+    message: "Must provide allowListPhone, OR both sessionId and driverId",
+  });
 
 /** Log a gate denial and return 403. */
 async function deny(
@@ -54,8 +58,9 @@ export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
   }
 
   // ── Session validation ──
-  if (!sessionId) {
-    return deny("Session ID or allow list phone required", ctx);
+  // refine() above guarantees both sessionId and driverId are present here
+  if (!sessionId || !driverId) {
+    return deny("Session ID and driver ID required", ctx);
   }
 
   const session = await prisma.session.findUnique({
@@ -67,16 +72,17 @@ export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
     return deny("No session found", ctx);
   }
 
+  // Ownership check — always enforced, never optional
+  if (session.driverId !== driverId) {
+    return deny("Session does not belong to this driver", ctx);
+  }
+
   if (!["ACTIVE", "OVERSTAY"].includes(session.status)) {
-    return deny("Session is not active", { ...ctx, driverId: driverId ?? session.driverId });
+    return deny("Session is not active", ctx);
   }
 
   if (direction === "ENTRANCE" && session.status === "OVERSTAY") {
-    return deny("Session expired — settle overstay first", { ...ctx, driverId: driverId ?? session.driverId });
-  }
-
-  if (driverId && session.driverId !== driverId) {
-    return deny("Session does not belong to this driver", ctx);
+    return deny("Session expired — settle overstay first", ctx);
   }
 
   // ── Gate opens ──
@@ -95,7 +101,11 @@ export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
     details,
   });
 
-  // ── Suspicious entry detection ──
+  // ── Suspicious entry detection — block second device ──
+  // If two consecutive ENTRANCE scans come from different devices on the
+  // same session, deny the second one and log a SUSPICIOUS_ENTRY. The
+  // legitimate driver should not be affected because they'll re-scan
+  // from their own device. Admin can override via the dashboard.
   if (direction === "ENTRANCE" && deviceId) {
     try {
       const recentGateEvents = await prisma.auditLog.findMany({
@@ -118,12 +128,16 @@ export const POST = handler({ body: GateOpenBody }, async ({ body }) => {
             action: "SUSPICIOUS_ENTRY",
             sessionId,
             driverId: driverId ?? session.driverId,
-            details: `Double entrance from different devices — device:${currentDevicePrefix} after device:${prevDevicePrefix}`,
+            details: `BLOCKED — double entrance from different devices: device:${currentDevicePrefix} after device:${prevDevicePrefix}`,
           });
+          return deny(
+            "Entry blocked — this session was already scanned from a different device. Contact staff if this is an error.",
+            { ...ctx, driverId: driverId ?? session.driverId }
+          );
         }
       }
     } catch {
-      // Detection failed — don't block the gate
+      // Detection failed — allow the gate (fail-open for safety)
     }
   }
 

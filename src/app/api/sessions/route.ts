@@ -85,27 +85,40 @@ export const POST = handler(
       durationLabel = `${hrs}h`;
     }
 
-    const session = await prisma.session.create({
-      data: {
-        driverId,
-        vehicleId,
-        spotId: spot.id,
-        expectedEnd,
-        termsVersion,
-        overstayAuthorized,
-      },
-      include: { spot: true, driver: true, vehicle: true, payments: true },
-    });
-
-    await prisma.payment.create({
-      data: {
-        sessionId: session.id,
-        type: paymentType,
-        externalPaymentId: paymentId || `free_${randomUUID()}`,
-        amount: settings.paymentRequired ? amount : 0,
-        hours: isMonthly ? null : hours,
-      },
-    });
+    // Atomic create: session + payment in one write so we can't end up
+    // with an orphaned session if the payment insert fails. Prisma wraps
+    // nested creates in an implicit transaction.
+    //
+    // If two requests race on the same paymentId, the DB unique constraint
+    // on Payment.externalPaymentId turns the loser into P2002, which we
+    // catch below and rethrow as a clean 409.
+    let session;
+    try {
+      session = await prisma.session.create({
+        data: {
+          driverId,
+          vehicleId,
+          spotId: spot.id,
+          expectedEnd,
+          termsVersion,
+          overstayAuthorized,
+          payments: {
+            create: {
+              type: paymentType,
+              externalPaymentId: paymentId || `free_${randomUUID()}`,
+              amount: settings.paymentRequired ? amount : 0,
+              hours: isMonthly ? null : hours,
+            },
+          },
+        },
+        include: { spot: true, driver: true, vehicle: true, payments: true },
+      });
+    } catch (err) {
+      if (err instanceof Error && (err as { code?: string }).code === "P2002") {
+        throw conflict("This payment has already been used for another session");
+      }
+      throw err;
+    }
 
     await audit({
       action: "CHECKIN",
