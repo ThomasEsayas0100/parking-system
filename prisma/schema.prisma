@@ -54,6 +54,8 @@ enum AuditAction {
   SUSPICIOUS_ENTRY
   GATE_DENIED
   ALLOWLIST_ENTRY
+  LAYOUT_SAVED
+  LAYOUT_RESTORED
 }
 
 model AllowList {
@@ -96,16 +98,21 @@ model Vehicle {
 }
 
 model Spot {
-  id        String      @id @default(uuid())
-  label     String      @unique
-  type      VehicleType
-  cx        Float       @default(0)
-  cy        Float       @default(0)
-  w         Float       @default(0)
-  h         Float       @default(0)
-  rot       Float       @default(0)
-  sessions  Session[]
-  auditLogs AuditLog[]
+  id         String      @id @default(uuid())
+  label      String      @unique
+  type       VehicleType
+  cx         Float       @default(0)
+  cy         Float       @default(0)
+  w          Float       @default(0)
+  h          Float       @default(0)
+  rot        Float       @default(0)
+  // Archival, not hard-deletion. Lets historical sessions keep their FK target
+  // when a spot is removed from the lot. Live lot queries must filter archivedAt: null.
+  archivedAt DateTime?
+  sessions   Session[]
+  auditLogs  AuditLog[]
+
+  @@index([archivedAt])
 }
 
 model Session {
@@ -125,6 +132,11 @@ model Session {
   // Terms acceptance (clickwrap consent record). "legacy" = pre-consent-tracking row.
   termsVersion       String        @default("legacy")
   overstayAuthorized Boolean       @default(false)
+  // Label of the spot at the moment this session was created. Immutable after
+  // creation; displayed everywhere the session's spot is referenced so spot
+  // renames or archival do not retroactively rewrite session history.
+  // Empty string = legacy row, fallback to spot.label.
+  spotLabelSnapshot  String        @default("")
   payments           Payment[]
   auditLogs          AuditLog[]
   createdAt          DateTime      @default(now())
@@ -202,4 +214,30 @@ model Settings {
   qbRefreshToken        String?
   qbRealmId             String?
   qbTokenExpiresAt      DateTime?
+}
+
+// Google-Docs-style version history for the lot layout. Each save creates one
+// row capturing the full snapshot of spots + groups. Restore is non-destructive —
+// restoring an old version appends a new row equal to that state.
+model LotLayoutVersion {
+  id             String   @id @default(uuid())
+  createdAt      DateTime @default(now())
+  // Admin who saved (email when available, else "admin"; "system" for baseline/backfill).
+  createdBy      String
+  // Optional commit-style message.
+  message        String?
+  // Count of non-archived spots in this snapshot (for quick listing).
+  spotCount      Int
+  // { spots: SpotLayout[], groups: SpotGroup[] }
+  snapshot       Json
+  // { added: string[], removedArchived: string[], renamed: {id,from,to}[],
+  //   moved: string[], typeChanged: string[], groupsChanged: boolean }
+  // Null for the initial baseline.
+  diffSummary    Json?
+  // Previous version id (null only for the baseline).
+  parentId       String?
+  // Set when this version was created via a restore action.
+  restoredFromId String?
+
+  @@index([createdAt(sort: Desc)])
 }

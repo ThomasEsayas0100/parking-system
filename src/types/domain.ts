@@ -53,6 +53,7 @@ export type ApiPayment = {
 /** Payment with full session/driver/vehicle/spot context (admin Payments tab). */
 export type ApiPaymentWithSession = ApiPayment & {
   session: {
+    spotLabelSnapshot?: string | null;
     driver: { name: string; phone: string; qbCustomerId: string | null } | null;
     vehicle: { licensePlate: string | null; type: VehicleType } | null;
     spot: { label: string } | null;
@@ -74,6 +75,12 @@ export type ApiSession = {
   reminderSent: boolean;
   termsVersion: string;
   overstayAuthorized: boolean;
+  /**
+   * Label of the spot at check-in time. Prefer this over `spot.label` for
+   * historical displays — see getSessionSpotLabel() in src/lib/sessions.ts.
+   * Empty string on legacy rows created before this field existed.
+   */
+  spotLabelSnapshot: string;
 };
 
 /** Session with all included relations (from most GET endpoints) */
@@ -218,6 +225,7 @@ export type LotSpotSession = {
   endedAt: Date | null;
   sessionStatus: SessionStatus;
   reminderSent: boolean;
+  spotLabelSnapshot: string;
   payments: { id: string; type: PaymentType; amount: number; hours: number | null; createdAt: Date }[];
 };
 
@@ -241,4 +249,33 @@ export const LOT_STATUS_COLORS: Record<LotSpotStatus, LotSpotColors> = {
   VACANT:   { fill: "#12261C", fillHover: "#1A3324", stroke: "#2D7A4A", label: "rgba(255,255,255,0.5)" },
   RESERVED: { fill: "#1A1A2E", fillHover: "#24244A", stroke: "#6366F1", label: "rgba(99,102,241,0.7)" },
   OVERDUE:  { fill: "#2C1810", fillHover: "#3D2218", stroke: "#DC2626", label: "rgba(220,38,38,0.7)" },
+};
+
+// ---------------------------------------------------------------------------
+// Lot layout version history (Google-Docs-style)
+// ---------------------------------------------------------------------------
+export type LotLayoutDiffSummary = {
+  added: string[];
+  removedArchived: string[];
+  renamed: { id: string; from: string; to: string }[];
+  moved: string[];
+  typeChanged: string[];
+  groupsChanged: boolean;
+};
+
+/** Summary row (no full snapshot) returned by the history list endpoint. */
+export type ApiLotLayoutVersionSummary = {
+  id: string;
+  createdAt: string;
+  createdBy: string;
+  message: string | null;
+  spotCount: number;
+  diffSummary: LotLayoutDiffSummary | null;
+  parentId: string | null;
+  restoredFromId: string | null;
+};
+
+/** Detail response including the full snapshot. */
+export type ApiLotLayoutVersion = ApiLotLayoutVersionSummary & {
+  snapshot: { spots: SpotLayout[]; groups: unknown };
 };

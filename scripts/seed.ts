@@ -125,6 +125,7 @@ async function seed() {
       vehicleId: truck.id,
       spotId: dbSpot.id,
       expectedEnd: new Date(Date.now() + 8 * 60 * 60 * 1000),
+      spotLabelSnapshot: dbSpot.label,
     },
   });
 
