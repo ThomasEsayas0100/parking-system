@@ -13,7 +13,7 @@ Single source of truth for the Prisma schema and the API/view-layer types derive
 | `PaymentType` | `CHECKIN`, `MONTHLY_CHECKIN`, `EXTENSION`, `OVERSTAY` |
 | `PaymentStatus` | `PENDING`, `COMPLETED`, `PARTIALLY_REFUNDED`, `REFUNDED`, `VOIDED`, `DISPUTED` |
 | `AllowListLabel` | `EMPLOYEE`, `FAMILY`, `VENDOR`, `CONTRACTOR` |
-| `AuditAction` | `CHECKIN`, `CHECKOUT`, `EXTEND`, `OVERSTAY_START`, `OVERSTAY_PAYMENT`, `GATE_OPEN`, `SPOT_FREED`, `REMINDER_SENT`, `OVERSTAY_ALERT`, `SUSPICIOUS_ENTRY`, `GATE_DENIED`, `ALLOWLIST_ENTRY` |
+| `AuditAction` | `CHECKIN`, `CHECKOUT`, `EXTEND`, `OVERSTAY_START`, `OVERSTAY_PAYMENT`, `GATE_OPEN`, `SPOT_FREED`, `REMINDER_SENT`, `OVERSTAY_ALERT`, `SUSPICIOUS_ENTRY`, `GATE_DENIED`, `ALLOWLIST_ENTRY`, `LAYOUT_SAVED`, `LAYOUT_RESTORED` |
 
 ---
 
@@ -67,13 +67,16 @@ Physical parking spot. Layout coords (cx/cy/w/h/rot) live here.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `String` | PK, uuid |
-| `label` | `String` | **unique** (e.g. `"A12"`) |
+| `label` | `String` | **unique** (e.g. `"A12"`) — see archival caveat below |
 | `type` | `VehicleType` | |
 | `cx` / `cy` / `w` / `h` / `rot` | `Float` | SVG layout, all default `0` |
+| `archivedAt` | `DateTime?` | set when removed via editor; live queries filter `archivedAt: null` |
 
 Relations: `sessions[]`, `auditLogs[]`.
 
 A spot is "free" iff no Session with status `ACTIVE` or `OVERSTAY` references it. There is no `status` column — occupancy is always derived from the Session table. See `src/lib/spots.ts::assignSpot()`.
+
+**Archival, not deletion.** The layout editor never hard-deletes a spot — it sets `archivedAt`. This preserves FK targets for historical sessions, payments, and audit logs (the FK defaults to `Restrict`). Caveat: `label` is `@unique` and archived spots still occupy their label slot — creating a new spot with the same label as an archived one fails. See `docs/LOT_HISTORY.md`.
 
 #### `Session`
 Time-based reservation. The hotel-room model — driver owns the spot until `expectedEnd` + grace.
@@ -89,8 +92,10 @@ Time-based reservation. The hotel-room model — driver owns the spot until `exp
 | `endedAt` | `DateTime?` | set on COMPLETED |
 | `status` | `SessionStatus` | default `ACTIVE`; cron flips to `OVERSTAY` |
 | `reminderSent` | `Boolean` | default `false` — prevents duplicate reminder emails |
+| `overstayAlertSent` | `Boolean` | default `false` — idempotency for overstay manager alert |
 | `termsVersion` | `String?` | clickwrap consent snapshot |
 | `overstayAuthorized` | `Boolean` | default `false` — manager flag |
+| `spotLabelSnapshot` | `String` | default `""` — spot label frozen at check-in so renames don't rewrite history. Read via `getSessionSpotLabel()` in `src/lib/sessions.ts`. Empty on legacy rows (backfill script populates). See `docs/LOT_HISTORY.md`. |
 | `createdAt` / `updatedAt` | `DateTime` | |
 
 Relations: `payments[]`, `auditLogs[]`.
@@ -144,6 +149,23 @@ Singleton. Exactly one row with `id = "default"`.
 | `termsVersion` / `termsBody` | `String` | `"1.0"` / `""` |
 | `qbAccessToken` / `qbRefreshToken` / `qbRealmId` | `String` | `""` |
 | `qbTokenExpiresAt` | `DateTime?` | |
+
+#### `LotLayoutVersion`
+Google-Docs-style history of the lot layout. One row per editor save. See `docs/LOT_HISTORY.md`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `String` | PK, uuid |
+| `createdAt` | `DateTime` | default `now()`, indexed desc |
+| `createdBy` | `String` | admin id (JWT.sub); `"system"` for baseline/backfill |
+| `message` | `String?` | optional commit-style note from the editor |
+| `spotCount` | `Int` | count of spots in this snapshot |
+| `snapshot` | `Json` | `{ spots: SpotLayout[], groups: unknown }` |
+| `diffSummary` | `Json?` | `LotLayoutDiffSummary` — null for baseline |
+| `parentId` | `String?` | previous version id; null only on baseline |
+| `restoredFromId` | `String?` | set when this version was born from a restore action |
+
+No FK/relations to other tables — versions are a standalone audit log. Write path is `src/lib/lot-layout.ts::applyLayoutAndCreateVersion`.
 
 ---
 

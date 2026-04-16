@@ -144,6 +144,8 @@ same session → `SUSPICIOUS_ENTRY` logged.
 | `src/lib/spots.ts` | `assignSpot()` (with bobtail overflow), `freeSpot()` |
 | `src/lib/quickbooks.ts` | QB API: OAuth tokens, invoice checkout, customer CRUD, payments, refunds, P&L reports |
 | `src/lib/audit.ts` | `log()` — writes to AuditLog table |
+| `src/lib/lot-layout.ts` | `applyLayoutAndCreateVersion()`, `computeDiff()` — versioned save path for the lot editor. See `docs/LOT_HISTORY.md` |
+| `src/lib/sessions.ts` | `getSessionSpotLabel()` — prefer `Session.spotLabelSnapshot` over live `spot.label` everywhere a session's spot is displayed |
 | `src/lib/gate.ts` | `triggerGateOpen()` — **STUB**, replace with Shelly HTTP call for production |
 | `src/lib/hooks.ts` | `useIsMobile()` — viewport < 640px detection |
 | `src/lib/auth.ts` | JWT sign/verify, cookie management, `requireAdmin()`, `checkAdminPassword()` |
@@ -175,6 +177,9 @@ same session → `SUSPICIOUS_ENTRY` logged.
 | `/api/admin/payments` | GET | Payment list with summary + daily revenue chart data |
 | `/api/admin/spots/override` | POST | Manager override to free a spot |
 | `/api/admin/allowlist` | GET, POST, PUT, DELETE | Allow list CRUD |
+| `/api/admin/layout-history` | GET | Paginated list of `LotLayoutVersion` rows (no snapshot payload) |
+| `/api/admin/layout-history/[id]` | GET | Single version including full snapshot |
+| `/api/admin/layout-history/[id]/restore` | POST | Non-destructive restore — creates a new version equal to the target |
 | `/api/admin/qb-auth` | GET | Redirect to QB OAuth authorization |
 | `/api/admin/qb-auth/callback` | GET | OAuth callback, exchanges code for tokens |
 | `/api/admin/qb-data` | GET | QB payments + P&L for reconciliation |
@@ -193,6 +198,7 @@ same session → `SUSPICIOUS_ENTRY` logged.
 | `src/components/lot/editor/*` | Editor state management (useEditorReducer, types, geometry, validation) |
 | `src/components/PhoneInput.tsx` | Digits-only phone input with auto-format `(555) 867-5309` |
 | `src/app/lot/SpotDetailPanel.tsx` | Slide-out panel showing spot/session detail (bottom sheet on mobile) |
+| `src/app/lot/LotHistoryDrawer.tsx` | Lot-editor history drawer: version list, read-only preview, non-destructive restore |
 
 ### Types
 - `src/types/domain.ts` — ALL shared types. Never define inline types in pages.
@@ -206,20 +212,24 @@ same session → `SUSPICIOUS_ENTRY` logged.
 
 **Enums**: `VehicleType` (BOBTAIL, TRUCK_TRAILER), `SpotStatus` (AVAILABLE, OCCUPIED),
 `SessionStatus` (ACTIVE, COMPLETED, OVERSTAY), `PaymentType` (CHECKIN, MONTHLY_CHECKIN,
-EXTENSION, OVERSTAY), `AuditAction` (12 values including GATE_DENIED, SUSPICIOUS_ENTRY,
-ALLOWLIST_ENTRY).
+EXTENSION, OVERSTAY), `AuditAction` (14 values including GATE_DENIED, SUSPICIOUS_ENTRY,
+ALLOWLIST_ENTRY, LAYOUT_SAVED, LAYOUT_RESTORED).
 
 **Key models**:
 - `Driver` — phone (unique), name, email, qbCustomerId (QB link)
 - `Vehicle` — driverId FK, unitNumber, licensePlate, type, nickname
-- `Spot` — label (unique), type, status, cx/cy/w/h/rot (SVG layout)
+- `Spot` — label (unique), type, cx/cy/w/h/rot (SVG layout), archivedAt
 - `Session` — driverId, vehicleId, spotId, startedAt, expectedEnd, status,
-  termsVersion, overstayAuthorized
+  termsVersion, overstayAuthorized, spotLabelSnapshot (frozen at check-in)
 - `Payment` — sessionId, type, externalPaymentId (QB invoice/charge ID), amount,
   status (COMPLETED/REFUNDED/VOIDED/DISPUTED), refundedAmount, refundExternalId
 - `AuditLog` — action, sessionId?, driverId?, vehicleId?, spotId?, details
 - `Settings` — all config in one row (rates, terms, QB tokens, lotGroups JSON)
 - `AllowList` — phone (unique), name, label (Employee/Family/Vendor/Contractor), active
+- `LotLayoutVersion` — append-only history for the lot editor (snapshot + diff per save). See `docs/LOT_HISTORY.md`.
+
+**Full schema walkthrough**: `docs/DATA_MODEL.md`. **Lot editor history + session-label
+snapshot details**: `docs/LOT_HISTORY.md`.
 
 ---
 
@@ -234,7 +244,8 @@ ALLOWLIST_ENTRY).
 - **Phone numbers**: always use `<PhoneInput>` component, store digits-only in DB
 - **Payment IDs**: stored in `externalPaymentId` field (provider-agnostic, currently QB)
 - **Admin auth**: proxy.ts (Next.js 16 convention), JWT in httpOnly cookie
-- **Lot layout**: stored in DB (Spot.cx/cy/w/h/rot + Settings.lotGroups JSON), NOT localStorage
+- **Lot layout**: stored in DB (Spot.cx/cy/w/h/rot + Settings.lotGroups JSON), NOT localStorage. Every save writes a `LotLayoutVersion` row. The editor never hard-deletes — removed spots get `archivedAt` set so session/payment FKs stay valid. Live queries filter `archivedAt: null`; history queries don't. See `docs/LOT_HISTORY.md`.
+- **Session spot labels**: never render `session.spot.label` directly in historical views — use `getSessionSpotLabel()` from `src/lib/sessions.ts`, which prefers `Session.spotLabelSnapshot` (frozen at check-in). Only the live lot map uses the current `Spot.label`.
 - **Color theme**: forest green `#2D7A4A` primary accent, dark theme `#1C1C1E` on admin/entry/exit
 - **Mobile**: `useIsMobile()` hook at 640px breakpoint, admin dashboard fully responsive
 
