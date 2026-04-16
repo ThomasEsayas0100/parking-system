@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { findOrCreateCustomer, createInvoiceCheckout } from "@/lib/quickbooks";
-import { handler, json } from "@/lib/api-handler";
-import { RATE_LIMITS } from "@/lib/rate-limit";
+import { handler, json, tooManyRequests } from "@/lib/api-handler";
+import { RATE_LIMITS, checkRateLimit } from "@/lib/rate-limit";
 
 /**
  * POST: Create a QB invoice and return the hosted checkout URL.
@@ -19,6 +19,13 @@ const CheckoutSchema = z.object({
   description: z.string().min(1),
 });
 
+// Per-phone limit. The outer RATE_LIMITS.auth (IP-based) is the first ring;
+// this one stops a bad actor from burning through our QB invoice quota with a
+// single phone number across IPs, and stops a single honest driver stuck in
+// a retry loop from accidentally spamming QB. 3 per 10 min is loose enough
+// that a driver correcting a typo and retrying won't hit it.
+const PER_PHONE_CHECKOUT_LIMIT = { windowMs: 10 * 60_000, max: 3 };
+
 export const POST = handler(
   { body: CheckoutSchema, rateLimit: RATE_LIMITS.auth },
   async ({ body }) => {
@@ -27,6 +34,15 @@ export const POST = handler(
     // the same format in the display name. Without this, updateMany could
     // silently match 0 rows and we'd create duplicate QB customers.
     const phone = driverPhone.replace(/\D/g, "");
+
+    // Defense-in-depth: per-phone rate limit (IP limit applied by the wrapper).
+    const phoneRate = checkRateLimit(`checkout:phone:${phone}`, PER_PHONE_CHECKOUT_LIMIT);
+    if (!phoneRate.allowed) {
+      throw tooManyRequests(
+        "Too many checkout attempts for this phone number. Please wait a few minutes.",
+        phoneRate.retryAfterSec,
+      );
+    }
 
     const customer = await findOrCreateCustomer({
       name: driverName,
