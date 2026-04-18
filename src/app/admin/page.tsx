@@ -58,24 +58,24 @@ const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
 ];
 
 const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }> = {
-  CHECKIN:          { color: "#34C759", bg: "#12261C", label: "Check-in" },
-  CHECKOUT:         { color: "#0A84FF", bg: "#0A1A30", label: "Check-out" },
-  EXTEND:           { color: "#F59E0B", bg: "#2A1F0A", label: "Extension" },
-  OVERSTAY_START:   { color: "#DC2626", bg: "#2C1810", label: "Overstay" },
-  OVERSTAY_PAYMENT: { color: "#EF4444", bg: "#2C1810", label: "Overstay paid" },
-  GATE_OPEN:        { color: "#8E8E93", bg: "#2C2C2E", label: "Gate" },
-  SPOT_FREED:       { color: "#F59E0B", bg: "#2A1F0A", label: "Override" },
-  REMINDER_SENT:    { color: "#14B8A6", bg: "#0A2421", label: "Reminder" },
-  OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
-  SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },
-  GATE_DENIED:      { color: "#F87171", bg: "#2C1810", label: "Denied" },
-  ALLOWLIST_ENTRY:  { color: "#60A5FA", bg: "#0A1A30", label: "Allow list" },
+  CHECKIN:          { color: "#166534", bg: "#DCFCE7", label: "Check-in" },
+  CHECKOUT:         { color: "#1D4ED8", bg: "#DBEAFE", label: "Check-out" },
+  EXTEND:           { color: "#92400E", bg: "#FEF3C7", label: "Extension" },
+  OVERSTAY_START:   { color: "#991B1B", bg: "#FEE2E2", label: "Overstay" },
+  OVERSTAY_PAYMENT: { color: "#991B1B", bg: "#FEE2E2", label: "Overstay paid" },
+  GATE_OPEN:        { color: "#636366", bg: "#F2F2F7", label: "Gate" },
+  SPOT_FREED:       { color: "#92400E", bg: "#FEF3C7", label: "Override" },
+  REMINDER_SENT:    { color: "#115E59", bg: "#CCFBF1", label: "Reminder" },
+  OVERSTAY_ALERT:   { color: "#991B1B", bg: "#FEE2E2", label: "Alert" },
+  SUSPICIOUS_ENTRY: { color: "#78350F", bg: "#FEF3C7", label: "Suspicious" },
+  GATE_DENIED:      { color: "#991B1B", bg: "#FEE2E2", label: "Denied" },
+  ALLOWLIST_ENTRY:  { color: "#1D4ED8", bg: "#DBEAFE", label: "Allow list" },
 };
 
 const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
-  ACTIVE:    { color: "#2D7A4A", bg: "#12261C" },
-  COMPLETED: { color: "#636366", bg: "#2C2C2E" },
-  OVERSTAY:  { color: "#DC2626", bg: "#2C1810" },
+  ACTIVE:    { color: "#166534", bg: "#DCFCE7" },
+  COMPLETED: { color: "#636366", bg: "#F2F2F7" },
+  OVERSTAY:  { color: "#991B1B", bg: "#FEE2E2" },
 };
 
 // ---------------------------------------------------------------------------
@@ -158,20 +158,20 @@ function stripeDashboardUrl(p: PaymentRowRefs): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Shared inline style constants
+// Shared inline style constants — light theme
 // ---------------------------------------------------------------------------
-const DARK_BG = "#1C1C1E";
-const CARD_BG = "#2C2C2E";
-const BORDER = "#3A3A3C";
-const FG = "#F5F5F7";
-const FG_MUTED = "#8E8E93";
-const FG_DIM = "#636366";
+const DARK_BG = "#F2F2F7";
+const CARD_BG = "#FFFFFF";
+const BORDER = "#E5E5EA";
+const FG = "#1C1C1E";
+const FG_MUTED = "#636366";
+const FG_DIM = "#8E8E93";
 const ACCENT = "#2D7A4A";
 const RADIUS = 12;
 
 const chip = (active: boolean, mobile: boolean): React.CSSProperties => ({
   padding: mobile ? "10px 16px" : "6px 14px", borderRadius: 20,
-  border: active ? "1px solid #F5F5F740" : `1px solid ${BORDER}`,
+  border: active ? "1px solid transparent" : `1px solid ${BORDER}`,
   background: active ? BORDER : "transparent",
   color: active ? FG : FG_MUTED,
   fontSize: mobile ? 13 : 12, fontWeight: 600,
@@ -186,7 +186,7 @@ const inputStyle: React.CSSProperties = {
 const paginationBtn = (disabled: boolean, mobile: boolean): React.CSSProperties => ({
   padding: mobile ? "10px 18px" : "6px 16px", borderRadius: 6, border: `1px solid ${BORDER}`,
   background: disabled ? "transparent" : CARD_BG,
-  color: disabled ? "#48484A" : FG,
+  color: disabled ? "#AEAEB2" : FG,
   fontSize: mobile ? 13 : 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
 });
 
@@ -199,8 +199,22 @@ export default function AdminDashboard() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
   const [tab, setTab] = useState<"overview" | "sessions" | "payments" | "drivers" | "log" | "settings">("overview");
+  const [paymentsInitialSearch, setPaymentsInitialSearch] = useState("");
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+
+  // Read ?tab and ?q URL params on mount so deep-links (e.g. "View in Payments") work
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get("tab");
+    const validTabs = ["overview", "sessions", "payments", "drivers", "log", "settings"] as const;
+    if (t && (validTabs as readonly string[]).includes(t)) {
+      setTab(t as typeof tab);
+    }
+    const q = params.get("q");
+    if (q) setPaymentsInitialSearch(q);
+    if (t || q) window.history.replaceState({}, "", window.location.pathname);
+  }, []);
 
   // ── Drivers tab state ──
   type DriverRow = {
@@ -742,7 +756,7 @@ export default function AdminDashboard() {
                             gap: mobile ? 8 : 12,
                             alignItems: "center",
                             padding: mobile ? "12px 14px" : "14px 16px",
-                            background: isExpanded ? "#343436" : CARD_BG,
+                            background: isExpanded ? "#F4F4F5" : CARD_BG,
                             borderRadius: isExpanded ? `${RADIUS}px ${RADIUS}px 0 0` : RADIUS,
                             cursor: "pointer",
                             transition: "background 0.1s",
@@ -799,7 +813,7 @@ export default function AdminDashboard() {
                         {/* Expanded detail */}
                         {isExpanded && (
                           <div style={{
-                            background: "#343436", borderRadius: `0 0 ${RADIUS}px ${RADIUS}px`,
+                            background: "#F4F4F5", borderRadius: `0 0 ${RADIUS}px ${RADIUS}px`,
                             padding: mobile ? "12px 14px 14px" : "0 16px 16px",
                             display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr 1fr", gap: mobile ? 16 : 20,
                           }}>
@@ -847,7 +861,7 @@ export default function AdminDashboard() {
                             <div style={{ gridColumn: mobile ? undefined : "1 / -1", display: "flex", gap: 8, marginTop: 4 }}>
                               <a
                                 href={`/admin?tab=payments&q=${encodeURIComponent(s.driver.name)}`}
-                                style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none" }}
+                                style={{ fontSize: 11, color: "#2563EB", textDecoration: "none" }}
                               >
                                 View in Payments →
                               </a>
@@ -890,7 +904,7 @@ export default function AdminDashboard() {
                                           </span>
                                           <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
                                           <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="e.g. Driver called — left last Tuesday" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-                                          <div style={{ width: "100%", fontSize: 11, color: "#F59E0B", marginTop: 2 }}>
+                                          <div style={{ width: "100%", fontSize: 11, color: "#92400E", marginTop: 2 }}>
                                             Overstay payments after this date will be removed.
                                           </div>
                                         </>
@@ -901,7 +915,7 @@ export default function AdminDashboard() {
                                       disabled={sessionActionLoading}
                                       style={{
                                         padding: "6px 14px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#fff",
-                                        background: sessionAction.type === "cancel" ? "#DC2626" : sessionAction.type === "close" ? "#F59E0B" : "#2D7A4A",
+                                        background: sessionAction.type === "cancel" ? "#DC2626" : sessionAction.type === "close" ? "#92400E" : "#2D7A4A",
                                       }}
                                     >
                                       {sessionActionLoading ? "..." : sessionAction.type === "extend" ? "Extend" : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
@@ -915,7 +929,7 @@ export default function AdminDashboard() {
                                     <button onClick={() => setSessionAction({ id: s.id, type: "extend" })} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                       Extend Time
                                     </button>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "close" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #F59E0B40", background: "transparent", color: "#F59E0B", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                    <button onClick={() => setSessionAction({ id: s.id, type: "close" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #D9770640", background: "transparent", color: "#92400E", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                       Close &amp; Backdate
                                     </button>
                                     <button onClick={() => setSessionAction({ id: s.id, type: "cancel" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -952,7 +966,7 @@ export default function AdminDashboard() {
         )}
 
         {/* ═══ PAYMENTS ═══ */}
-        {tab === "payments" && <PaymentsTab mobile={mobile} />}
+        {tab === "payments" && <PaymentsTab mobile={mobile} initialSearch={paymentsInitialSearch} />}
 
         {/* ═══ DRIVERS ═══ */}
         {tab === "drivers" && (
@@ -1055,7 +1069,7 @@ export default function AdminDashboard() {
                         {/* Status */}
                         {!mobile && (
                           activeSession ? (
-                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A", whiteSpace: "nowrap" }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "4px 10px", borderRadius: 4, background: "#DCFCE7", color: "#166534", whiteSpace: "nowrap" }}>
                               Active · {activeSession.spot.label}
                             </span>
                           ) : (
@@ -1171,7 +1185,7 @@ export default function AdminDashboard() {
                     id="paymentRequired"
                     checked={settingsForm.paymentRequired ?? true}
                     onChange={(e) => setSettingsForm({ ...settingsForm, paymentRequired: e.target.checked })}
-                    style={{ width: 16, height: 16, accentColor: FG }}
+                    style={{ width: 16, height: 16, accentColor: ACCENT }}
                   />
                   <label htmlFor="paymentRequired" style={{ fontSize: 12, color: FG_MUTED, cursor: "pointer" }}>
                     Require payment at check-in (disable for testing)
@@ -1214,7 +1228,7 @@ export default function AdminDashboard() {
                     id="bobtailOverflow"
                     checked={settingsForm.bobtailOverflow ?? true}
                     onChange={(e) => setSettingsForm({ ...settingsForm, bobtailOverflow: e.target.checked })}
-                    style={{ width: 16, height: 16, accentColor: FG }}
+                    style={{ width: 16, height: 16, accentColor: ACCENT }}
                   />
                   <label htmlFor="bobtailOverflow" style={{ fontSize: 12, color: FG_MUTED, cursor: "pointer" }}>
                     Allow bobtails in truck spots when bobtail spots are full
@@ -1244,13 +1258,13 @@ export default function AdminDashboard() {
                     style={{ ...inputStyle, minHeight: 220, fontFamily: "inherit", resize: "vertical" as const, lineHeight: 1.5 }}
                     placeholder="Enter the terms drivers must accept to check in..."
                   />
-                  <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 6 }}>
+                  <div style={{ fontSize: 10, color: "#92400E", marginTop: 6 }}>
                     ⚠ Have a Texas attorney review this text before production. Clickwrap consent is only enforceable if the terms are clear and the driver actively agrees.
                   </div>
                 </div>
               </SettingsGroup>
 
-              <button type="submit" style={{ padding: "12px 24px", background: FG, color: DARK_BG, border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", alignSelf: "flex-start" }}>
+              <button type="submit" style={{ padding: "12px 24px", background: ACCENT, color: "#fff", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", alignSelf: "flex-start" }}>
                 Save Settings
               </button>
             </form>
@@ -1508,7 +1522,7 @@ export default function AdminDashboard() {
                     </select>
                     {nsErrors.spotId && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>{nsErrors.spotId}</p>}
                     {availableSpots.length === 0 && (
-                      <p style={{ fontSize: 11, color: "#F59E0B", marginTop: 4 }}>No available spots — all spots occupied.</p>
+                      <p style={{ fontSize: 11, color: "#92400E", marginTop: 4 }}>No available spots — all spots occupied.</p>
                     )}
                   </div>
                 )}
@@ -1520,7 +1534,7 @@ export default function AdminDashboard() {
               <div>
                 <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 4 }}>QuickBooks Invoice</p>
                 {!nsPaymentRequired && (
-                  <p style={{ fontSize: 11, color: "#F59E0B", marginBottom: 12 }}>
+                  <p style={{ fontSize: 11, color: "#92400E", marginBottom: 12 }}>
                     Payments are disabled — invoice is optional. A free session will be created.
                   </p>
                 )}
@@ -1553,7 +1567,7 @@ export default function AdminDashboard() {
                   </button>
                 </div>
                 {nsInvoice.status === "ok" && (
-                  <p style={{ fontSize: 12, color: "#30D158", fontWeight: 600 }}>✓ {nsInvoice.message}</p>
+                  <p style={{ fontSize: 12, color: "#16A34A", fontWeight: 600 }}>✓ {nsInvoice.message}</p>
                 )}
                 {nsInvoice.status === "error" && (
                   <p style={{ fontSize: 12, color: "#EF4444" }}>✕ {nsInvoice.message}</p>
@@ -1620,14 +1634,14 @@ type PaymentSummary = {
 type QBPaymentRecord = { id: string; date: string; amount: number; customerName: string; memo: string; method: string };
 type QBProfitLoss = { totalIncome: number; totalExpenses: number; netIncome: number } | null;
 
-function PaymentsTab({ mobile }: { mobile: boolean }) {
+function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialSearch?: string }) {
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
   const [dailyRevenue, setDailyRevenue] = useState<{ date: string; amount: number }[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
   const [loading, setLoading] = useState(true);
   const LIMIT = 30;
 
@@ -1741,7 +1755,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
 
       {/* QB quick link */}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-        <a href={qbLinks.dashboard()} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#60A5FA", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+        <a href={qbLinks.dashboard()} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#2563EB", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
           Open QuickBooks ↗
         </a>
       </div>
@@ -1774,7 +1788,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                       width={0.8}
                       height={h}
                       rx={0.2}
-                      fill={d.amount === 0 ? `${BORDER}` : isToday ? "#2D7A4A" : "#2D7A4A80"}
+                      fill={d.amount === 0 ? "#D1D5DB" : isToday ? "#2D7A4A" : "#2D7A4A80"}
                     />
                     {/* Show amount on hover via title */}
                     <title>{`${d.date}: $${d.amount.toFixed(2)}`}</title>
@@ -1805,7 +1819,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               {flaggedStripeIds.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#2A1F0A", color: "#F59E0B" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#FEF3C7", color: "#92400E" }}>
                   {flaggedStripeIds.length} flagged
                 </span>
               )}
@@ -1830,7 +1844,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                   All {syncResult.stripeChargesChecked} Stripe charge{syncResult.stripeChargesChecked !== 1 ? "s" : ""} in last 90 days match our DB.
                 </span>
               ) : (
-                <span style={{ color: "#F59E0B" }}>
+                <span style={{ color: "#92400E" }}>
                   {syncResult.inStripeNotDb.length} in Stripe but not our DB
                   {" · "}
                   {syncResult.inDbNotStripe.length} in our DB but not Stripe
@@ -1860,155 +1874,196 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
         </div>
       </div>
 
-      {/* Payment list */}
+      {/* Payment ledger */}
       {loading ? (
         <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>Loading…</p>
       ) : payments.length === 0 ? (
         <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>No payments found.</p>
       ) : (
         <>
-          <div style={{ fontSize: 11, color: FG_DIM, marginBottom: 10 }}>
-            {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} payments
+          <div style={{ fontSize: 11, color: FG_DIM, marginBottom: 8 }}>
+            Showing {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} transactions
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            {payments.map((p) => {
-              const real = isRealPayment(p);
-              const stripeCustId = p.session?.driver?.stripeCustomerId;
-              const stripeUrl = stripeDashboardUrl(p);
-              const isRefunded = p.status === "REFUNDED";
-              const statusColor = isRefunded ? "#F59E0B" : p.status === "VOIDED" ? "#DC2626" : p.status === "DISPUTED" ? "#EF4444" : undefined;
 
-              return (
-                <div key={p.id} style={{
-                  background: CARD_BG, borderRadius: 8, padding: mobile ? "10px 12px" : "12px 16px",
-                  opacity: isRefunded ? 0.7 : 1,
-                }}>
-                  {/* Main row */}
-                  <div style={{
-                    display: "grid",
-                    gridTemplateColumns: mobile ? "1fr auto" : "auto 1fr auto auto",
-                    gap: mobile ? 6 : 12,
-                    alignItems: "center",
-                  }}>
-                    {/* Type badge + status */}
-                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
-                        padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap",
-                        background: p.type === "OVERSTAY" ? "#2C1810" : p.type === "MONTHLY_CHECKIN" ? "#0A1A30" : "#12261C",
-                        color: p.type === "OVERSTAY" ? "#DC2626" : p.type === "MONTHLY_CHECKIN" ? "#60A5FA" : "#2D7A4A",
-                      }}>
-                        {typeLabels[p.type] ?? p.type}
-                      </span>
-                      {statusColor && (
-                        <span style={{ fontSize: 9, fontWeight: 700, color: statusColor, textTransform: "uppercase" }}>
-                          {p.status}
-                        </span>
-                      )}
-                    </div>
+          {/* Table */}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#F1F5F9", borderBottom: `2px solid ${BORDER}` }}>
+                  {[
+                    { label: "Date",         align: "left"  },
+                    { label: "Type",         align: "left"  },
+                    { label: "Driver",       align: "left"  },
+                    { label: "Plate · Spot", align: "left",  hide: mobile },
+                    { label: "Hrs",          align: "right", hide: mobile },
+                    { label: "Amount",       align: "right" },
+                    { label: "Status",       align: "center"},
+                    { label: "Links",        align: "right" },
+                  ].filter(c => !c.hide).map(c => (
+                    <th key={c.label} style={{
+                      padding: "8px 10px", textAlign: c.align as "left"|"right"|"center",
+                      fontWeight: 700, fontSize: 10, textTransform: "uppercase",
+                      letterSpacing: "0.07em", color: FG_DIM, whiteSpace: "nowrap",
+                    }}>
+                      {c.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {payments.map((p, idx) => {
+                  const real = isRealPayment(p);
+                  const stripeUrl = stripeDashboardUrl(p);
+                  const stripeCustId = p.session?.driver?.stripeCustomerId;
+                  const qbCustId = (p.session?.driver as { qbCustomerId?: string } | undefined)?.qbCustomerId;
+                  const isRefunded = p.status === "REFUNDED";
+                  const isVoided   = p.status === "VOIDED";
+                  const isDisputed = p.status === "DISPUTED";
+                  const rowBg = idx % 2 === 0 ? CARD_BG : "#F8FAFC";
 
-                    {/* Driver + vehicle + date */}
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {p.session?.driver?.name ?? "—"}
-                      </div>
-                      <div style={{ fontSize: 11, color: FG_DIM }}>
-                        {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"} · {fmtDate(p.createdAt)}
-                      </div>
-                    </div>
+                  const typeBadgeStyle: React.CSSProperties = {
+                    display: "inline-block",
+                    fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+                    padding: "2px 6px", borderRadius: 3, whiteSpace: "nowrap",
+                    background: p.type === "OVERSTAY" ? "#FEE2E2"
+                              : (p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL") ? "#DBEAFE"
+                              : "#DCFCE7",
+                    color:      p.type === "OVERSTAY" ? "#DC2626"
+                              : (p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL") ? "#2563EB"
+                              : "#2D7A4A",
+                  };
 
-                    {/* Deep links — Stripe for new rows, QB for legacy */}
-                    {!mobile && (
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10 }}>
-                        {real && stripeUrl && (
-                          <a href={stripeUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Stripe ↗
-                          </a>
-                        )}
-                        {real && stripeCustId && (
-                          <a href={stripeLinks.customer(stripeCustId)} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Customer ↗
-                          </a>
-                        )}
-                        {real && p.stripeRefundId && (
-                          <a href={stripeLinks.refund(p.stripeRefundId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Refund ↗
-                          </a>
-                        )}
-                        {real && !stripeUrl && p.legacyQbReference && (
-                          <a href={qbLinks.invoice(p.legacyQbReference)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            QB (legacy) ↗
-                          </a>
-                        )}
-                        {!real && (
-                          <span style={{ color: FG_DIM }}>
-                            {p.legacyQbReference?.startsWith("free_") ? "Free" : "Test"}
-                          </span>
-                        )}
-                      </div>
-                    )}
+                  const cell: React.CSSProperties = {
+                    padding: "9px 10px", borderBottom: `1px solid ${BORDER}`, verticalAlign: "middle",
+                  };
 
-                    {/* Amount */}
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{
-                        fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums",
-                        color: isRefunded ? "#F59E0B" : p.type === "OVERSTAY" ? "#DC2626" : FG,
-                        textDecoration: isRefunded ? "line-through" : undefined,
-                      }}>
-                        ${p.amount.toFixed(2)}
-                      </div>
-                      {p.refundedAmount > 0 && (
-                        <div style={{ fontSize: 10, color: "#F59E0B" }}>
-                          -${p.refundedAmount.toFixed(2)} refunded
+                  return (
+                    <tr key={p.id} style={{ background: rowBg, opacity: isVoided ? 0.5 : 1 }}>
+                      {/* Date */}
+                      <td style={{ ...cell, whiteSpace: "nowrap", color: FG_DIM, minWidth: 90 }}>
+                        {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        <div style={{ fontSize: 10, color: "#4B5563" }}>
+                          {new Date(p.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
                         </div>
-                      )}
-                    </div>
-                  </div>
+                      </td>
 
-                  {/* Mobile actions row */}
-                  {mobile && real && (
-                    <div style={{ display: "flex", gap: 10, marginTop: 6, fontSize: 10 }}>
-                      {stripeUrl && <a href={stripeUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none" }}>Stripe ↗</a>}
-                      {stripeCustId && <a href={stripeLinks.customer(stripeCustId)} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none" }}>Customer ↗</a>}
-                      {p.stripeRefundId && <a href={stripeLinks.refund(p.stripeRefundId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none" }}>Refund ↗</a>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                      {/* Type */}
+                      <td style={{ ...cell }}>
+                        <span style={typeBadgeStyle}>{typeLabels[p.type] ?? p.type}</span>
+                      </td>
+
+                      {/* Driver */}
+                      <td style={{ ...cell, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ fontWeight: 600, color: FG }}>{p.session?.driver?.name ?? "—"}</span>
+                        {mobile && (
+                          <div style={{ fontSize: 10, color: FG_DIM }}>
+                            {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Plate · Spot (desktop) */}
+                      {!mobile && (
+                        <td style={{ ...cell, color: FG_DIM, whiteSpace: "nowrap" }}>
+                          {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"}
+                        </td>
+                      )}
+
+                      {/* Hours (desktop) */}
+                      {!mobile && (
+                        <td style={{ ...cell, textAlign: "right", color: FG_DIM, whiteSpace: "nowrap" }}>
+                          {p.hours ? `${p.hours}h` : "—"}
+                        </td>
+                      )}
+
+                      {/* Amount */}
+                      <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>
+                        <span style={{
+                          fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                          color: isDisputed ? "#EF4444" : isRefunded ? "#92400E" : FG,
+                          textDecoration: isVoided ? "line-through" : undefined,
+                        }}>
+                          ${p.amount.toFixed(2)}
+                        </span>
+                        {p.refundedAmount > 0 && (
+                          <div style={{ fontSize: 10, color: "#92400E" }}>−${p.refundedAmount.toFixed(2)}</div>
+                        )}
+                      </td>
+
+                      {/* Status */}
+                      <td style={{ ...cell, textAlign: "center", whiteSpace: "nowrap" }}>
+                        {isRefunded && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>REFUNDED</span>}
+                        {isVoided   && <span style={{ fontSize: 9, fontWeight: 700, color: "#DC2626", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>VOIDED</span>}
+                        {isDisputed && <span style={{ fontSize: 9, fontWeight: 700, color: "#EF4444", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>DISPUTED</span>}
+                        {!isRefunded && !isVoided && !isDisputed && (
+                          <span style={{ fontSize: 9, color: "#2D7A4A", fontWeight: 600 }}>✓</span>
+                        )}
+                      </td>
+
+                      {/* Links */}
+                      <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+                          {real && stripeUrl && (
+                            <a href={stripeUrl} target="_blank" rel="noopener noreferrer"
+                               style={{ fontSize: 11, color: "#635BFF", textDecoration: "none", fontWeight: 500 }}>
+                              Stripe ↗
+                            </a>
+                          )}
+                          {real && p.stripeRefundId && (
+                            <a href={stripeLinks.refund(p.stripeRefundId)} target="_blank" rel="noopener noreferrer"
+                               style={{ fontSize: 11, color: "#92400E", textDecoration: "none", fontWeight: 500 }}>
+                              Refund ↗
+                            </a>
+                          )}
+                          {real && qbCustId && !mobile && (
+                            <a href={qbLinks.customer(qbCustId)} target="_blank" rel="noopener noreferrer"
+                               style={{ fontSize: 11, color: "#22C55E", textDecoration: "none", fontWeight: 500 }}>
+                              QB ↗
+                            </a>
+                          )}
+                          {real && !stripeUrl && p.legacyQbReference && (
+                            <a href={qbLinks.invoice(p.legacyQbReference)} target="_blank" rel="noopener noreferrer"
+                               style={{ fontSize: 11, color: "#2563EB", textDecoration: "none" }}>
+                              QB (legacy) ↗
+                            </a>
+                          )}
+                          {!real && (
+                            <span style={{ fontSize: 10, color: FG_DIM }}>
+                              {p.legacyQbReference?.startsWith("free_") ? "Free" : "Test"}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           {/* Unmatched QB payments */}
           {unmatchedQB.length > 0 && (
-            <div style={{ marginTop: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#F59E0B", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+            <div style={{ marginTop: 24 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#92400E", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
                 Unmatched QuickBooks Payments
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                {unmatchedQB.map((qb) => (
-                  <div key={qb.id} style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "10px 14px", background: "#2A1F0A", borderRadius: 8, border: "1px solid #F59E0B30",
-                    gap: 12,
-                  }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: "#F59E0B", fontWeight: 600 }}>{qb.customerName}</div>
-                      <div style={{ fontSize: 11, color: FG_DIM }}>{qb.date} · {qb.method}</div>
-                    </div>
-                    <a
-                      href={qbLinks.payment(qb.id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}
-                    >
-                      View in QB ↗
-                    </a>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B", fontVariantNumeric: "tabular-nums" }}>
-                      ${qb.amount.toFixed(2)}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <tbody>
+                  {unmatchedQB.map((qb, idx) => (
+                    <tr key={qb.id} style={{ background: idx % 2 === 0 ? "#FEF3C7" : "#FFFBEB", borderBottom: `1px solid #D97706` }}>
+                      <td style={{ padding: "8px 10px", color: "#92400E", fontWeight: 600 }}>{qb.customerName}</td>
+                      <td style={{ padding: "8px 10px", color: FG_DIM }}>{qb.date} · {qb.method}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: "#92400E", fontVariantNumeric: "tabular-nums" }}>${qb.amount.toFixed(2)}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                        <a href={qbLinks.payment(qb.id)} target="_blank" rel="noopener noreferrer"
+                           style={{ fontSize: 11, color: "#2563EB", textDecoration: "none" }}>
+                          QB ↗
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 
@@ -2070,7 +2125,7 @@ function QBConnectionStatus() {
           Company ID: {realmId}
         </div>
         {tokenExpiringSoon && (
-          <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "#3D2800", border: "1px solid #C07000", fontSize: 12, color: "#FFAB00" }}>
+          <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "#FEF3C7", border: "1px solid #D97706", fontSize: 12, color: "#92400E" }}>
             ⚠ QB token expires within 14 days — reconnect soon to avoid payment failures.
           </div>
         )}
@@ -2187,7 +2242,7 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
       </div>
 
       {feedback && (
-        <p style={{ fontSize: 12, color: feedback.ok ? "#30D158" : "#EF4444", marginBottom: 12 }}>
+        <p style={{ fontSize: 12, color: feedback.ok ? "#16A34A" : "#EF4444", marginBottom: 12 }}>
           {feedback.msg}
         </p>
       )}
