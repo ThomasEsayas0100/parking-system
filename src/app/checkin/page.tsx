@@ -176,8 +176,9 @@ function CheckInContent() {
   }, [existingDriverId, isDemo, isLocked, router, searchParams]);
 
   useEffect(() => {
-    // Starting a fresh check-in → drop any abandoned pending_session
-    // from a prior attempt so it can't be reused later.
+    // Legacy sessionStorage key from the QB hosted-checkout flow —
+    // cleared on every /checkin mount so stale data can't leak across
+    // retries. No longer written in the new Stripe flow.
     try {
       sessionStorage.removeItem("pending_session");
     } catch {}
@@ -412,21 +413,28 @@ function CheckInContent() {
       }
 
       if (settings.paymentRequired) {
-        // Create QB invoice and redirect to hosted checkout
+        // Redirect to Stripe Checkout. The webhook (handleCheckoutSessionCompleted)
+        // creates the Session + Payment atomically before the driver's browser
+        // lands on /payment-complete, so no sessionStorage handoff is needed —
+        // /payment-complete reads the server-side Payment row by the
+        // checkout_session_id in the URL.
         const durationLabel = durationType === "MONTHLY"
-          ? `${months} month${months > 1 ? "s" : ""}`
+          ? "Monthly auto-renew"
           : `${hours} hour${hours !== 1 ? "s" : ""}`;
-        const description = `Parking: ${vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/Trailer"} for ${durationLabel}`;
+        const description = `Parking: ${vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/Trailer"} — ${durationLabel}`;
 
         const checkoutRes = await fetch("/api/payments/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            driverName: name,
-            driverPhone: phone,
-            driverEmail: email || undefined,
+            driverId: driver.id,
+            vehicleId,
+            sessionPurpose: durationType === "MONTHLY" ? "MONTHLY_CHECKIN" : "CHECKIN",
             amount: totalAmount,
             description,
+            hours: durationType === "HOURLY" ? hours : undefined,
+            termsVersion: settings.termsVersion,
+            overstayAuthorized: true,
           }),
         });
         const checkoutData = await checkoutRes.json();
@@ -437,31 +445,7 @@ function CheckInContent() {
           return;
         }
 
-        // Save pending session info so the callback page can create the session after payment.
-        // Include createdAt so payment-complete can reject stale data (>30 min old)
-        // left behind from abandoned sessions.
-        sessionStorage.setItem("pending_session", JSON.stringify({
-          driverId: driver.id,
-          vehicleId,
-          durationType,
-          hours: durationType === "HOURLY" ? hours : undefined,
-          months: durationType === "MONTHLY" ? months : undefined,
-          invoiceId: checkoutData.invoiceId,
-          termsVersion: settings.termsVersion,
-          overstayAuthorized: true,
-          createdAt: Date.now(),
-        }));
-
-        // Redirect to QB hosted checkout — driver pays there (Apple Pay, PayPal, etc.)
-        // In QB sandbox the InvoiceLink goes to developer.intuit.com (no real checkout page).
-        // Skip straight to /payment-complete so the driver uses the "I've paid" button.
-        const isSandboxLink = checkoutData.checkoutUrl.includes("developer.intuit.com");
-        console.log("[Checkout] checkoutUrl:", checkoutData.checkoutUrl, "sandbox:", isSandboxLink);
-        if (isSandboxLink) {
-          window.location.href = "/payment-complete";
-        } else {
-          window.location.href = checkoutData.checkoutUrl;
-        }
+        window.location.href = checkoutData.checkoutUrl;
         return;
       }
 

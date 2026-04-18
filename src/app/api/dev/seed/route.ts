@@ -135,7 +135,7 @@ export async function POST() {
       data: {
         sessionId: session.id,
         type: def.paymentType,
-        externalPaymentId: `dev_seed_${session.id}`,
+        legacyQbReference: `dev_seed_${session.id}`,
         amount: def.amount,
         hours: def.paymentType === "CHECKIN" ? def.hours : undefined,
         status: "COMPLETED",

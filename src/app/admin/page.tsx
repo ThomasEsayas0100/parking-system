@@ -119,8 +119,42 @@ const qbLinks = {
   dashboard: () => `${QB_BASE}/app/homepage`,
 };
 
-function isRealPayment(externalId: string): boolean {
-  return !!(externalId && !externalId.startsWith("free_") && !externalId.startsWith("pi_test"));
+// Stripe dashboard deep links. Uses the live dashboard; for test mode the
+// URL pattern is the same but the route is /test/... — harmless in practice
+// because Stripe serves the right mode based on the API key used.
+const STRIPE_DASHBOARD = "https://dashboard.stripe.com";
+const stripeLinks = {
+  paymentIntent: (id: string) => `${STRIPE_DASHBOARD}/payments/${id}`,
+  charge: (id: string) => `${STRIPE_DASHBOARD}/payments/${id}`,
+  customer: (id: string) => `${STRIPE_DASHBOARD}/customers/${id}`,
+  subscription: (id: string) => `${STRIPE_DASHBOARD}/subscriptions/${id}`,
+  refund: (id: string) => `${STRIPE_DASHBOARD}/refunds/${id}`,
+};
+
+/**
+ * A "real" payment is one where actual money moved — either through Stripe
+ * (any stripe* ID present) or via a legacy QB invoice/charge. Rows flagged
+ * `free_*` in legacyQbReference are payments-disabled dev sessions.
+ */
+type PaymentRowRefs = {
+  stripePaymentIntentId: string | null;
+  stripeChargeId: string | null;
+  stripeSubscriptionId: string | null;
+  stripeRefundId: string | null;
+  legacyQbReference: string | null;
+};
+function isRealPayment(p: PaymentRowRefs): boolean {
+  if (p.stripePaymentIntentId || p.stripeChargeId || p.stripeSubscriptionId) return true;
+  const legacy = p.legacyQbReference;
+  return !!(legacy && !legacy.startsWith("free_") && !legacy.startsWith("dev_seed_"));
+}
+
+/** Canonical Stripe deep link for a payment row, if any Stripe IDs are set. */
+function stripeDashboardUrl(p: PaymentRowRefs): string | null {
+  if (p.stripePaymentIntentId) return stripeLinks.paymentIntent(p.stripePaymentIntentId);
+  if (p.stripeChargeId) return stripeLinks.charge(p.stripeChargeId);
+  if (p.stripeSubscriptionId) return stripeLinks.subscription(p.stripeSubscriptionId);
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1597,31 +1631,36 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
   const [loading, setLoading] = useState(true);
   const LIMIT = 30;
 
-  // QB data
+  // Stripe reconciliation (read-only divergence check — never mutates DB)
   const [qbPayments, setQbPayments] = useState<QBPaymentRecord[]>([]);
   const [qbPL, setQbPL] = useState<QBProfitLoss>(null);
   const [qbConnected, setQbConnected] = useState(false);
   const [qbLoading, setQbLoading] = useState(true);
+  const [lastStripeWebhookAt, setLastStripeWebhookAt] = useState<string | null>(null);
+  const [flaggedStripeIds, setFlaggedStripeIds] = useState<string[]>([]);
 
-  // QB reconciliation
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
-    checked: number;
-    updated: number;
-    errors: { paymentId: string; error: string }[];
+    stripeChargesChecked: number;
+    dbPaymentsChecked: number;
+    inStripeNotDb: string[];
+    inDbNotStripe: string[];
+    flaggedCount: number;
   } | null>(null);
-  const [syncKey, setSyncKey] = useState(0);
 
   const syncWithQB = useCallback(() => {
     setSyncing(true);
     setSyncResult(null);
-    fetch("/api/admin/qb-reconcile", { method: "POST" })
+    fetch("/api/admin/stripe-reconcile", { method: "POST" })
       .then((r) => r.json())
-      .then((d) => {
-        setSyncResult({ checked: d.checked, updated: d.updated, errors: d.errors ?? [] });
-        if (d.updated > 0) setSyncKey((k) => k + 1); // refresh payment list
-      })
-      .catch(() => setSyncResult({ checked: 0, updated: 0, errors: [{ paymentId: "", error: "Sync failed — QB may not be connected" }] }))
+      .then((d) => setSyncResult(d))
+      .catch(() => setSyncResult({
+        stripeChargesChecked: 0,
+        dbPaymentsChecked: 0,
+        inStripeNotDb: [],
+        inDbNotStripe: [],
+        flaggedCount: -1,
+      }))
       .finally(() => setSyncing(false));
   }, []);
 
@@ -1640,28 +1679,38 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
         if (d.dailyRevenue) setDailyRevenue(d.dailyRevenue);
       })
       .finally(() => setLoading(false));
-  }, [offset, typeFilter, search, syncKey]);
+  }, [offset, typeFilter, search]);
 
-  // Load QB data
+  // Surface QB connection + Stripe webhook status (Sales Receipt writes
+  // depend on QB; reconciliation status depends on webhook heartbeat).
   useEffect(() => {
     setQbLoading(true);
-    fetch("/api/admin/qb-data")
+    fetch("/api/settings")
       .then((r) => r.json())
       .then((d) => {
-        setQbConnected(d.connected);
-        setQbPayments(d.qbPayments ?? []);
-        setQbPL(d.profitLoss ?? null);
+        setQbConnected(!!d.settings?.qbConnected);
+        setLastStripeWebhookAt(d.settings?.lastStripeWebhookAt ?? null);
+        setFlaggedStripeIds(d.settings?.stripeReconcileFlaggedIds ?? []);
+        setQbPayments([]);
+        setQbPL(null);
       })
       .catch(() => setQbConnected(false))
       .finally(() => setQbLoading(false));
-  }, []);
+  }, [syncResult]);
+
+  const stripeWebhookStatus = lastStripeWebhookAt
+    ? `Last Stripe webhook: ${new Date(lastStripeWebhookAt).toLocaleString()}`
+    : "No Stripe webhooks received yet";
 
   // Reset offset on filter change
   useEffect(() => { setOffset(0); }, [typeFilter, search]);
 
-  // Reconciliation — find QB payments not in our system
-  const internalPaymentIds = new Set(payments.map((p) => p.externalPaymentId));
-  const unmatchedQB = qbPayments.filter((qb) => !internalPaymentIds.has(qb.id));
+  // Legacy QB reconciliation is retired — Stripe is the source of truth.
+  // A Stripe divergence check runs from the Sync button (see task #36).
+  // These two references are kept to avoid breaking the unused old UI
+  // fragments below; they produce an empty set.
+  const internalPaymentIds = new Set<string>();
+  const unmatchedQB: typeof qbPayments = [];
 
   const typeLabels: Record<string, string> = {
     CHECKIN: "Check-in",
@@ -1748,50 +1797,44 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-                QuickBooks Reconciliation
+                Stripe Reconciliation
               </div>
-              {qbPL && (
-                <div style={{ fontSize: 13, color: FG_MUTED }}>
-                  QB Income: <strong style={{ color: FG }}>${qbPL.totalIncome.toFixed(2)}</strong>
-                  {" · "}Expenses: <strong style={{ color: FG }}>${qbPL.totalExpenses.toFixed(2)}</strong>
-                  {" · "}Net: <strong style={{ color: qbPL.netIncome >= 0 ? "#2D7A4A" : "#DC2626" }}>${qbPL.netIncome.toFixed(2)}</strong>
-                </div>
-              )}
+              <div style={{ fontSize: 12, color: FG_MUTED }}>
+                {stripeWebhookStatus}
+              </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {unmatchedQB.length > 0 && (
+              {flaggedStripeIds.length > 0 && (
                 <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#2A1F0A", color: "#F59E0B" }}>
-                  {unmatchedQB.length} unmatched QB payment{unmatchedQB.length !== 1 ? "s" : ""}
+                  {flaggedStripeIds.length} flagged
                 </span>
               )}
-              {unmatchedQB.length === 0 && qbPayments.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A" }}>
-                  All matched
-                </span>
-              )}
-              {/* Sync internal payment statuses with QB ground truth */}
               <button
                 onClick={syncWithQB}
                 disabled={syncing}
                 style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: syncing ? FG_DIM : FG_MUTED, cursor: syncing ? "default" : "pointer" }}
               >
-                {syncing ? "Syncing…" : "Sync with QB"}
+                {syncing ? "Checking…" : "Run Stripe reconcile"}
               </button>
             </div>
           </div>
-          {/* Sync result summary */}
+          {/* Reconcile result summary */}
           {syncResult && (
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}`, fontSize: 12 }}>
-              {syncResult.errors.length > 0 && syncResult.updated === 0 ? (
+              {syncResult.flaggedCount < 0 ? (
                 <span style={{ color: "#DC2626" }}>
-                  Sync error: {syncResult.errors[0]?.error ?? "Unknown error"}
+                  Stripe reconcile failed — check that STRIPE_SECRET_KEY is set.
+                </span>
+              ) : syncResult.flaggedCount === 0 ? (
+                <span style={{ color: "#2D7A4A" }}>
+                  All {syncResult.stripeChargesChecked} Stripe charge{syncResult.stripeChargesChecked !== 1 ? "s" : ""} in last 90 days match our DB.
                 </span>
               ) : (
-                <span style={{ color: syncResult.updated > 0 ? "#F59E0B" : "#2D7A4A" }}>
-                  {syncResult.updated > 0
-                    ? `Updated ${syncResult.updated} payment${syncResult.updated !== 1 ? "s" : ""} (checked ${syncResult.checked})`
-                    : `All ${syncResult.checked} payment${syncResult.checked !== 1 ? "s" : ""} in sync`}
-                  {syncResult.errors.length > 0 && ` · ${syncResult.errors.length} error(s)`}
+                <span style={{ color: "#F59E0B" }}>
+                  {syncResult.inStripeNotDb.length} in Stripe but not our DB
+                  {" · "}
+                  {syncResult.inDbNotStripe.length} in our DB but not Stripe
+                  {" · "}check logs + reach out to support if this persists
                 </span>
               )}
             </div>
@@ -1800,7 +1843,8 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
       )}
       {!qbConnected && !qbLoading && (
         <div style={{ fontSize: 12, color: FG_DIM, marginBottom: 16, padding: "10px 14px", background: CARD_BG, borderRadius: 8, border: `1px solid ${BORDER}` }}>
-          QuickBooks not connected. Go to Settings → QuickBooks Connection to enable reconciliation.
+          QuickBooks not connected — Sales Receipts won't be written to QB.
+          Stripe continues to work for payments; once QB is connected (Settings → QuickBooks Connection), new charges will mirror to QB automatically.
         </div>
       )}
 
@@ -1828,8 +1872,9 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             {payments.map((p) => {
-              const real = isRealPayment(p.externalPaymentId);
-              const custId = p.session?.driver?.qbCustomerId;
+              const real = isRealPayment(p);
+              const stripeCustId = p.session?.driver?.stripeCustomerId;
+              const stripeUrl = stripeDashboardUrl(p);
               const isRefunded = p.status === "REFUNDED";
               const statusColor = isRefunded ? "#F59E0B" : p.status === "VOIDED" ? "#DC2626" : p.status === "DISPUTED" ? "#EF4444" : undefined;
 
@@ -1872,32 +1917,32 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                       </div>
                     </div>
 
-                    {/* QB actions — desktop */}
+                    {/* Deep links — Stripe for new rows, QB for legacy */}
                     {!mobile && (
                       <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10 }}>
-                        {real && (
-                          <a href={qbLinks.invoice(p.externalPaymentId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Invoice ↗
+                        {real && stripeUrl && (
+                          <a href={stripeUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none", whiteSpace: "nowrap" }}>
+                            Stripe ↗
                           </a>
                         )}
-                        {real && custId && (
-                          <a href={qbLinks.customer(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
+                        {real && stripeCustId && (
+                          <a href={stripeLinks.customer(stripeCustId)} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none", whiteSpace: "nowrap" }}>
                             Customer ↗
                           </a>
                         )}
-                        {real && !isRefunded && custId && (
-                          <a href={qbLinks.creditMemo(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
+                        {real && p.stripeRefundId && (
+                          <a href={stripeLinks.refund(p.stripeRefundId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
                             Refund ↗
                           </a>
                         )}
-                        {real && p.refundExternalId && (
-                          <a href={qbLinks.refundReceipt(p.refundExternalId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            View Refund ↗
+                        {real && !stripeUrl && p.legacyQbReference && (
+                          <a href={qbLinks.invoice(p.legacyQbReference)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
+                            QB (legacy) ↗
                           </a>
                         )}
                         {!real && (
                           <span style={{ color: FG_DIM }}>
-                            {p.externalPaymentId.startsWith("free_") ? "Free" : "Test"}
+                            {p.legacyQbReference?.startsWith("free_") ? "Free" : "Test"}
                           </span>
                         )}
                       </div>
@@ -1923,9 +1968,9 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                   {/* Mobile actions row */}
                   {mobile && real && (
                     <div style={{ display: "flex", gap: 10, marginTop: 6, fontSize: 10 }}>
-                      <a href={qbLinks.invoice(p.externalPaymentId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none" }}>Invoice ↗</a>
-                      {custId && <a href={qbLinks.customer(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none" }}>Customer ↗</a>}
-                      {!isRefunded && custId && <a href={qbLinks.creditMemo(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none" }}>Refund ↗</a>}
+                      {stripeUrl && <a href={stripeUrl} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none" }}>Stripe ↗</a>}
+                      {stripeCustId && <a href={stripeLinks.customer(stripeCustId)} target="_blank" rel="noopener noreferrer" style={{ color: "#635BFF", textDecoration: "none" }}>Customer ↗</a>}
+                      {p.stripeRefundId && <a href={stripeLinks.refund(p.stripeRefundId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none" }}>Refund ↗</a>}
                     </div>
                   )}
                 </div>

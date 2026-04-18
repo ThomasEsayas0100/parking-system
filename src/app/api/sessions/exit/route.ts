@@ -1,22 +1,36 @@
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
-import { verifyAndClaimPayment } from "@/lib/payments";
 import { overstayRate, ceilHours } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionExitSchema } from "@/lib/schemas";
 
+/**
+ * POST: complete an active session.
+ *
+ * ACTIVE session → mark COMPLETED, open gate. No payment involved.
+ *
+ * OVERSTAY session:
+ *   - If paymentRequired is true: reject. Client must redirect to
+ *     /api/payments/checkout with sessionPurpose=OVERSTAY; the Stripe
+ *     webhook (`handleOverstay`) will close the session atomically.
+ *   - If paymentRequired is false (dev/test): close session with a
+ *     free-mode Payment row recording the owed hours for reporting.
+ *
+ * The returned shape for the OVERSTAY-rejected case matches OverstayInfo
+ * so the /exit page can render the fee screen and redirect to Checkout.
+ */
 export const POST = handler(
   { body: SessionExitSchema },
   async ({ body }) => {
-    const { sessionId, driverId, overstayPaymentId } = body;
+    const { sessionId, driverId } = body;
 
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       include: { spot: true, vehicle: true },
     });
-    // 404 on both missing and ownership mismatch — don't leak existence
     if (
       !session ||
       session.driverId !== driverId ||
@@ -34,7 +48,9 @@ export const POST = handler(
       const overstayHours = ceilHours(session.expectedEnd, now);
       const overstayAmount = rate * overstayHours;
 
-      if (!overstayPaymentId) {
+      if (settings.paymentRequired) {
+        // Direct the client to the Stripe Checkout flow. /exit page uses
+        // this response shape to render the fee screen + "Pay & exit" button.
         return json({
           requiresPayment: true,
           overstayHours,
@@ -44,39 +60,28 @@ export const POST = handler(
         });
       }
 
-      await verifyAndClaimPayment(overstayPaymentId);
-
-      // Atomic: payment + session-complete in one transaction.
-      // P2002 on concurrent overstay payment → clean 409.
-      try {
-        await prisma.$transaction([
-          prisma.payment.create({
-            data: {
-              sessionId,
-              type: "OVERSTAY",
-              externalPaymentId: overstayPaymentId,
-              amount: overstayAmount,
-              hours: overstayHours,
-            },
-          }),
-          prisma.session.update({
-            where: { id: sessionId },
-            data: { status: "COMPLETED", endedAt: now },
-          }),
-        ]);
-      } catch (err) {
-        if (err instanceof Error && (err as { code?: string }).code === "P2002") {
-          throw conflict("This payment has already been used");
-        }
-        throw err;
-      }
-
+      // Free-mode overstay close.
+      await prisma.$transaction([
+        prisma.payment.create({
+          data: {
+            sessionId,
+            type: "OVERSTAY",
+            amount: overstayAmount,
+            hours: overstayHours,
+            legacyQbReference: `free_${randomUUID()}`,
+          },
+        }),
+        prisma.session.update({
+          where: { id: sessionId },
+          data: { status: "COMPLETED", endedAt: now },
+        }),
+      ]);
       await audit({
         action: "OVERSTAY_PAYMENT",
         sessionId,
         driverId: session.driverId,
         vehicleId: session.vehicleId,
-        details: `Overstay ${overstayHours}h, paid $${overstayAmount.toFixed(2)}, plate: ${session.vehicle.licensePlate}`,
+        details: `Overstay ${overstayHours}h closed (payment disabled), plate: ${session.vehicle.licensePlate}`,
       });
     } else {
       await prisma.session.update({
@@ -85,7 +90,6 @@ export const POST = handler(
       });
     }
 
-    // CHECKOUT is the canonical exit event — gate open is implied
     await audit({
       action: "CHECKOUT",
       sessionId,

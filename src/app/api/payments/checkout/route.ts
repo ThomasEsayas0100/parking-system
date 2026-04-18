@@ -1,56 +1,108 @@
-import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { findOrCreateCustomer, createInvoiceCheckout } from "@/lib/quickbooks";
-import { handler, json } from "@/lib/api-handler";
-import { RATE_LIMITS } from "@/lib/rate-limit";
+import {
+  getOrCreateStripeCustomer,
+  createPaymentCheckoutSession,
+  createSubscriptionCheckoutSession,
+  stripeConfigured,
+} from "@/lib/stripe";
+import { handler, json, notFound, conflict } from "@/lib/api-handler";
+import { CheckoutCreateSchema } from "@/lib/schemas";
 
 /**
- * POST: Create a QB invoice and return the hosted checkout URL.
+ * POST /api/payments/checkout — create a Stripe Checkout session.
  *
- * The client redirects the driver to this URL. After payment,
- * the driver returns to our confirmation page. The server polls
- * the invoice to verify payment before creating the session.
+ * One route handles all four purposes. Dispatch is by `sessionPurpose`:
+ *
+ *   CHECKIN / EXTENSION / OVERSTAY → payment mode (one-time PaymentIntent).
+ *   MONTHLY_CHECKIN → subscription mode (recurring monthly invoice).
+ *
+ * The returned `checkoutUrl` is a Stripe-hosted page the client redirects
+ * to. On success, Stripe redirects back to `/payment-complete?cs={id}`.
+ * The webhook (triggered independently) writes the Payment + Session rows
+ * before the client's redirect polling catches up; see the Stripe webhook
+ * handler for the atomic creation path.
+ *
+ * We never create Payment or Session rows here — this route only produces
+ * a Stripe URL. Our DB becomes consistent via webhook.
  */
-const CheckoutSchema = z.object({
-  driverName: z.string().min(1),
-  driverPhone: z.string().min(4),
-  driverEmail: z.string().email().optional(),
-  amount: z.number().min(0.01),
-  description: z.string().min(1),
-});
-
 export const POST = handler(
-  { body: CheckoutSchema, rateLimit: RATE_LIMITS.auth },
-  async ({ body }) => {
-    const { driverName, driverPhone, driverEmail, amount, description } = body;
-    // Normalize phone to digits-only once — DB stores digits-only, QB uses
-    // the same format in the display name. Without this, updateMany could
-    // silently match 0 rows and we'd create duplicate QB customers.
-    const phone = driverPhone.replace(/\D/g, "");
+  { body: CheckoutCreateSchema },
+  async ({ body, req }) => {
+    if (!stripeConfigured()) {
+      throw conflict("Stripe is not configured. Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.");
+    }
 
-    const customer = await findOrCreateCustomer({
-      name: driverName,
-      phone,
-      email: driverEmail,
-    });
+    const {
+      driverId, sessionPurpose, vehicleId, sessionId,
+      amount, description, hours, termsVersion, overstayAuthorized,
+    } = body;
 
-    // Store QB customer ID on the driver for future cross-referencing
-    await prisma.driver.updateMany({
-      where: { phone },
-      data: { qbCustomerId: customer.Id },
-    });
+    // Per-purpose validation — catch misuse early so we don't create a
+    // Checkout session that the webhook can't process.
+    if ((sessionPurpose === "CHECKIN" || sessionPurpose === "MONTHLY_CHECKIN") && !vehicleId) {
+      return json({ error: "vehicleId is required for check-in purposes" }, { status: 400 });
+    }
+    if ((sessionPurpose === "EXTENSION" || sessionPurpose === "OVERSTAY") && !sessionId) {
+      return json({ error: "sessionId is required for extension/overstay" }, { status: 400 });
+    }
+    if ((sessionPurpose === "CHECKIN" || sessionPurpose === "EXTENSION") && !hours) {
+      return json({ error: "hours is required for CHECKIN/EXTENSION" }, { status: 400 });
+    }
 
-    const { invoiceId, checkoutUrl } = await createInvoiceCheckout({
-      customerId: customer.Id,
-      amount,
-      description,
-      driverEmail,
-    });
+    const driver = await prisma.driver.findUnique({ where: { id: driverId } });
+    if (!driver) throw notFound("Driver not found");
 
-    return json({
-      invoiceId,
-      checkoutUrl,
-      customerId: customer.Id,
-    });
+    // Verify the referenced session exists + belongs to this driver for
+    // EXTENSION/OVERSTAY flows.
+    if (sessionId) {
+      const session = await prisma.session.findUnique({ where: { id: sessionId } });
+      if (!session || session.driverId !== driverId) {
+        throw notFound("Session not found");
+      }
+    }
+    if (vehicleId) {
+      const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
+      if (!vehicle || vehicle.driverId !== driverId) {
+        throw notFound("Vehicle not found");
+      }
+    }
+
+    const customerId = await getOrCreateStripeCustomer(driver);
+
+    const metadata = {
+      driverId,
+      ...(vehicleId ? { vehicleId } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      sessionPurpose,
+      ...(hours !== undefined ? { hours: String(hours) } : {}),
+      ...(termsVersion ? { termsVersion } : {}),
+      ...(overstayAuthorized !== undefined ? { overstayAuthorized: String(overstayAuthorized) } : {}),
+    };
+
+    // Resolve success/cancel URLs against the incoming request origin so
+    // localhost and deployed URLs both work without env-var coordination.
+    const origin = new URL(req.url).origin;
+    const successUrl = `${origin}/payment-complete?cs={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${origin}/checkin`;
+
+    const result = sessionPurpose === "MONTHLY_CHECKIN"
+      ? await createSubscriptionCheckoutSession({
+          monthlyAmount: amount,
+          productName: description,
+          customerId,
+          successUrl,
+          cancelUrl,
+          metadata,
+        })
+      : await createPaymentCheckoutSession({
+          amount,
+          description,
+          customerId,
+          successUrl,
+          cancelUrl,
+          metadata,
+        });
+
+    return json(result);
   },
 );

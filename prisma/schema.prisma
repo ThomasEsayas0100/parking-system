@@ -21,6 +21,7 @@ enum SessionStatus {
 enum PaymentType {
   CHECKIN
   MONTHLY_CHECKIN
+  MONTHLY_RENEWAL   // Stripe subscription invoice (post-signup cycles)
   EXTENSION
   OVERSTAY
 }
@@ -54,6 +55,15 @@ enum AuditAction {
   SUSPICIOUS_ENTRY
   GATE_DENIED
   ALLOWLIST_ENTRY
+  // Stripe webhook lifecycle + accounting mirror
+  STRIPE_WEBHOOK_RECEIVED
+  STRIPE_WEBHOOK_REPLAYED   // duplicate event.id hit the idempotency guard
+  SALES_RECEIPT_WRITTEN     // QB Sales Receipt created after successful charge
+  SALES_RECEIPT_FAILED      // Sales Receipt write errored — admin must reconcile
+  REFUND_ISSUED             // Stripe refund initiated by admin
+  PAYMENT_DISPUTED          // charge.dispute.created webhook fired
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_CANCELED
 }
 
 model AllowList {
@@ -70,7 +80,19 @@ model Driver {
   name         String
   email        String?
   phone        String    @unique
-  qbCustomerId String?   // QuickBooks customer ID — links to QB customer record
+
+  // QuickBooks customer — cached lookup for Sales Receipt + Refund Receipt
+  // writes. Populated lazily by findOrCreateCustomer() in src/lib/quickbooks.ts
+  // the first time we write an accounting entry for this driver.
+  qbCustomerId          String?
+
+  // Stripe customer + default payment method. stripeCustomerId is the anchor
+  // for card vaulting and subscription billing; populated on first checkout.
+  // stripePaymentMethodId is the driver's saved default card (set by
+  // payment_method.attached webhook and SetupIntent / Checkout success).
+  stripeCustomerId      String? @unique
+  stripePaymentMethodId String?
+
   vehicles     Vehicle[]
   sessions     Session[]
   auditLogs    AuditLog[]
@@ -137,23 +159,40 @@ model Session {
 }
 
 model Payment {
-  id                String        @id @default(uuid())
-  sessionId         String
-  session           Session       @relation(fields: [sessionId], references: [id])
-  type              PaymentType
-  externalPaymentId String        // QB invoice/charge ID
-  amount            Float
-  hours             Float?
-  status            PaymentStatus @default(COMPLETED)
-  refundedAmount    Float         @default(0)
-  refundedAt        DateTime?
-  refundExternalId  String?       // QB refund receipt/credit memo ID
-  createdAt         DateTime      @default(now())
+  id        String        @id @default(uuid())
+  sessionId String
+  session   Session       @relation(fields: [sessionId], references: [id])
+  type      PaymentType
+  amount    Float
+  hours     Float?
+  status    PaymentStatus @default(COMPLETED)
 
-  // Prevent duplicate payment records from double-poll / double-submit.
-  // Free-tier sessions use a UUID so they can't collide.
-  @@unique([externalPaymentId])
-  // Admin Payments tab + chart
+  // ─── Stripe identifiers ───────────────────────────────────────────────
+  // Populated per event-type. One-time payments set PI + Charge + Checkout
+  // Session; subscription renewals set Subscription + Invoice + PI + Charge.
+  // All nullable — a row can be written partially on an intermediate webhook
+  // and enriched by later events (e.g. PI succeeded → refund arrives).
+  stripeCheckoutSessionId String?  // cs_... — resolves redirect after Checkout
+  stripePaymentIntentId   String?  @unique  // pi_... — canonical one-time ID
+  stripeChargeId          String?           // ch_... — the actual charge record
+  stripeSubscriptionId    String?           // sub_... — only for MONTHLY_RENEWAL rows
+  stripeInvoiceId         String?           // in_... — subscription invoice that produced this charge
+  stripeRefundId          String?           // re_... — set by charge.refunded handler
+
+  refundedAmount Float    @default(0)
+  refundedAt     DateTime?
+
+  // Legacy pre-Stripe rows stored QB invoice or charge ID in a generic
+  // externalPaymentId column. Preserved here only so admin history still
+  // renders; new writes never populate this field.
+  legacyQbReference String?
+
+  createdAt DateTime @default(now())
+
+  // Lookup paths — Checkout redirect resolution + charge matching + chart
+  @@index([stripeCheckoutSessionId])
+  @@index([stripeChargeId])
+  @@index([stripeSubscriptionId])
   @@index([createdAt])
 }
 
@@ -197,9 +236,38 @@ model Settings {
   // Clickwrap terms — admin editable, version bumped when text changes
   termsVersion          String  @default("1.0")
   termsBody             String  @default("")
-  // QuickBooks OAuth tokens — null when not connected
+  // QuickBooks OAuth tokens — null when not connected. Used only for
+  // writing Sales Receipts / Refund Receipts (accounting output). Payment
+  // state is no longer read from QB.
   qbAccessToken         String?
   qbRefreshToken        String?
   qbRealmId             String?
   qbTokenExpiresAt      DateTime?
+
+  // ─── Stripe operational status (displayed on admin dashboard) ────────
+  // Stamped by /api/stripe/webhook on every incoming event. Drives the
+  // admin "Stripe connection" indicator so dad can see at a glance whether
+  // Stripe → our DB is alive.
+  lastStripeWebhookAt       DateTime?
+  // Stamped by /api/admin/stripe-reconcile after a successful run.
+  lastStripeReconcileAt     DateTime?
+  // Stripe charge IDs flagged by the last reconcile as missing from our
+  // Payment table (or the reverse). Rendered on the admin dashboard as a
+  // call to action. Empty array = no divergence.
+  stripeReconcileFlaggedIds String[]  @default([])
+}
+
+// Webhook idempotency. Every incoming Stripe event is recorded here before
+// side effects run. Duplicate event.id deliveries (which Stripe does
+// intentionally on retry) short-circuit the handler with STRIPE_WEBHOOK_REPLAYED.
+//
+// `payload` retains the full event body so we can replay or debug without
+// reaching back to Stripe's dashboard.
+model StripeEvent {
+  id          String   @id      // Stripe event.id (evt_...)
+  type        String            // e.g. "payment_intent.succeeded"
+  processedAt DateTime @default(now())
+  payload     Json
+
+  @@index([type, processedAt])
 }

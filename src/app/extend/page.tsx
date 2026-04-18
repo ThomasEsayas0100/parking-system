@@ -106,22 +106,30 @@ function ExtendContent() {
     setError("");
 
     try {
-      const payData = await apiPost<{ paymentIntentId: string }>(
-        "/api/payments/create-intent",
-        { amount: totalAmount, description: `Parking extension: ${hours}h` }
-      );
-
-      await apiPost("/api/sessions/extend", {
-        sessionId,
-        driverId,
-        hours,
-        paymentId: payData.paymentIntentId,
+      // Redirect to Stripe Checkout. The webhook (handleExtension) updates
+      // the session expectedEnd and writes the Payment row; /payment-complete
+      // then redirects to /welcome.
+      const checkoutRes = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driverId,
+          sessionId,
+          sessionPurpose: "EXTENSION",
+          amount: totalAmount,
+          description: `Parking extension — ${hours}h`,
+          hours,
+        }),
       });
-
-      router.replace(`/confirmation`);
+      const checkoutData = await checkoutRes.json();
+      if (!checkoutRes.ok || !checkoutData.checkoutUrl) {
+        setError(checkoutData.error ?? "Could not start payment. Please try again.");
+        setSubmitting(false);
+        return;
+      }
+      window.location.href = checkoutData.checkoutUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
-    } finally {
       setSubmitting(false);
     }
   }

@@ -42,18 +42,30 @@ export type ApiPayment = {
   type: PaymentType;
   amount: number;
   hours: number | null;
-  externalPaymentId: string;
+  // Stripe identifiers — populated per event; most are null on any given row
+  stripeCheckoutSessionId: string | null;
+  stripePaymentIntentId: string | null;
+  stripeChargeId: string | null;
+  stripeSubscriptionId: string | null;
+  stripeInvoiceId: string | null;
+  stripeRefundId: string | null;
+  // Pre-Stripe reference, or "free_*" synthetic marker for payments-disabled rows
+  legacyQbReference: string | null;
   status: PaymentStatus;
   refundedAmount: number;
   refundedAt: string | null;
-  refundExternalId: string | null;
   createdAt: string;
 };
 
 /** Payment with full session/driver/vehicle/spot context (admin Payments tab). */
 export type ApiPaymentWithSession = ApiPayment & {
   session: {
-    driver: { name: string; phone: string; qbCustomerId: string | null } | null;
+    driver: {
+      name: string;
+      phone: string;
+      qbCustomerId: string | null;
+      stripeCustomerId: string | null;
+    } | null;
     vehicle: { licensePlate: string | null; type: VehicleType } | null;
     spot: { label: string } | null;
   } | null;
@@ -157,6 +169,15 @@ export type AppSettings = {
   qbTokenExpiresAt: string | null;
   /** True when the QB access token expires within 14 days. */
   qbTokenExpiringSoon: boolean;
+  // ─── Stripe operational status ────────────────────────────────────────
+  /** Derived on the server from STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET. */
+  stripeConfigured: boolean;
+  /** ISO string or null — set by the webhook on every incoming event. */
+  lastStripeWebhookAt: string | null;
+  /** ISO string or null — set by the admin reconcile endpoint. */
+  lastStripeReconcileAt: string | null;
+  /** Stripe charge IDs that failed the last reconcile diff. */
+  stripeReconcileFlaggedIds: string[];
 };
 
 // ---------------------------------------------------------------------------

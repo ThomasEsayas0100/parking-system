@@ -1,59 +1,57 @@
+import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { log as audit } from "@/lib/audit";
-import { verifyAndClaimPayment } from "@/lib/payments";
 import { hourlyRate, addHours } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionExtendSchema } from "@/lib/schemas";
 
+/**
+ * POST: free-mode session extension.
+ *
+ * Real-money extensions go through Stripe Checkout → `checkout.session.completed`
+ * webhook with metadata.sessionPurpose=EXTENSION, which updates expectedEnd
+ * and writes the Payment row atomically. This route only serves the
+ * paymentRequired=false path.
+ */
 export const POST = handler(
   { body: SessionExtendSchema },
   async ({ body }) => {
-    const { sessionId, driverId, hours, paymentId } = body;
+    const { sessionId, driverId, hours } = body;
 
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
       include: { vehicle: true, spot: true },
     });
-    // 404 on both missing and ownership mismatch — don't leak existence
     if (!session || session.driverId !== driverId || session.status !== "ACTIVE") {
       throw notFound("No active session found");
     }
 
-    await verifyAndClaimPayment(paymentId);
-
     const settings = await getSettings();
+    if (settings.paymentRequired) {
+      throw conflict("Payment is required — use /api/payments/checkout to create a Stripe Checkout session for the extension");
+    }
+
     const rate = hourlyRate(settings, session.vehicle.type);
     const amount = rate * hours;
     const newEnd = addHours(session.expectedEnd, hours);
 
-    // Atomic: update session expiry and create payment in one transaction.
-    // P2002 on payment unique constraint → clean 409.
-    let updated;
-    try {
-      const [sessionUpdate] = await prisma.$transaction([
-        prisma.session.update({
-          where: { id: sessionId },
-          data: { expectedEnd: newEnd, reminderSent: false },
-          include: { spot: true, vehicle: true },
-        }),
-        prisma.payment.create({
-          data: {
-            sessionId,
-            type: "EXTENSION",
-            externalPaymentId: paymentId,
-            amount,
-            hours,
-          },
-        }),
-      ]);
-      updated = sessionUpdate;
-    } catch (err) {
-      if (err instanceof Error && (err as { code?: string }).code === "P2002") {
-        throw conflict("This payment has already been used");
-      }
-      throw err;
-    }
+    const [updated] = await prisma.$transaction([
+      prisma.session.update({
+        where: { id: sessionId },
+        data: { expectedEnd: newEnd, reminderSent: false },
+        include: { spot: true, vehicle: true },
+      }),
+      prisma.payment.create({
+        data: {
+          sessionId,
+          type: "EXTENSION",
+          amount,
+          hours,
+          legacyQbReference: `free_${randomUUID()}`,
+        },
+      }),
+    ]);
 
     await audit({
       action: "EXTEND",
@@ -61,7 +59,7 @@ export const POST = handler(
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `Extended ${hours}h, paid $${amount.toFixed(2)}, new expiry: ${newEnd.toISOString()}, plate: ${session.vehicle.licensePlate}`,
+      details: `Extended ${hours}h (payment disabled), new expiry: ${newEnd.toISOString()}, plate: ${session.vehicle.licensePlate}`,
     });
 
     return json({ session: updated });

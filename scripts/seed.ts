@@ -132,7 +132,7 @@ async function seed() {
     data: {
       sessionId: session.id,
       type: "CHECKIN",
-      externalPaymentId: "pi_test_seed_" + Date.now(),
+      legacyQbReference: "seed_" + Date.now(),
       amount: 120.0,
       hours: 8,
     },

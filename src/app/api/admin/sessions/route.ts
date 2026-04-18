@@ -7,7 +7,6 @@ import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
-import { verifyAndClaimInvoice } from "@/lib/payments";
 
 // ---------------------------------------------------------------------------
 // PUT: edit a session (extend time, change status)
@@ -246,20 +245,14 @@ export const POST = handler(
       throw conflict("This vehicle already has an active session");
     }
 
-    // ── Verify QB invoice ────────────────────────────────────────────────────
-    // When payments are required, invoiceId is mandatory and must be verified.
-    // When payments are disabled, use a synthetic ID to avoid collisions
-    // if the setting is later flipped back on.
-    let externalPaymentId: string;
-    if (settings.paymentRequired) {
-      if (!invoiceId) {
-        throw conflict("Invoice ID is required when payments are enabled");
-      }
-      await verifyAndClaimInvoice(invoiceId);
-      externalPaymentId = invoiceId;
-    } else {
-      externalPaymentId = `free_admin_${randomUUID()}`;
-    }
+    // ── Admin-created Payment reference ──────────────────────────────────────
+    // Manual admin creations don't run through Stripe Checkout. If the admin
+    // collected payment off-platform (cash, wire), they can pass an external
+    // reference; otherwise we stamp a free-mode marker. New Stripe-processed
+    // check-ins go through /api/payments/checkout, not this route.
+    const legacyReference = settings.paymentRequired && invoiceId
+      ? invoiceId
+      : `free_admin_${randomUUID()}`;
 
     // ── Assign spot ──────────────────────────────────────────────────────────
     let spot;
@@ -315,7 +308,7 @@ export const POST = handler(
           create: {
             id: randomUUID(),
             type: paymentType,
-            externalPaymentId,
+            legacyQbReference: legacyReference,
             amount: settings.paymentRequired ? amount : 0,
             status: "COMPLETED",
           },
@@ -330,7 +323,7 @@ export const POST = handler(
       driverId: driver.id,
       vehicleId: vehicle.id,
       spotId: spot.id,
-      details: `ADMIN created session for ${name} — ${durationLabel}, $${(settings.paymentRequired ? amount : 0).toFixed(2)}, spot ${spot.label}, payment ${externalPaymentId}`,
+      details: `ADMIN created session for ${name} — ${durationLabel}, $${(settings.paymentRequired ? amount : 0).toFixed(2)}, spot ${spot.label}, ref ${legacyReference}`,
     });
 
     return json({ session }, { status: 201 });

@@ -11,12 +11,18 @@ const serverSchema = z.object({
   AUTH_SECRET: z
     .string()
     .min(32, "AUTH_SECRET must be at least 32 chars (use a random string)"),
-  // QuickBooks Payments (optional — payment can be disabled in settings)
+  // QuickBooks OAuth (optional — QB is now the accounting output layer only,
+  // used for Sales Receipts and Refund Receipts after each Stripe event).
   QB_ACCESS_TOKEN: z.string().optional(),
   QB_REFRESH_TOKEN: z.string().optional(),
   QB_REALM_ID: z.string().optional(),
   QB_CLIENT_ID: z.string().optional(),
   QB_CLIENT_SECRET: z.string().optional(),
+  // Stripe (optional — payments can be disabled via Settings.paymentRequired).
+  // If present, the webhook secret must also be present since unsigned
+  // webhooks are rejected.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
 });
 
 const clientSchema = z.object({

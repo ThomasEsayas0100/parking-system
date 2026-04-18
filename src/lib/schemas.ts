@@ -5,7 +5,13 @@ import { z } from "zod";
 // ---------------------------------------------------------------------------
 export const VehicleTypeSchema = z.enum(["BOBTAIL", "TRUCK_TRAILER"]);
 export const SessionStatusSchema = z.enum(["ACTIVE", "COMPLETED", "OVERSTAY"]);
-export const PaymentTypeSchema = z.enum(["CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"]);
+export const PaymentTypeSchema = z.enum([
+  "CHECKIN",
+  "MONTHLY_CHECKIN",
+  "MONTHLY_RENEWAL",
+  "EXTENSION",
+  "OVERSTAY",
+]);
 export const PaymentStatusSchema = z.enum([
   "PENDING", "COMPLETED", "PARTIALLY_REFUNDED", "REFUNDED", "VOIDED", "DISPUTED",
 ]);
@@ -94,13 +100,45 @@ export const SessionExitSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Payment
+// Payment — Stripe Checkout
 // ---------------------------------------------------------------------------
-export const PaymentIntentCreateSchema = z.object({
+
+/**
+ * Body for POST /api/payments/checkout — creates a Stripe Checkout session
+ * in either payment mode (one-time) or subscription mode (monthly). Echoes
+ * the metadata back on the webhook so the handler knows how to wire the
+ * resulting Payment row to a Session.
+ */
+export const CheckoutCreateSchema = z.object({
+  driverId: idSchema,
+  sessionPurpose: z.enum(["CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"]),
+  // Required for CHECKIN / MONTHLY_CHECKIN — identifies the vehicle that
+  // will hold the spot.
+  vehicleId: idSchema.optional(),
+  // Required for EXTENSION / OVERSTAY — identifies the existing session.
+  sessionId: idSchema.optional(),
+  // Hourly amount (CHECKIN, EXTENSION, OVERSTAY) or monthly amount
+  // (MONTHLY_CHECKIN). In dollars.
   amount: z.number().min(0.5).max(10000),
-  description: z.string().max(500).optional(),
+  description: z.string().min(1).max(500),
+  hours: z.number().int().min(1).max(720).optional(),
+  termsVersion: z.string().min(1).max(50).optional(),
+  overstayAuthorized: z.boolean().optional(),
 });
-export type PaymentIntentCreateInput = z.infer<typeof PaymentIntentCreateSchema>;
+export type CheckoutCreateInput = z.infer<typeof CheckoutCreateSchema>;
+
+/**
+ * Body for POST /api/admin/refund — triggers a Stripe refund. The webhook
+ * (charge.refunded) updates the Payment row and writes the QB Refund Receipt;
+ * this route doesn't mutate the DB itself.
+ */
+export const AdminRefundSchema = z.object({
+  paymentId: idSchema,
+  // Dollars. Omit for full refund.
+  amount: z.number().min(0.01).max(10000).optional(),
+  reason: z.enum(["duplicate", "fraudulent", "requested_by_customer"]).optional(),
+});
+export type AdminRefundInput = z.infer<typeof AdminRefundSchema>;
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -138,6 +176,10 @@ export const AuditActionSchema = z.enum([
   "SUSPICIOUS_ENTRY",
   "GATE_DENIED",
   "ALLOWLIST_ENTRY",
+  "STRIPE_WEBHOOK_RECEIVED", "STRIPE_WEBHOOK_REPLAYED",
+  "SALES_RECEIPT_WRITTEN", "SALES_RECEIPT_FAILED",
+  "REFUND_ISSUED", "PAYMENT_DISPUTED",
+  "SUBSCRIPTION_CREATED", "SUBSCRIPTION_CANCELED",
 ]);
 
 export const AuditQuerySchema = z.object({

@@ -30,7 +30,10 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
       { session: { driver: { name: { contains: q, mode: "insensitive" } } } },
       { session: { driver: { phone: { contains: q.replace(/\D/g, "") } } } },
       { session: { vehicle: { licensePlate: { contains: q, mode: "insensitive" } } } },
-      { externalPaymentId: { contains: q } },
+      { stripePaymentIntentId: { contains: q } },
+      { stripeChargeId: { contains: q } },
+      { stripeSubscriptionId: { contains: q } },
+      { legacyQbReference: { contains: q } },
     ];
   }
 

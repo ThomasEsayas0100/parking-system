@@ -1,336 +1,261 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { apiFetch } from "@/lib/fetch";
 
 /**
- * Payment completion callback page.
+ * Stripe Checkout completion callback.
  *
- * After the driver pays on QuickBooks' hosted checkout, they return here.
- * This page:
- * 1. Reads the pending session data from sessionStorage
- * 2. Polls the QB invoice to verify payment completed
- * 3. Creates the parking session once payment is confirmed
- * 4. Redirects to the confirmation page
+ * The driver lands here after paying on Stripe. The URL carries
+ * `?cs=cs_...` — Stripe's Checkout session ID. Meanwhile the
+ * `checkout.session.completed` webhook has been dispatched to our server
+ * and writes the Payment + Session rows.
+ *
+ * We poll `GET /api/payments/lookup?cs=...` every 500ms for up to 10s,
+ * waiting for the webhook to land. On success we redirect by payment type:
+ *
+ *   CHECKIN / MONTHLY_CHECKIN → /welcome?driverId=X
+ *   EXTENSION                  → /welcome?driverId=X
+ *   OVERSTAY                   → /exit with an "exited" state
+ *
+ * After 10s we show a fallback "still processing" screen with a retry
+ * button. Webhook should almost always land within ~1s but Stripe's
+ * dashboard suggests tolerating up to 30s in edge cases.
  */
 
-type PendingSession = {
-  driverId: string;
-  vehicleId: string;
-  durationType: "HOURLY" | "MONTHLY";
-  hours?: number;
-  months?: number;
-  invoiceId: string;
-  termsVersion: string;
-  overstayAuthorized: boolean;
-  createdAt?: number;
+const POLL_INTERVAL_MS = 500;
+const POLL_TIMEOUT_MS = 10_000;
+
+type LookupResponse = {
+  status: "ready";
+  payment: {
+    id: string;
+    type: "CHECKIN" | "MONTHLY_CHECKIN" | "MONTHLY_RENEWAL" | "EXTENSION" | "OVERSTAY";
+    amount: number;
+    stripePaymentIntentId: string | null;
+    stripeChargeId: string | null;
+  };
+  session: { id: string; driverId: string; status: string } | null;
 };
 
-const PENDING_SESSION_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+type UIState =
+  | { kind: "polling" }
+  | { kind: "redirecting"; target: string }
+  | { kind: "timeout" }
+  | { kind: "error"; message: string };
 
 export default function PaymentCompletePage() {
+  return (
+    <Suspense fallback={null}>
+      <PaymentCompleteContent />
+    </Suspense>
+  );
+}
+
+function PaymentCompleteContent() {
   const router = useRouter();
-  const [status, setStatus] = useState<"waiting" | "checking" | "creating" | "done" | "voided" | "partial" | "error">("waiting");
-  const [error, setError] = useState("");
-  const pendingRef = useRef<PendingSession | null>(null);
-  const pollCount = useRef(0);
-  const maxPolls = 20; // 20 x 2s = 40 seconds
+  const searchParams = useSearchParams();
+  const cs = searchParams.get("cs");
+
+  const [ui, setUi] = useState<UIState>({ kind: "polling" });
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
-    const raw = sessionStorage.getItem("pending_session");
-    if (!raw) {
-      setError("No pending session found. Please check in again.");
-      setStatus("error");
+    if (!cs) {
+      setUi({ kind: "error", message: "Missing checkout reference in URL." });
       return;
     }
-    try {
-      const pending = JSON.parse(raw) as PendingSession;
-      if (!pending.invoiceId) throw new Error("missing invoiceId");
 
-      // Reject data older than 30 minutes — likely an abandoned session
-      // left in sessionStorage. Without this, a returning driver can get
-      // stuck polling a dead invoice forever.
-      if (
-        pending.createdAt &&
-        Date.now() - pending.createdAt > PENDING_SESSION_MAX_AGE_MS
-      ) {
-        sessionStorage.removeItem("pending_session");
-        setError("Your previous check-in has expired. Please start a new one.");
-        setStatus("error");
-        return;
-      }
-
-      pendingRef.current = pending;
-    } catch {
-      sessionStorage.removeItem("pending_session");
-      setError("Invalid session data. Please check in again.");
-      setStatus("error");
-    }
-  }, []);
-
-  const confirmPayment = async () => {
-    const pending = pendingRef.current;
-    if (!pending) return;
-
-    pollCount.current = 0;
-    setStatus("checking");
-    setError("");
+    const start = Date.now();
+    cancelledRef.current = false;
 
     const poll = async () => {
-      pollCount.current++;
+      if (cancelledRef.current) return;
       try {
-        const data = await apiFetch<{
-          paid: boolean;
-          voided: boolean;
-          partial: boolean;
-          balance: number;
-          totalAmount: number;
-          amountPaid: number;
-        }>(`/api/payments/status?invoiceId=${pending.invoiceId}`);
-
-        if (data.voided) {
-          sessionStorage.removeItem("pending_session");
-          setError("This payment was cancelled. Please check in again to start a new session.");
-          setStatus("voided");
+        const res = await fetch(`/api/payments/lookup?cs=${encodeURIComponent(cs)}`);
+        if (res.status === 200) {
+          const data = (await res.json()) as LookupResponse;
+          handleReady(data);
           return;
         }
-
-        if (data.partial) {
-          // Partial payment is a dead-end for this driver on this invoice.
-          // Drop the pending data so they don't get re-polled into the same
-          // state on a subsequent visit.
-          sessionStorage.removeItem("pending_session");
-          setError(
-            `Partial payment received ($${data.amountPaid.toFixed(2)} of $${data.totalAmount.toFixed(2)}). Please contact the manager with invoice #${pending.invoiceId}.`
-          );
-          setStatus("partial");
+        // 404 = not yet written by webhook; any other code = surface error
+        if (res.status !== 404) {
+          const body = await res.json().catch(() => ({}));
+          setUi({ kind: "error", message: body.error ?? `Unexpected response ${res.status}` });
           return;
-        }
-
-        if (data.paid) {
-          setStatus("creating");
-          const sessionRes = await fetch("/api/sessions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              driverId: pending.driverId,
-              vehicleId: pending.vehicleId,
-              durationType: pending.durationType,
-              ...(pending.durationType === "HOURLY" ? { hours: pending.hours } : { months: pending.months }),
-              paymentId: pending.invoiceId,
-              termsVersion: pending.termsVersion,
-              overstayAuthorized: pending.overstayAuthorized,
-            }),
-          });
-          const sessionData = await sessionRes.json();
-          if (!sessionRes.ok) {
-            // If the backend rejected for a reason that won't be fixed by
-            // retrying (duplicate payment, conflict), clearing the stale
-            // pending_session prevents an infinite retry loop.
-            if (sessionRes.status === 409) {
-              sessionStorage.removeItem("pending_session");
-            }
-            setError(sessionData.error || "Session creation failed after payment.");
-            setStatus("error");
-            return;
-          }
-          sessionStorage.removeItem("pending_session");
-          setStatus("done");
-          router.push(`/confirmation`);
-          return;
-        }
-
-        // Not paid yet — keep polling
-        if (pollCount.current < maxPolls) {
-          setTimeout(poll, 2000);
-        } else {
-          setError("Payment not found yet. If you completed payment, tap the button again in a moment.");
-          setStatus("waiting");
         }
       } catch {
-        setError("Could not verify payment. Please try again or contact the manager.");
-        setStatus("waiting");
+        // Network hiccup — keep trying until timeout.
       }
+
+      if (Date.now() - start >= POLL_TIMEOUT_MS) {
+        setUi({ kind: "timeout" });
+        return;
+      }
+      setTimeout(poll, POLL_INTERVAL_MS);
     };
 
-    setTimeout(poll, 1000);
-  };
+    poll();
+
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [cs]);
+
+  function handleReady(data: LookupResponse) {
+    const { payment, session } = data;
+    let target: string;
+    if (payment.type === "OVERSTAY" && session) {
+      target = `/exit?paid=1&sessionId=${session.id}`;
+    } else if (session) {
+      target = `/welcome?driverId=${session.driverId}`;
+    } else {
+      target = "/entry";
+    }
+    setUi({ kind: "redirecting", target });
+    router.replace(target);
+  }
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "var(--bg)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20,
-      fontFamily: "var(--font-body)",
-    }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "var(--bg)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20,
+        fontFamily: "var(--font-body)",
+      }}
+    >
       <div style={{ textAlign: "center", maxWidth: 400 }}>
-        {status === "waiting" && (
-          <>
-            <div style={{ fontSize: 48, marginBottom: 24 }}>💳</div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Complete your payment
-            </h1>
-            <p style={{ fontSize: 14, color: "var(--fg-muted)", marginBottom: 24 }}>
-              Finish payment on QuickBooks, then return here and tap the button below to confirm your spot.
-              <br />
-              <span style={{ fontSize: 12, color: "var(--fg-subtle)" }}>
-                Completa tu pago en QuickBooks, luego regresa aquí y presiona el botón para confirmar tu lugar.
-              </span>
-            </p>
-            {error && <p style={{ fontSize: 13, color: "var(--error)", marginBottom: 16 }}>{error}</p>}
-            <button
-              onClick={confirmPayment}
-              style={{ padding: "14px 28px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 16, cursor: "pointer", width: "100%" }}
-            >
-              I've paid — confirm my spot · Ya pagué — confirmar mi lugar
-            </button>
-            <p style={{ fontSize: 12, color: "var(--fg-subtle)", marginTop: 12 }}>
-              Tap after completing payment on QuickBooks
-            </p>
-          </>
+        {ui.kind === "polling" && <Spinner title="Confirming your payment…" subtitle="Verificando tu pago…" />}
+        {ui.kind === "redirecting" && <Spinner title="Redirecting…" subtitle="Redirigiendo…" />}
+        {ui.kind === "timeout" && (
+          <Block
+            icon="!"
+            iconColor="#F59E0B"
+            title="Payment still processing"
+            messages={[
+              "Stripe is still confirming your payment. This usually takes under 10 seconds — occasionally a bit longer.",
+              "Your card has been charged and we'll catch up momentarily.",
+            ]}
+            actions={[
+              { label: "Check again", onClick: () => window.location.reload(), primary: true },
+              { label: "Back to start", href: "/entry" },
+            ]}
+          />
         )}
-
-        {status === "checking" && (
-          <>
-            <div style={{
-              width: 48,
-              height: 48,
-              border: "3px solid var(--border)",
-              borderTopColor: "var(--accent)",
-              borderRadius: "50%",
-              animation: "spin 0.8s linear infinite",
-              margin: "0 auto 24px",
-            }} />
-            <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Verifying payment… · Verificando pago…
-            </h1>
-            <p style={{ fontSize: 14, color: "var(--fg-muted)" }}>
-              Confirming your payment with QuickBooks.
-            </p>
-          </>
-        )}
-
-        {status === "creating" && (
-          <>
-            <div style={{
-              width: 48,
-              height: 48,
-              border: "3px solid var(--border)",
-              borderTopColor: "var(--accent)",
-              borderRadius: "50%",
-              animation: "spin 0.8s linear infinite",
-              margin: "0 auto 24px",
-            }} />
-            <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Assigning your spot…
-            </h1>
-            <p style={{ fontSize: 14, color: "var(--fg-muted)" }}>
-              Payment confirmed! Setting up your parking session now.
-            </p>
-          </>
-        )}
-
-        {status === "voided" && (
-          <>
-            <div style={{
-              width: 48, height: 48, borderRadius: "50%", background: "#FEF2F2",
-              border: "2px solid var(--error)", display: "flex", alignItems: "center",
-              justifyContent: "center", fontSize: 24, color: "var(--error)", margin: "0 auto 24px",
-            }}>✕</div>
-            <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Payment cancelled
-            </h1>
-            <p style={{ fontSize: 14, color: "var(--fg-muted)", marginBottom: 24 }}>{error}</p>
-            <Link href="/entry" style={{ padding: "10px 20px", background: "var(--accent)", color: "#fff", borderRadius: 8, textDecoration: "none", fontWeight: 600, fontSize: 14 }}>
-              Start over
-            </Link>
-          </>
-        )}
-
-        {status === "partial" && (
-          <>
-            <div style={{
-              width: 48, height: 48, borderRadius: "50%", background: "#FFF7E6",
-              border: "2px solid #F59E0B", display: "flex", alignItems: "center",
-              justifyContent: "center", fontSize: 24, color: "#F59E0B", margin: "0 auto 24px",
-            }}>!</div>
-            <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Partial payment
-            </h1>
-            <p style={{ fontSize: 14, color: "#92400E", marginBottom: 24 }}>{error}</p>
-            <Link href="/entry" style={{ padding: "10px 20px", background: "var(--input-bg)", color: "var(--fg)", border: "1px solid var(--border)", borderRadius: 8, textDecoration: "none", fontSize: 14 }}>
-              Back to start
-            </Link>
-          </>
-        )}
-
-        {status === "error" && (
-          <>
-            <div style={{
-              width: 48,
-              height: 48,
-              borderRadius: "50%",
-              background: "#FEF2F2",
-              border: "2px solid var(--error)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 24,
-              color: "var(--error)",
-              margin: "0 auto 24px",
-            }}>
-              !
-            </div>
-            <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
-              Something went wrong
-            </h1>
-            <p style={{ fontSize: 14, color: "var(--error)", marginBottom: 24 }}>
-              {error}
-            </p>
-            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-              <Link
-                href="/checkin"
-                style={{
-                  padding: "10px 20px",
-                  background: "var(--accent)",
-                  color: "#fff",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  fontWeight: 600,
-                  fontSize: 14,
-                }}
-              >
-                Try again
-              </Link>
-              <Link
-                href="/entry"
-                style={{
-                  padding: "10px 20px",
-                  background: "var(--input-bg)",
-                  color: "var(--fg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  fontSize: 14,
-                }}
-              >
-                Back to start
-              </Link>
-            </div>
-          </>
+        {ui.kind === "error" && (
+          <Block
+            icon="✕"
+            iconColor="var(--error)"
+            title="Something went wrong"
+            messages={[ui.message]}
+            actions={[
+              { label: "Try again", href: "/checkin", primary: true },
+              { label: "Back to start", href: "/entry" },
+            ]}
+          />
         )}
       </div>
 
       <style>{`
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
     </div>
+  );
+}
+
+function Spinner({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <>
+      <div
+        style={{
+          width: 48,
+          height: 48,
+          border: "3px solid var(--border)",
+          borderTopColor: "var(--accent)",
+          borderRadius: "50%",
+          animation: "spin 0.8s linear infinite",
+          margin: "0 auto 24px",
+        }}
+      />
+      <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
+        {title}
+      </h1>
+      <p style={{ fontSize: 13, color: "var(--fg-muted)" }}>{subtitle}</p>
+    </>
+  );
+}
+
+function Block({
+  icon, iconColor, title, messages, actions,
+}: {
+  icon: string;
+  iconColor: string;
+  title: string;
+  messages: string[];
+  actions: Array<{ label: string; href?: string; onClick?: () => void; primary?: boolean }>;
+}) {
+  return (
+    <>
+      <div
+        style={{
+          width: 48, height: 48, borderRadius: "50%", background: "#FEF2F2",
+          border: `2px solid ${iconColor}`, display: "flex", alignItems: "center",
+          justifyContent: "center", fontSize: 24, color: iconColor, margin: "0 auto 24px",
+        }}
+      >
+        {icon}
+      </div>
+      <h1 style={{ fontSize: 20, fontWeight: 700, fontFamily: "var(--font-display)", marginBottom: 8 }}>
+        {title}
+      </h1>
+      {messages.map((m, i) => (
+        <p key={i} style={{ fontSize: 14, color: "var(--fg-muted)", marginBottom: 16 }}>{m}</p>
+      ))}
+      <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 8 }}>
+        {actions.map((a, i) => (
+          a.href ? (
+            <Link
+              key={i}
+              href={a.href}
+              style={{
+                padding: "10px 20px",
+                background: a.primary ? "var(--accent)" : "var(--input-bg)",
+                color: a.primary ? "#fff" : "var(--fg)",
+                border: a.primary ? "none" : "1px solid var(--border)",
+                borderRadius: 8,
+                textDecoration: "none",
+                fontSize: 14,
+                fontWeight: a.primary ? 600 : 400,
+              }}
+            >
+              {a.label}
+            </Link>
+          ) : (
+            <button
+              key={i}
+              type="button"
+              onClick={a.onClick}
+              style={{
+                padding: "10px 20px",
+                background: a.primary ? "var(--accent)" : "var(--input-bg)",
+                color: a.primary ? "#fff" : "var(--fg)",
+                border: a.primary ? "none" : "1px solid var(--border)",
+                borderRadius: 8,
+                cursor: "pointer",
+                fontSize: 14,
+                fontWeight: a.primary ? 600 : 400,
+              }}
+            >
+              {a.label}
+            </button>
+          )
+        ))}
+      </div>
+    </>
   );
 }
