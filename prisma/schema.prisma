@@ -18,6 +18,12 @@ enum SessionStatus {
   OVERSTAY
 }
 
+enum BillingStatus {
+  CURRENT          // subscription is paid and active (or session is not a subscription)
+  PAYMENT_FAILED   // latest invoice failed; Stripe is retrying (dunning window)
+  DELINQUENT       // all Stripe retries exhausted; subscription canceled
+}
+
 enum PaymentType {
   CHECKIN
   MONTHLY_CHECKIN
@@ -64,6 +70,7 @@ enum AuditAction {
   PAYMENT_DISPUTED          // charge.dispute.created webhook fired
   SUBSCRIPTION_CREATED
   SUBSCRIPTION_CANCELED
+  RECURRING_CHARGE_FAILED   // invoice.payment_failed — Stripe will retry per dunning schedule
 }
 
 model AllowList {
@@ -142,6 +149,7 @@ model Session {
   expectedEnd        DateTime
   endedAt            DateTime?
   status             SessionStatus @default(ACTIVE)
+  billingStatus      BillingStatus @default(CURRENT)
   reminderSent       Boolean       @default(false)
   overstayAlertSent  Boolean       @default(false)
   // Terms acceptance (clickwrap consent record). "legacy" = pre-consent-tracking row.

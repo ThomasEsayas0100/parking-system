@@ -25,6 +25,7 @@ type SessionRow = {
   endedAt: string | null;
   expectedEnd: string;
   status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  billingStatus: "CURRENT" | "PAYMENT_FAILED" | "DELINQUENT";
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
   spot: { id: string; label: string; type: "BOBTAIL" | "TRUCK_TRAILER" };
@@ -77,6 +78,12 @@ const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
   ACTIVE:    { color: "#166534", bg: "#DCFCE7" },
   COMPLETED: { color: "#636366", bg: "#F2F2F7" },
   OVERSTAY:  { color: "#991B1B", bg: "#FEE2E2" },
+};
+
+const BILLING_STATUS_STYLE: Record<string, { color: string; bg: string; label: string } | undefined> = {
+  CURRENT:        undefined,                                           // no badge — normal state
+  PAYMENT_FAILED: { color: "#92400E", bg: "#FEF3C7", label: "Payment Failed" },
+  DELINQUENT:     { color: "#7F1D1D", bg: "#FEE2E2", label: "Delinquent" },
 };
 
 // ---------------------------------------------------------------------------
@@ -815,14 +822,28 @@ export default function AdminDashboard() {
                             </div>
                           )}
 
-                          {/* Status badge */}
-                          <span style={{
-                            fontSize: mobile ? 9 : 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
-                            padding: mobile ? "3px 8px" : "4px 10px", borderRadius: 4, background: st.bg, color: st.color,
-                            whiteSpace: "nowrap",
-                          }}>
-                            {s.status}
-                          </span>
+                          {/* Status + billing badges */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                            <span style={{
+                              fontSize: mobile ? 9 : 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                              padding: mobile ? "3px 8px" : "4px 10px", borderRadius: 4, background: st.bg, color: st.color,
+                              whiteSpace: "nowrap",
+                            }}>
+                              {s.status}
+                            </span>
+                            {(() => {
+                              const bs = BILLING_STATUS_STYLE[s.billingStatus];
+                              return bs ? (
+                                <span style={{
+                                  fontSize: mobile ? 8 : 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                                  padding: mobile ? "2px 6px" : "3px 8px", borderRadius: 4, background: bs.bg, color: bs.color,
+                                  whiteSpace: "nowrap",
+                                }}>
+                                  {bs.label}
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
 
                           {/* Total — desktop only */}
                           {!mobile && (

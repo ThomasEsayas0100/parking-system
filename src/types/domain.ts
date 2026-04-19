@@ -9,6 +9,7 @@
 import type {
   VehicleType,
   SessionStatus,
+  BillingStatus,
   PaymentType,
   PaymentStatus,
   AllowListLabel,
@@ -16,7 +17,7 @@ import type {
 } from "@/generated/prisma/enums";
 
 // Re-export so pages can import enums from a single module
-export type { VehicleType, SessionStatus, PaymentType, PaymentStatus, AllowListLabel, AuditAction };
+export type { VehicleType, SessionStatus, BillingStatus, PaymentType, PaymentStatus, AllowListLabel, AuditAction };
 
 // ---------------------------------------------------------------------------
 // Core entities (JSON-serialized API response shapes)
@@ -91,6 +92,7 @@ export type ApiSpot = {
 export type ApiSession = {
   id: string;
   status: SessionStatus;
+  billingStatus: BillingStatus;
   startedAt: string;
   expectedEnd: string;
   endedAt: string | null;

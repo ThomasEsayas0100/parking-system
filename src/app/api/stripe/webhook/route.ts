@@ -570,7 +570,7 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   await prisma.$transaction([
     prisma.session.update({
       where: { id: session.id },
-      data: { expectedEnd: newExpectedEnd, reminderSent: false },
+      data: { expectedEnd: newExpectedEnd, reminderSent: false, billingStatus: "CURRENT" },
     }),
     prisma.payment.create({
       data: {
@@ -611,8 +611,13 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   });
   if (!firstPayment) return;
 
+  await prisma.session.update({
+    where: { id: firstPayment.session.id },
+    data: { billingStatus: "PAYMENT_FAILED" },
+  });
+
   await audit({
-    action: "RECURRING_CHARGE_FAILED" in ({} as Record<string, string>) ? "SUBSCRIPTION_CANCELED" : "SUBSCRIPTION_CANCELED",
+    action: "RECURRING_CHARGE_FAILED",
     sessionId: firstPayment.session.id,
     driverId: firstPayment.session.driverId,
     details: `Invoice ${invoice.id} payment failed — subscription ${subscriptionId}. Stripe will retry per its dunning schedule.`,
@@ -738,12 +743,13 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
   // last invoice.payment_succeeded renewal webhook, so this is a no-op.
   const newEnd = session.expectedEnd < now ? session.expectedEnd : now;
 
-  if (newEnd < session.expectedEnd) {
-    await prisma.session.update({
-      where: { id: session.id },
-      data: { expectedEnd: newEnd },
-    });
-  }
+  await prisma.session.update({
+    where: { id: session.id },
+    data: {
+      billingStatus: "DELINQUENT",
+      ...(newEnd < session.expectedEnd ? { expectedEnd: newEnd } : {}),
+    },
+  });
 
   await audit({
     action: "SUBSCRIPTION_CANCELED",

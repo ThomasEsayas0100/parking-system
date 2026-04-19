@@ -60,6 +60,11 @@ export async function GET() {
     where: {
       status: "ACTIVE",
       expectedEnd: { lte: graceThreshold },
+      // Skip sessions whose Stripe subscription is in the dunning retry window.
+      // invoice.payment_succeeded will reset billingStatus to CURRENT on success;
+      // customer.subscription.deleted sets DELINQUENT (which is NOT skipped here
+      // because expectedEnd is already clamped to now at that point).
+      billingStatus: { not: "PAYMENT_FAILED" },
     },
     include: { driver: true, spot: true },
   });
