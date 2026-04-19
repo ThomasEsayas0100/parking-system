@@ -90,11 +90,11 @@ type CheckoutMetadata = {
   driverId: string;
   vehicleId?: string;
   sessionPurpose: "CHECKIN" | "MONTHLY_CHECKIN" | "EXTENSION" | "OVERSTAY";
-  /**
-   * Optional pre-existing session ID (e.g. for OVERSTAY or EXTENSION flows
-   * where the session already exists and we're just adding a payment).
-   */
   sessionId?: string;
+  hours?: string;
+  months?: string;
+  termsVersion?: string;
+  overstayAuthorized?: string;
 };
 
 /**

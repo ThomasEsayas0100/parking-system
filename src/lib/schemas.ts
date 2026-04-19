@@ -122,6 +122,7 @@ export const CheckoutCreateSchema = z.object({
   amount: z.number().min(0.5).max(10000),
   description: z.string().min(1).max(500),
   hours: z.number().int().min(1).max(720).optional(),
+  months: z.number().int().min(1).max(12).optional(),
   termsVersion: z.string().min(1).max(50).optional(),
   overstayAuthorized: z.boolean().optional(),
 });

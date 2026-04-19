@@ -130,6 +130,7 @@ type CheckoutMetadata = {
   sessionPurpose?: SessionPurpose;
   durationType?: "HOURLY" | "MONTHLY";
   hours?: string;
+  months?: string;
   termsVersion?: string;
   overstayAuthorized?: string;
 };
@@ -376,7 +377,8 @@ async function handleMonthlyCheckin(args: {
   }
 
   const now = new Date();
-  const expectedEnd = addMonths(now, 1);
+  const initialMonths = metadata.months ? parseInt(metadata.months, 10) : 1;
+  const expectedEnd = addMonths(now, initialMonths);
 
   const session = await prisma.session.create({
     data: {

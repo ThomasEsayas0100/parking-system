@@ -34,7 +34,7 @@ export const POST = handler(
 
     const {
       driverId, sessionPurpose, vehicleId, sessionId,
-      amount, description, hours, termsVersion, overstayAuthorized,
+      amount, description, hours, months, termsVersion, overstayAuthorized,
     } = body;
 
     // Per-purpose validation — catch misuse early so we don't create a
@@ -47,6 +47,9 @@ export const POST = handler(
     }
     if ((sessionPurpose === "CHECKIN" || sessionPurpose === "EXTENSION") && !hours) {
       return json({ error: "hours is required for CHECKIN/EXTENSION" }, { status: 400 });
+    }
+    if (sessionPurpose === "MONTHLY_CHECKIN" && !months) {
+      return json({ error: "months is required for MONTHLY_CHECKIN" }, { status: 400 });
     }
 
     const driver = await prisma.driver.findUnique({ where: { id: driverId } });
@@ -84,6 +87,7 @@ export const POST = handler(
       ...(sessionId ? { sessionId } : {}),
       sessionPurpose,
       ...(hours !== undefined ? { hours: String(hours) } : {}),
+      ...(months !== undefined ? { months: String(months) } : {}),
       ...(termsVersion ? { termsVersion } : {}),
       ...(overstayAuthorized !== undefined ? { overstayAuthorized: String(overstayAuthorized) } : {}),
     };

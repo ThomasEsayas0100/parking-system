@@ -430,9 +430,10 @@ function CheckInContent() {
             driverId: driver.id,
             vehicleId,
             sessionPurpose: durationType === "MONTHLY" ? "MONTHLY_CHECKIN" : "CHECKIN",
-            amount: totalAmount,
+            amount: durationType === "MONTHLY" ? monthlyRate : totalAmount,
             description,
             hours: durationType === "HOURLY" ? hours : undefined,
+            months: durationType === "MONTHLY" ? months : undefined,
             termsVersion: settings.termsVersion,
             overstayAuthorized: true,
           }),
@@ -1114,7 +1115,8 @@ function CheckInContent() {
               </span>
             ) : (
               <span className="text-3xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
-                ${totalAmount.toFixed(2)}
+                ${durationType === "MONTHLY" ? monthlyRate.toFixed(2) : totalAmount.toFixed(2)}
+                {durationType === "MONTHLY" && <span className="text-base font-normal" style={{ color: "var(--fg-dim)" }}>/mo</span>}
               </span>
             )}
           </div>
@@ -1235,6 +1237,8 @@ function CheckInContent() {
                 "Accept Terms to Continue"
               ) : isDemo ? (
                 "Find My Spot →"
+              ) : durationType === "MONTHLY" ? (
+                <>Subscribe ${monthlyRate.toFixed(2)}/mo &amp; Check In</>
               ) : (
                 <>Pay ${totalAmount.toFixed(2)} &amp; Check In</>
               )}
@@ -1245,7 +1249,9 @@ function CheckInContent() {
         <p className="text-center text-xs pb-6" style={{ color: "var(--fg-subtle)" }}>
           {isDemo
             ? "A spot will be assigned on the lot map / Se asignará un lugar en el mapa"
-            : `Pagar $${totalAmount.toFixed(2)} y registrar entrada`}
+            : durationType === "MONTHLY"
+              ? `Suscribirse $${monthlyRate.toFixed(2)}/mes · renueva automáticamente`
+              : `Pagar $${totalAmount.toFixed(2)} y registrar entrada`}
         </p>
       </form>
     </div>
