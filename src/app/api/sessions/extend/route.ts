@@ -27,6 +27,16 @@ export const POST = handler(
       throw notFound("No active session found");
     }
 
+    const isMonthly = await prisma.payment.findFirst({
+      where: { sessionId, type: "MONTHLY_CHECKIN" },
+    });
+    if (isMonthly) {
+      return json(
+        { error: "Monthly subscriptions renew automatically — no extension needed. Contact the lot manager to adjust your subscription." },
+        { status: 400 },
+      );
+    }
+
     const settings = await getSettings();
     if (settings.paymentRequired) {
       throw conflict("Payment is required — use /api/payments/checkout to create a Stripe Checkout session for the extension");

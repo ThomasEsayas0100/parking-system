@@ -59,6 +59,15 @@ export const POST = handler(
       if (!session || session.driverId !== driverId) {
         throw notFound("Session not found");
       }
+      if (sessionPurpose === "EXTENSION") {
+        const isMonthly = await prisma.payment.findFirst({ where: { sessionId, type: "MONTHLY_CHECKIN" } });
+        if (isMonthly) {
+          return json(
+            { error: "Monthly subscriptions renew automatically — extensions are not available." },
+            { status: 400 },
+          );
+        }
+      }
     }
     if (vehicleId) {
       const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });

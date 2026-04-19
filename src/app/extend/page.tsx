@@ -41,6 +41,7 @@ function ExtendContent() {
   const [driverName, setDriverName] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [isMonthly, setIsMonthly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -62,6 +63,7 @@ function ExtendContent() {
           vehicle?: { type: string };
           spot?: { label: string };
           driver?: { name: string };
+          payments?: { type: string }[];
         } | null;
       }>(`/api/sessions?driverId=${saved.id}`),
       apiFetch<{ settings: { hourlyRateBobtail: number; hourlyRateTruck: number } }>(
@@ -72,6 +74,11 @@ function ExtendContent() {
         if (sessionData.session) {
           if (sessionData.session.status === "OVERSTAY") {
             router.replace(`/exit`);
+            return;
+          }
+          if (sessionData.session.payments?.some((p) => p.type === "MONTHLY_CHECKIN")) {
+            setIsMonthly(true);
+            setLoading(false);
             return;
           }
           setSessionId(sessionData.session.id);
@@ -138,6 +145,28 @@ function ExtendContent() {
     return (
       <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <p style={{ color: "var(--fg-subtle)", fontFamily: "var(--font-display)" }}>Loading session…</p>
+      </div>
+    );
+  }
+
+  if (isMonthly) {
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ textAlign: "center", maxWidth: 360 }}>
+          <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#DCFCE7", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, margin: "0 auto 20px" }}>
+            ↻
+          </div>
+          <p style={{ fontSize: 18, fontWeight: 700, color: "var(--fg)", marginBottom: 10 }}>Monthly subscription active</p>
+          <p style={{ fontSize: 14, color: "var(--fg-subtle)", marginBottom: 28, lineHeight: 1.6 }}>
+            Your parking renews automatically each month — no action needed. If you have questions about your subscription, please contact the lot manager.
+          </p>
+          <button
+            onClick={() => router.replace("/welcome")}
+            style={{ padding: "12px 24px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
+          >
+            Back to home
+          </button>
+        </div>
       </div>
     );
   }
