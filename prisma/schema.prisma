@@ -16,6 +16,7 @@ enum SessionStatus {
   ACTIVE
   COMPLETED
   OVERSTAY
+  CANCELLED
 }
 
 enum BillingStatus {
@@ -37,7 +38,8 @@ enum PaymentStatus {
   COMPLETED
   PARTIALLY_REFUNDED // reserved for future refund API — nothing writes this today
   REFUNDED
-  CANCELLED // session was cancelled by admin; payment was collected but session ended early
+  CANCELLED // legacy: pre-Stripe admin-cancel path; new code does not write this
+  VOIDED
   DISPUTED
 }
 

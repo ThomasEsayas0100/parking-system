@@ -76,22 +76,15 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Reason required for cancellation" }, { status: 400 });
     }
 
-    if (session.status === "COMPLETED") {
-      return json({ error: "Session already completed" }, { status: 400 });
+    if (["COMPLETED", "CANCELLED"].includes(session.status)) {
+      return json({ error: "Session already ended" }, { status: 400 });
     }
 
-    // Mark payments CANCELLED — session ended early by admin. The charge was
-    // collected; if a refund is owed the admin issues it via the Manage Session
-    // modal before or after cancelling.
-    await prisma.payment.updateMany({
-      where: { sessionId, status: { notIn: ["REFUNDED", "CANCELLED"] } },
-      data: { status: "CANCELLED" },
-    });
-
-    // Complete the session — spot is implicitly freed (no session referencing it = free)
+    // Payments keep their financial status (COMPLETED, REFUNDED, etc.).
+    // The admin should issue refunds via the Manage Session modal before cancelling.
     await prisma.session.update({
       where: { id: sessionId },
-      data: { status: "COMPLETED", endedAt: new Date() },
+      data: { status: "CANCELLED", endedAt: new Date() },
     });
 
     await audit({
@@ -111,8 +104,8 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Reason required" }, { status: 400 });
     }
 
-    if (session.status === "COMPLETED") {
-      return json({ error: "Session already completed" }, { status: 400 });
+    if (["COMPLETED", "CANCELLED"].includes(session.status)) {
+      return json({ error: "Session already ended" }, { status: 400 });
     }
 
     // Parse the backdated end time, default to now

@@ -4,7 +4,7 @@ import { z } from "zod";
 // Primitive schemas
 // ---------------------------------------------------------------------------
 export const VehicleTypeSchema = z.enum(["BOBTAIL", "TRUCK_TRAILER"]);
-export const SessionStatusSchema = z.enum(["ACTIVE", "COMPLETED", "OVERSTAY"]);
+export const SessionStatusSchema = z.enum(["ACTIVE", "COMPLETED", "OVERSTAY", "CANCELLED"]);
 export const PaymentTypeSchema = z.enum([
   "CHECKIN",
   "MONTHLY_CHECKIN",

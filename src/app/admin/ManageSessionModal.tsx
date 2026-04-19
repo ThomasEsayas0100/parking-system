@@ -13,7 +13,7 @@ type SessionRow = {
   startedAt: string;
   endedAt: string | null;
   expectedEnd: string;
-  status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  status: "ACTIVE" | "COMPLETED" | "OVERSTAY" | "CANCELLED";
   billingStatus: "CURRENT" | "PAYMENT_FAILED" | "DELINQUENT";
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: {
@@ -481,7 +481,7 @@ function SubscriptionTab({
   const subscriptionId = monthlyPayment?.stripeSubscriptionId;
   const nextRenewal = new Date(session.expectedEnd);
   const bs = BILLING_BADGE[session.billingStatus ?? "CURRENT"];
-  const isTerminal = session.billingStatus === "DELINQUENT" || session.status === "COMPLETED";
+  const isTerminal = session.billingStatus === "DELINQUENT" || session.status === "COMPLETED" || session.status === "CANCELLED";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>

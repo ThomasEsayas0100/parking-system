@@ -24,7 +24,7 @@ type SessionRow = {
   startedAt: string;
   endedAt: string | null;
   expectedEnd: string;
-  status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  status: "ACTIVE" | "COMPLETED" | "OVERSTAY" | "CANCELLED";
   billingStatus: "CURRENT" | "PAYMENT_FAILED" | "DELINQUENT";
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
@@ -40,7 +40,7 @@ type SessionsResponse = {
   hasMore: boolean;
 };
 
-type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY";
+type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY" | "CANCELLED";
 
 // ---------------------------------------------------------------------------
 // Log tab config
@@ -78,6 +78,7 @@ const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
   ACTIVE:    { color: "#166534", bg: "#DCFCE7" },
   COMPLETED: { color: "#636366", bg: "#F2F2F7" },
   OVERSTAY:  { color: "#991B1B", bg: "#FEE2E2" },
+  CANCELLED: { color: "#6B21A8", bg: "#F3E8FF" },
 };
 
 const BILLING_STATUS_STYLE: Record<string, { color: string; bg: string; label: string } | undefined> = {
@@ -724,7 +725,7 @@ export default function AdminDashboard() {
           <div>
             {/* Filters */}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-              {(["", "ACTIVE", "OVERSTAY", "COMPLETED"] as StatusFilter[]).map((s) => {
+              {(["", "ACTIVE", "OVERSTAY", "COMPLETED", "CANCELLED"] as StatusFilter[]).map((s) => {
                 const active = sessStatus === s;
                 const label = s || "All";
                 return (
@@ -945,7 +946,7 @@ export default function AdminDashboard() {
                             </div>
 
                             {/* Admin actions */}
-                            {s.status !== "COMPLETED" && (
+                            {s.status !== "COMPLETED" && s.status !== "CANCELLED" && (
                               <div style={{ gridColumn: mobile ? undefined : "1 / -1", borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 4 }}>
                                 {sessionAction?.id === s.id ? (
                                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -1951,7 +1952,7 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
         <div style={{ marginTop: 16, padding: "10px 14px", background: "#F9FAFB", borderRadius: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: "#6B7280" }}>Current status:</span>
           <span style={{ fontSize: 12, fontWeight: 600, color: "#111827", flex: 1 }}>
-            {sessionStatus === "ACTIVE" ? "Active" : sessionStatus === "OVERSTAY" ? "Overstay" : sessionStatus === "COMPLETED" ? "Completed" : (sessionStatus ?? "—")}
+            {sessionStatus === "ACTIVE" ? "Active" : sessionStatus === "OVERSTAY" ? "Overstay" : sessionStatus === "COMPLETED" ? "Completed" : sessionStatus === "CANCELLED" ? "Cancelled" : (sessionStatus ?? "—")}
             {spotLabel ? ` · Spot ${spotLabel}` : ""}
           </span>
           {payment.stripePaymentIntentId && (
@@ -2393,6 +2394,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                         {p.session?.status === "ACTIVE"    && <span style={{ fontSize: 9, fontWeight: 700, color: "#2D7A4A", background: "#DCFCE7", padding: "2px 6px", borderRadius: 3 }}>ACTIVE</span>}
                         {p.session?.status === "OVERSTAY"  && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>OVERSTAY</span>}
                         {p.session?.status === "COMPLETED" && <span style={{ fontSize: 9, fontWeight: 700, color: "#636366", background: "#F2F2F7", padding: "2px 6px", borderRadius: 3 }}>COMPLETED</span>}
+                        {p.session?.status === "CANCELLED" && <span style={{ fontSize: 9, fontWeight: 700, color: "#6B21A8", background: "#F3E8FF", padding: "2px 6px", borderRadius: 3 }}>CANCELLED</span>}
                         {!p.session && <span style={{ fontSize: 9, color: "#C7C7CC" }}>—</span>}
                       </td>
 
