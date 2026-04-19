@@ -951,6 +951,9 @@ export default function AdminDashboard() {
                                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                                     {sessionAction.type === "cancel" && (
                                       <>
+                                        <div style={{ width: "100%", background: "#FEF3C7", border: "1px solid #F59E0B", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#92400E" }}>
+                                          <strong>No refund will be issued.</strong> The session ends immediately and any charges already collected (${sumPayments(s.payments).toFixed(2)}) are kept. Issue a refund from the Manage modal before cancelling if needed.
+                                        </div>
                                         <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
                                         <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="Required" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
                                       </>
@@ -2367,7 +2370,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                           <span style={{
                             fontWeight: 700, fontVariantNumeric: "tabular-nums",
                             color: isDisputed ? "#EF4444" : FG,
-                            textDecoration: isCancelled ? "line-through" : undefined,
+                            textDecoration: undefined,
                           }}>
                             ${p.amount.toFixed(2)}
                           </span>
