@@ -55,12 +55,11 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
       skip: offset,
     }),
     prisma.payment.count({ where }),
-    // Divergence: Stripe charges without QB Sales Receipt (excludes CANCELLED)
+    // Divergence: Stripe charges without QB Sales Receipt
     prisma.payment.count({
       where: {
         stripeChargeId: { not: null },
         qbSalesReceiptId: null,
-        status: { notIn: ["CANCELLED"] },
       },
     }),
     // Divergence: Stripe refunds without QB Refund Receipt

@@ -1798,7 +1798,7 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
       .finally(() => setSyncing(false));
   };
 
-  const paymentMissingQb = !!(payment.stripeChargeId && !payment.qbSalesReceiptId && payment.status !== "CANCELLED");
+  const paymentMissingQb = !!(payment.stripeChargeId && !payment.qbSalesReceiptId);
 
   const typeLabel: Record<string, string> = {
     CHECKIN: "Check-in",
@@ -2297,7 +2297,6 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                   const qbCustId = (p.session?.driver as { qbCustomerId?: string } | undefined)?.qbCustomerId;
                   const isRefunded         = p.status === "REFUNDED";
                   const isPartiallyRefunded = p.status === "PARTIALLY_REFUNDED";
-                  const isCancelled        = p.status === "CANCELLED";
                   const isDisputed         = p.status === "DISPUTED";
                   const rowBg = idx % 2 === 0 ? CARD_BG : "#F8FAFC";
 
@@ -2318,7 +2317,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                   };
 
                   return (
-                    <tr key={p.id} style={{ background: rowBg, opacity: isCancelled ? 0.6 : 1 }}>
+                    <tr key={p.id} style={{ background: rowBg }}>
                       {/* Date */}
                       <td style={{ ...cell, whiteSpace: "nowrap", color: FG_DIM, minWidth: 90 }}>
                         {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
@@ -2382,9 +2381,8 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                       <td style={{ ...cell, textAlign: "center", whiteSpace: "nowrap" }}>
                         {isRefunded          && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>REFUNDED</span>}
                         {isPartiallyRefunded && <span style={{ fontSize: 9, fontWeight: 700, color: "#B45309", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>PARTIAL REFUND</span>}
-                        {isCancelled         && <span style={{ fontSize: 9, fontWeight: 700, color: "#6B7280", background: "#F3F4F6", padding: "2px 6px", borderRadius: 3 }}>CANCELLED</span>}
                         {isDisputed          && <span style={{ fontSize: 9, fontWeight: 700, color: "#EF4444", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>DISPUTED</span>}
-                        {!isRefunded && !isPartiallyRefunded && !isCancelled && !isDisputed && (
+                        {!isRefunded && !isPartiallyRefunded && !isDisputed && (
                           <span style={{ fontSize: 9, color: "#2D7A4A", fontWeight: 600 }}>PAID</span>
                         )}
                       </td>

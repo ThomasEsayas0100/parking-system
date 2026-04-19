@@ -36,9 +36,8 @@ enum PaymentType {
 enum PaymentStatus {
   PENDING
   COMPLETED
-  PARTIALLY_REFUNDED // reserved for future refund API — nothing writes this today
+  PARTIALLY_REFUNDED
   REFUNDED
-  CANCELLED // legacy: pre-Stripe admin-cancel path; new code does not write this
   VOIDED
   DISPUTED
 }
