@@ -7,14 +7,14 @@ import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
-import { refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
+import { getStripe, refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
 
 // ---------------------------------------------------------------------------
 // PUT: edit a session (extend time, change status)
 // ---------------------------------------------------------------------------
 const SessionEditBody = z.object({
   sessionId: z.string().min(1),
-  action: z.enum(["extend", "cancel", "close", "adjust"]),
+  action: z.enum(["extend", "cancel", "close", "adjust", "cancel-subscription"]),
   // For extend: how many hours to add
   hours: z.number().int().min(1).max(720).optional(),
   // For cancel/close: reason required
@@ -24,6 +24,8 @@ const SessionEditBody = z.object({
   // For adjust: new effective end time (ISO string) and refund amount in dollars
   effectiveEnd: z.string().optional(),
   refundAmount: z.number().min(0).max(100_000).optional(),
+  // For cancel-subscription: immediately=true cancels now, false=cancel at period end
+  cancelImmediately: z.boolean().optional(),
 });
 
 export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
@@ -226,6 +228,36 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
     });
 
     return json({ success: true, action: "adjusted", refundsIssued });
+  }
+
+  if (action === "cancel-subscription") {
+    if (!stripeConfigured()) {
+      return json({ error: "Stripe not configured" }, { status: 400 });
+    }
+    const monthlyPayment = await prisma.payment.findFirst({
+      where: { sessionId, stripeSubscriptionId: { not: null } },
+      select: { stripeSubscriptionId: true },
+    });
+    const subscriptionId = monthlyPayment?.stripeSubscriptionId;
+    if (!subscriptionId) {
+      return json({ error: "No active subscription found for this session" }, { status: 400 });
+    }
+    const stripe = getStripe();
+    const immediately = body.cancelImmediately ?? false;
+    if (immediately) {
+      await stripe.subscriptions.cancel(subscriptionId);
+      // customer.subscription.deleted webhook will clamp expectedEnd + set DELINQUENT
+    } else {
+      await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+      // Access continues through expectedEnd; no webhook fires until the period ends
+    }
+    await audit({
+      action: "SUBSCRIPTION_CANCELED",
+      sessionId,
+      driverId: session.driverId,
+      details: `Admin canceled subscription ${subscriptionId} ${immediately ? "immediately" : "at period end"}.`,
+    });
+    return json({ success: true, subscriptionId, immediately });
   }
 
   return json({ error: "Unknown action" }, { status: 400 });

@@ -14,6 +14,7 @@ type SessionRow = {
   endedAt: string | null;
   expectedEnd: string;
   status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  billingStatus: "CURRENT" | "PAYMENT_FAILED" | "DELINQUENT";
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: {
     id: string;
@@ -30,6 +31,7 @@ type SessionRow = {
     hours: number | null;
     createdAt: string;
     stripePaymentIntentId?: string | null;
+    stripeSubscriptionId?: string | null;
     refundedAmount?: number;
     status?: string;
   }[];
@@ -42,7 +44,7 @@ type Props = {
   onSuccess: () => void;
 };
 
-type Tab = "adjust" | "refund";
+type Tab = "adjust" | "refund" | "subscription";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -456,6 +458,150 @@ function AdjustTab({
   );
 }
 
+// ─── Tab: Subscription ────────────────────────────────────────────────────────
+
+const BILLING_BADGE: Record<string, { color: string; bg: string; label: string } | undefined> = {
+  CURRENT:        undefined,
+  PAYMENT_FAILED: { color: "#92400E", bg: "#FEF3C7", label: "Payment Failed" },
+  DELINQUENT:     { color: "#7F1D1D", bg: "#FEE2E2", label: "Delinquent" },
+};
+
+function SubscriptionTab({
+  session,
+  onCancel,
+  loading,
+}: {
+  session: SessionRow;
+  onCancel: (immediately: boolean) => void;
+  loading: boolean;
+}) {
+  const [confirmImmediate, setConfirmImmediate] = useState(false);
+
+  const monthlyPayment = session.payments.find((p) => p.type === "MONTHLY_CHECKIN");
+  const subscriptionId = monthlyPayment?.stripeSubscriptionId;
+  const nextRenewal = new Date(session.expectedEnd);
+  const bs = BILLING_BADGE[session.billingStatus ?? "CURRENT"];
+  const isTerminal = session.billingStatus === "DELINQUENT" || session.status === "COMPLETED";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Billing status */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 13, color: MUTED }}>Billing status</span>
+        {bs ? (
+          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 4, background: bs.bg, color: bs.color }}>
+            {bs.label}
+          </span>
+        ) : (
+          <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 4, background: "#DCFCE7", color: "#166534" }}>
+            Current
+          </span>
+        )}
+      </div>
+
+      {/* Next renewal / access through */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 13, color: MUTED }}>
+          {isTerminal ? "Access ended" : "Access through / next renewal"}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: FG }}>{fmtDateTime(nextRenewal)}</span>
+      </div>
+
+      {/* Stripe deep-link */}
+      {subscriptionId && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 13, color: MUTED }}>Stripe subscription</span>
+          <a
+            href={`https://dashboard.stripe.com/test/subscriptions/${subscriptionId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: 13, color: ACCENT, textDecoration: "none", fontWeight: 500 }}
+          >
+            {subscriptionId.slice(0, 18)}… ↗
+          </a>
+        </div>
+      )}
+
+      {/* Cancel actions — only when subscription is still active */}
+      {!isTerminal && subscriptionId && (
+        <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 20, marginTop: 4 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: FG, marginBottom: 14 }}>Cancel subscription</div>
+
+          {!confirmImmediate ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button
+                onClick={() => onCancel(false)}
+                disabled={loading}
+                style={{
+                  padding: "12px 16px", borderRadius: 8, border: `1px solid ${BORDER}`,
+                  background: "transparent", color: FG, fontSize: 13, cursor: loading ? "not-allowed" : "pointer",
+                  textAlign: "left",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>Cancel at period end</div>
+                <div style={{ fontSize: 11, color: MUTED }}>
+                  Driver keeps access until {fmtDateTime(nextRenewal)}. No future charges.
+                </div>
+              </button>
+              <button
+                onClick={() => setConfirmImmediate(true)}
+                disabled={loading}
+                style={{
+                  padding: "12px 16px", borderRadius: 8, border: `1px solid ${DANGER}`,
+                  background: "transparent", color: DANGER, fontSize: 13, cursor: loading ? "not-allowed" : "pointer",
+                  textAlign: "left",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>Cancel immediately</div>
+                <div style={{ fontSize: 11, color: MUTED }}>
+                  Access ends now. Cron will flag as overstay if driver is still on property.
+                </div>
+              </button>
+            </div>
+          ) : (
+            <div style={{ background: "#FEF2F2", border: `1px solid ${DANGER}`, borderRadius: 8, padding: "16px" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#991B1B", marginBottom: 8 }}>
+                Confirm immediate cancellation
+              </div>
+              <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 16 }}>
+                This ends the driver&apos;s access right now. If they are on property, the session will become an overstay on the next cron run.
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  onClick={() => setConfirmImmediate(false)}
+                  style={{
+                    flex: 1, padding: "9px 0", borderRadius: 6, border: `1px solid ${BORDER}`,
+                    background: "transparent", color: FG, fontSize: 13, cursor: "pointer",
+                  }}
+                >
+                  Go back
+                </button>
+                <button
+                  onClick={() => { setConfirmImmediate(false); onCancel(true); }}
+                  disabled={loading}
+                  style={{
+                    flex: 1, padding: "9px 0", borderRadius: 6, border: "none",
+                    background: DANGER, color: "#fff", fontSize: 13, fontWeight: 600,
+                    cursor: loading ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {loading ? "Canceling…" : "Yes, cancel now"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isTerminal && (
+        <div style={{ fontSize: 12, color: MUTED, textAlign: "center", paddingTop: 8 }}>
+          This subscription has ended.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Tab: Refund by $ ─────────────────────────────────────────────────────────
 
 function RefundTab({
@@ -596,9 +742,33 @@ export default function ManageSessionModal({ session, settings, onClose, onSucce
     }
   }
 
+  const isMonthly = hasMonthly(session.payments);
+
+  async function callCancelSubscription(immediately: boolean) {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/admin/sessions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id, action: "cancel-subscription", cancelImmediately: immediately }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Request failed");
+      }
+      onSuccess();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+      setLoading(false);
+    }
+  }
+
   const TABS: { key: Tab; label: string }[] = [
     { key: "adjust", label: "Adjust & Refund" },
     { key: "refund", label: "Refund by $" },
+    ...(isMonthly ? [{ key: "subscription" as Tab, label: "Subscription" }] : []),
   ];
 
   return (
@@ -682,6 +852,14 @@ export default function ManageSessionModal({ session, settings, onClose, onSucce
             <RefundTab
               session={session}
               onSubmit={(refund, shouldVoid) => callAdjust(shouldVoid ? new Date() : undefined, refund)}
+              loading={loading}
+            />
+          )}
+
+          {tab === "subscription" && (
+            <SubscriptionTab
+              session={session}
+              onCancel={callCancelSubscription}
               loading={loading}
             />
           )}

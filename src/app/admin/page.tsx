@@ -29,7 +29,7 @@ type SessionRow = {
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
   spot: { id: string; label: string; type: "BOBTAIL" | "TRUCK_TRAILER" };
-  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: string; stripePaymentIntentId?: string | null; refundedAmount: number; status?: string; refunds?: { id: string; amount: number; stripeRefundId: string; qbRefundReceiptId: string | null; createdAt: string }[] }[];
+  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: string; stripePaymentIntentId?: string | null; stripeSubscriptionId?: string | null; refundedAmount: number; status?: string; refunds?: { id: string; amount: number; stripeRefundId: string; qbRefundReceiptId: string | null; createdAt: string }[] }[];
 };
 
 type SessionsResponse = {
