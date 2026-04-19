@@ -196,26 +196,37 @@ export async function findOrCreateCustomer(opts: {
 // ---------------------------------------------------------------------------
 
 let cachedServiceItemId: string | null = null;
-let cachedDepositAccountId: string | null | undefined = undefined; // undefined = not yet fetched; null = none found
+let cachedDepositAccountId: string | undefined = undefined;
 
 /**
- * Returns the QB Account ID for the first Bank-type account in the company
- * file (e.g. the account that receives Stripe deposits). Used as
- * DepositToAccountRef on both Sales Receipts and Refund Receipts so QB's
- * bank reconciliation can see and match these transactions.
- *
- * Falls back to undefined (QB default = Undeposited Funds) if no Bank
- * account is found — not ideal, but better than crashing.
+ * Returns the QB Account ID to use as DepositToAccountRef on Sales Receipts
+ * and Refund Receipts. Tries Bank accounts first, then falls back to
+ * Undeposited Funds (Other Current Asset) which QB sandbox always has.
+ * Throws if nothing is found so the caller gets a clear error instead of a
+ * silent "required parameter missing" rejection from QB.
  */
-async function getDepositAccountId(): Promise<string | undefined> {
-  if (cachedDepositAccountId !== undefined) return cachedDepositAccountId ?? undefined;
+async function getDepositAccountId(): Promise<string> {
+  if (cachedDepositAccountId !== undefined) return cachedDepositAccountId;
 
-  const res = await qbFetch<{ QueryResponse: { Account?: Array<{ Id: string; Name: string }> } }>(
+  // Try bank accounts (real company setup).
+  const bankRes = await qbFetch<{ QueryResponse: { Account?: Array<{ Id: string; Name: string }> } }>(
     `/query?query=${encodeURIComponent("SELECT Id, Name FROM Account WHERE AccountType = 'Bank' MAXRESULTS 1")}`,
   );
+  const bankId = bankRes.QueryResponse.Account?.[0]?.Id;
+  if (bankId) { cachedDepositAccountId = bankId; return bankId; }
 
-  cachedDepositAccountId = res.QueryResponse.Account?.[0]?.Id ?? null;
-  return cachedDepositAccountId ?? undefined;
+  // Fall back to Undeposited Funds / Other Current Asset (QB sandbox default).
+  const ufRes = await qbFetch<{ QueryResponse: { Account?: Array<{ Id: string; Name: string }> } }>(
+    `/query?query=${encodeURIComponent("SELECT Id, Name FROM Account WHERE AccountType = 'Other Current Asset' MAXRESULTS 5")}`,
+  );
+  const ufAccount = ufRes.QueryResponse.Account?.find(
+    (a) => a.Name.toLowerCase().includes("undeposited") || a.Name.toLowerCase().includes("funds"),
+  ) ?? ufRes.QueryResponse.Account?.[0];
+  if (ufAccount) { cachedDepositAccountId = ufAccount.Id; return ufAccount.Id; }
+
+  throw new Error(
+    "No Bank or Undeposited Funds account found in QuickBooks. Create a bank account before writing receipts.",
+  );
 }
 
 /**
@@ -296,7 +307,7 @@ export async function writeSalesReceipt(args: {
       method: "POST",
       body: JSON.stringify({
         CustomerRef: { value: args.customerId },
-        ...(depositAccountId ? { DepositToAccountRef: { value: depositAccountId } } : {}),
+        DepositToAccountRef: { value: depositAccountId },
         Line: [
           {
             Amount: args.amount,
@@ -346,7 +357,7 @@ export async function writeRefundReceipt(args: {
         // DepositToAccountRef here means the bank account FROM which the
         // refund is paid. Must match the original SalesReceipt's account so
         // QB bank reconciliation can match both sides.
-        ...(depositAccountId ? { DepositToAccountRef: { value: depositAccountId } } : {}),
+        DepositToAccountRef: { value: depositAccountId },
         Line: [
           {
             Amount: args.amount,
