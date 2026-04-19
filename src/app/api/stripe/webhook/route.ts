@@ -730,11 +730,26 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
   });
   if (!firstPayment) return;
 
+  const session = firstPayment.session;
+  const now = new Date();
+
+  // Clamp session end to now for immediate mid-period cancellations.
+  // For period-end cancellations, expectedEnd was already set correctly by the
+  // last invoice.payment_succeeded renewal webhook, so this is a no-op.
+  const newEnd = session.expectedEnd < now ? session.expectedEnd : now;
+
+  if (newEnd < session.expectedEnd) {
+    await prisma.session.update({
+      where: { id: session.id },
+      data: { expectedEnd: newEnd },
+    });
+  }
+
   await audit({
     action: "SUBSCRIPTION_CANCELED",
-    sessionId: firstPayment.session.id,
-    driverId: firstPayment.session.driverId,
-    details: `Subscription ${sub.id} canceled — session ends at ${firstPayment.session.expectedEnd.toISOString()}`,
+    sessionId: session.id,
+    driverId: session.driverId,
+    details: `Subscription ${sub.id} canceled — access ends ${newEnd.toISOString()}. If driver is on property, cron will detect overstay on next run.`,
   });
 }
 
