@@ -222,7 +222,15 @@ async function getDepositAccountId(): Promise<string> {
   const ufAccount = ufRes.QueryResponse.Account?.find(
     (a) => a.Name.toLowerCase().includes("undeposited") || a.Name.toLowerCase().includes("funds"),
   ) ?? ufRes.QueryResponse.Account?.[0];
-  if (ufAccount) { cachedDepositAccountId = ufAccount.Id; return ufAccount.Id; }
+  if (ufAccount) {
+    console.warn(
+      `[QuickBooks] No Bank account found — using "${ufAccount.Name}" as the deposit account for receipts.\n` +
+      `  To fix: in QuickBooks, go to Chart of Accounts and add a Bank account (e.g. "Checking").\n` +
+      `  Then disconnect and reconnect QuickBooks in the admin Settings tab so the new account is picked up.`
+    );
+    cachedDepositAccountId = ufAccount.Id;
+    return ufAccount.Id;
+  }
 
   throw new Error(
     "No Bank or Undeposited Funds account found in QuickBooks. Create a bank account before writing receipts.",
