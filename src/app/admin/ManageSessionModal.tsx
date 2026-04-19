@@ -325,20 +325,40 @@ function AdjustTab({
   const startedAt = new Date(session.startedAt);
   const originalEnd = new Date(session.expectedEnd);
   const originalMins = (originalEnd.getTime() - startedAt.getTime()) / 60_000;
+  const snapNow = snapToQuarter(new Date());
 
-  const defaultEnd = session.endedAt ? new Date(session.endedAt) : originalEnd;
+  // If the session's expected end has already passed, default to "now" so the
+  // admin's first option is covering the time already used (extension), not a refund.
+  const isCurrentlyOverdue = snapNow > originalEnd;
+  const defaultEnd = isCurrentlyOverdue
+    ? snapNow
+    : (session.endedAt ? new Date(session.endedAt) : originalEnd);
   const [newEnd, setNewEnd] = useState<Date>(snapToQuarter(defaultEnd));
 
   const newMins = (newEnd.getTime() - startedAt.getTime()) / 60_000;
-  const isLonger = newEnd > originalEnd;
+  const isExtension = newEnd > originalEnd;   // new end is past the original
+  const isFuture = newEnd > snapNow;           // new end is past right now (not allowed)
   const paid = totalPaid(session.payments);
   const monthly = hasMonthly(session.payments);
   const recomputedCharge = snapCost(settings, session.vehicle.type, newMins);
-  const refund = Math.max(0, Math.round((paid - recomputedCharge) * 100) / 100);
-  const canSubmit = newEnd > startedAt && !isLonger && !loading;
+  // Extensions never trigger a refund; reductions do.
+  const refund = isExtension ? 0 : Math.max(0, Math.round((paid - recomputedCharge) * 100) / 100);
+  const canSubmit = newEnd > startedAt && !isFuture && !loading;
 
   return (
     <div>
+      {/* Extension banner — shown when the default is to extend to cover time used */}
+      {isCurrentlyOverdue && !isFuture && (
+        <div style={{
+          fontSize: 12, color: "#065F46", background: "#ECFDF5",
+          border: "1px solid #6EE7B7", borderRadius: 6, padding: "10px 14px", marginBottom: 16,
+        }}>
+          <strong>Session expired {fmtDuration((snapNow.getTime() - originalEnd.getTime()) / 60_000)} ago.</strong>
+          {" "}The end time below is set to right now — applying it will cover the extra time at no additional charge.
+          To refund instead, set the end time earlier than the original.
+        </div>
+      )}
+
       {monthly && (
         <div style={{
           fontSize: 11, color: "#92400E", background: "#FEF3C7",
@@ -365,22 +385,22 @@ function AdjustTab({
       <SessionRow_ label="Original" start={startedAt} end={originalEnd} durationMins={originalMins} />
       <div style={{ borderBottom: `1px solid ${BORDER}`, margin: "2px 0" }} />
       <SessionRow_
-        label="Adjusted"
+        label={isExtension ? "Extended" : "Adjusted"}
         start={startedAt}
         durationMins={newMins}
-        endPicker={<DateTimePicker value={newEnd} onChange={setNewEnd} invalid={isLonger} />}
+        endPicker={<DateTimePicker value={newEnd} onChange={setNewEnd} invalid={isFuture} />}
       />
 
-      {isLonger && (
+      {isFuture && (
         <div style={{
           fontSize: 11, color: "#991B1B", background: "#FEE2E2",
           border: "1px solid #DC2626", borderRadius: 6, padding: "8px 12px", marginTop: 12,
         }}>
-          New end is later than original — use <strong>Extend Time</strong> on the driver's session instead.
+          End time cannot be set in the future. To charge the driver for extra time, use <strong>Extend Time</strong> on the session instead.
         </div>
       )}
 
-      {!isLonger && (
+      {!isFuture && (
         <div style={{
           background: INPUT_BG, borderRadius: 8, padding: "14px 16px", fontSize: 13, marginTop: 20,
         }}>
@@ -388,16 +408,18 @@ function AdjustTab({
             <span style={{ color: MUTED }}>Original charge (paid)</span>
             <span style={{ fontWeight: 600, color: FG }}>${paid.toFixed(2)}</span>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-            <span style={{ color: MUTED }}>Recomputed charge</span>
-            <span style={{ fontWeight: 600, color: FG }}>${recomputedCharge.toFixed(2)}</span>
-          </div>
+          {!isExtension && (
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+              <span style={{ color: MUTED }}>Recomputed charge</span>
+              <span style={{ fontWeight: 600, color: FG }}>${recomputedCharge.toFixed(2)}</span>
+            </div>
+          )}
           <div style={{
             display: "flex", justifyContent: "space-between",
             paddingTop: 6, borderTop: `1px solid ${BORDER}`,
           }}>
-            <span style={{ fontWeight: 600, color: refund > 0 ? DANGER : MUTED }}>
-              {refund > 0 ? "Refund" : "No refund"}
+            <span style={{ fontWeight: 600, color: isExtension ? "#065F46" : refund > 0 ? DANGER : MUTED }}>
+              {isExtension ? "No refund — extension only" : refund > 0 ? "Refund" : "No refund"}
             </span>
             <span style={{ fontWeight: 700, color: refund > 0 ? DANGER : MUTED }}>
               {refund > 0 ? `$${refund.toFixed(2)}` : "—"}
@@ -406,7 +428,7 @@ function AdjustTab({
         </div>
       )}
 
-      {session.status === "OVERSTAY" && (
+      {session.status === "OVERSTAY" && !isCurrentlyOverdue && (
         <p style={{ fontSize: 11, color: MUTED, marginTop: 10 }}>
           Looking for overstay payment?{" "}
           <a href="#payments" style={{ color: ACCENT }}>Go to Payments tab ↗</a>
@@ -424,7 +446,11 @@ function AdjustTab({
           marginTop: 20,
         }}
       >
-        {loading ? "Saving…" : refund > 0 ? `Apply & Refund $${refund.toFixed(2)}` : "Apply New End Time"}
+        {loading
+          ? "Saving…"
+          : refund > 0
+            ? `Apply & Refund $${refund.toFixed(2)}`
+            : "Apply New End Time"}
       </button>
     </div>
   );
