@@ -801,8 +801,15 @@ export default function AdminDashboard() {
 
                           {/* Driver + vehicle */}
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {s.driver.name}
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {s.driver.name}
+                              </div>
+                              {s.payments.some(p => p.type === "MONTHLY_CHECKIN") && (
+                                <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", padding: "2px 6px", borderRadius: 4, background: "#EDE9FE", color: "#5B21B6", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                  Monthly
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: 12, color: FG_DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {mobile ? (s.vehicle.licensePlate || vLabel) : vLabel}
@@ -876,12 +883,32 @@ export default function AdminDashboard() {
                             </DetailCol>
 
                             {/* Timing */}
-                            <DetailCol title="Timing">
-                              <DetailRow label="Started" value={fmtDate(s.startedAt)} />
-                              <DetailRow label="Expected" value={fmtDate(s.expectedEnd)} />
-                              <DetailRow label="Ended" value={fmtDate(s.endedAt)} />
-                              <DetailRow label="Duration" value={calcDuration(s.startedAt, s.endedAt)} />
-                            </DetailCol>
+                            {(() => {
+                              const isMonthlySession = s.payments.some(p => p.type === "MONTHLY_CHECKIN");
+                              const billingBadge = BILLING_STATUS_STYLE[s.billingStatus];
+                              return (
+                                <DetailCol title="Timing">
+                                  <DetailRow label="Started" value={fmtDate(s.startedAt)} />
+                                  <DetailRow label={isMonthlySession ? "Renews on" : "Expected"} value={fmtDate(s.expectedEnd)} />
+                                  <DetailRow label="Ended" value={fmtDate(s.endedAt)} />
+                                  <DetailRow label="Duration" value={calcDuration(s.startedAt, s.endedAt)} />
+                                  {isMonthlySession && (
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                                      <span style={{ fontSize: 11, color: FG_MUTED }}>Billing</span>
+                                      {billingBadge ? (
+                                        <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "2px 8px", borderRadius: 4, background: billingBadge.bg, color: billingBadge.color }}>
+                                          {billingBadge.label}
+                                        </span>
+                                      ) : (
+                                        <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "2px 8px", borderRadius: 4, background: "#DCFCE7", color: "#166534" }}>
+                                          Current
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </DetailCol>
+                              );
+                            })()}
 
                             {/* Payments */}
                             <DetailCol title="Payments">
