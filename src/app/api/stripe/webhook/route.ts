@@ -66,11 +66,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, replayed: true });
   }
 
-  await audit({
-    action: "STRIPE_WEBHOOK_RECEIVED",
-    details: `${event.type} event ${event.id}`,
-  });
-
   try {
     switch (event.type) {
       case "checkout.session.completed":
@@ -150,23 +145,35 @@ type CheckoutMetadata = {
  * is already paid when this fires; we treat it as MONTHLY_CHECKIN and
  * subsequent renewals come in via `invoice.payment_succeeded`.
  */
-async function handleCheckoutSessionCompleted(event: Stripe.Event) {
-  const session = event.data.object as Stripe.Checkout.Session;
+/**
+ * Process a completed Stripe Checkout Session — called from both the webhook
+ * handler and the /api/payments/lookup fallback (when the webhook hasn't
+ * arrived yet). Idempotent: no-ops if the Payment row already exists for
+ * this checkout session.
+ */
+export async function processCheckoutSession(
+  session: Stripe.Checkout.Session,
+  eventId: string,
+): Promise<void> {
+  // Idempotency: if the Payment row already exists, skip all side effects.
+  const existing = await prisma.payment.findFirst({
+    where: { stripeCheckoutSessionId: session.id },
+  });
+  if (existing) return;
+
   const metadata = (session.metadata ?? {}) as CheckoutMetadata;
 
   if (!metadata.driverId) {
-    throw new Error(`checkout.session.completed missing driverId metadata (cs=${session.id})`);
+    throw new Error(`checkout.session missing driverId metadata (cs=${session.id})`);
   }
 
   const purpose = metadata.sessionPurpose;
   if (!purpose) {
-    throw new Error(`checkout.session.completed missing sessionPurpose metadata (cs=${session.id})`);
+    throw new Error(`checkout.session missing sessionPurpose metadata (cs=${session.id})`);
   }
 
   const stripe = getStripe();
 
-  // Resolve the PaymentIntent (for payment mode) or the first invoice's PI
-  // (for subscription mode) to get a canonical Charge ID.
   let paymentIntentId: string | null = null;
   let chargeId: string | null = null;
   let subscriptionId: string | null = null;
@@ -189,9 +196,6 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event) {
       const latestInvoice = sub.latest_invoice as Stripe.Invoice | null;
       invoiceId = latestInvoice?.id ?? null;
       if (latestInvoice) {
-        // `payment_intent` was removed from the base Stripe.Invoice type in
-        // SDK v20 (API version 2025-08-27+). It still arrives on the runtime
-        // payload when available; cast to read it.
         const legacyInvoice = latestInvoice as Stripe.Invoice & {
           payment_intent?: string | Stripe.PaymentIntent | null;
         };
@@ -206,68 +210,38 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event) {
     }
   }
 
-  // Amount comes from Checkout session for mode=payment, or from the invoice
-  // for mode=subscription. Always in cents.
   const amountCents = session.amount_total ?? 0;
   const amountDollars = amountCents / 100;
 
-  // Dispatch per purpose. Each branch creates/updates Session + Payment
-  // atomically. QB Sales Receipt is written after the DB commits.
   switch (purpose) {
-    case "CHECKIN": {
-      await handleCheckin({
-        metadata,
-        checkoutSessionId: session.id,
-        paymentIntentId,
-        chargeId,
-        amount: amountDollars,
-      });
+    case "CHECKIN":
+      await handleCheckin({ metadata, checkoutSessionId: session.id, paymentIntentId, chargeId, amount: amountDollars });
       break;
-    }
-    case "MONTHLY_CHECKIN": {
-      await handleMonthlyCheckin({
-        metadata,
-        checkoutSessionId: session.id,
-        paymentIntentId,
-        chargeId,
-        subscriptionId,
-        invoiceId,
-        amount: amountDollars,
-      });
+    case "MONTHLY_CHECKIN":
+      await handleMonthlyCheckin({ metadata, checkoutSessionId: session.id, paymentIntentId, chargeId, subscriptionId, invoiceId, amount: amountDollars });
       break;
-    }
-    case "EXTENSION": {
-      await handleExtension({
-        metadata,
-        checkoutSessionId: session.id,
-        paymentIntentId,
-        chargeId,
-        amount: amountDollars,
-      });
+    case "EXTENSION":
+      await handleExtension({ metadata, checkoutSessionId: session.id, paymentIntentId, chargeId, amount: amountDollars });
       break;
-    }
-    case "OVERSTAY": {
-      await handleOverstay({
-        metadata,
-        checkoutSessionId: session.id,
-        paymentIntentId,
-        chargeId,
-        amount: amountDollars,
-      });
+    case "OVERSTAY":
+      await handleOverstay({ metadata, checkoutSessionId: session.id, paymentIntentId, chargeId, amount: amountDollars });
       break;
-    }
   }
 
-  // QB Sales Receipt — best effort, doesn't block the webhook response.
   if (chargeId) {
     await writeSalesReceiptSafe({
       driverId: metadata.driverId,
       amount: amountDollars,
       description: salesReceiptDescription(purpose, metadata),
-      stripeEventId: event.id,
+      stripeEventId: eventId,
       stripeChargeId: chargeId,
     });
   }
+}
+
+async function handleCheckoutSessionCompleted(event: Stripe.Event) {
+  const session = event.data.object as Stripe.Checkout.Session;
+  await processCheckoutSession(session, event.id);
 }
 
 async function handleCheckin(args: {
@@ -645,23 +619,36 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
   });
 }
 
-async function handleChargeRefunded(event: Stripe.Event) {
-  const charge = event.data.object as Stripe.Charge;
-
-  const payment = await prisma.payment.findFirst({
+/**
+ * Process a Stripe Charge refund — called from both the `charge.refunded`
+ * webhook and the admin refund endpoint (fallback when webhook is delayed).
+ * Idempotent: `PaymentRefund.upsert` on `stripeRefundId` is safe to call
+ * twice; the Payment status update is a no-op if already at REFUNDED.
+ */
+export async function processChargeRefund(charge: Stripe.Charge, eventId: string): Promise<void> {
+  let payment = await prisma.payment.findFirst({
     where: { stripeChargeId: charge.id },
     include: { session: { include: { driver: true } } },
   });
+  // Fallback: if stripeChargeId wasn't written (missed checkout webhook), try PI.
+  if (!payment && charge.payment_intent) {
+    const piId = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent.id;
+    payment = await prisma.payment.findFirst({
+      where: { stripePaymentIntentId: piId },
+      include: { session: { include: { driver: true } } },
+    });
+    if (payment) {
+      await prisma.payment.update({ where: { id: payment.id }, data: { stripeChargeId: charge.id } });
+    }
+  }
   if (!payment) {
-    console.warn(`[stripe-webhook] charge.refunded for unknown charge ${charge.id}`);
+    console.warn(`[stripe] processChargeRefund: unknown charge ${charge.id} (PI: ${charge.payment_intent})`);
     return;
   }
 
-  // A charge can be partially refunded multiple times. Pull all refunds,
-  // sum amounts. The most recent refund ID becomes the payment's stripeRefundId.
   const totalRefundedCents = charge.amount_refunded;
   const totalRefunded = totalRefundedCents / 100;
-  const latestRefundId = (charge.refunds?.data?.[0]?.id) ?? null;
+  const allRefunds = charge.refunds?.data ?? [];
 
   const newStatus = totalRefundedCents >= charge.amount
     ? "REFUNDED"
@@ -671,31 +658,44 @@ async function handleChargeRefunded(event: Stripe.Event) {
 
   await prisma.payment.update({
     where: { id: payment.id },
-    data: {
-      refundedAmount: totalRefunded,
-      refundedAt: new Date(),
-      stripeRefundId: latestRefundId,
-      status: newStatus,
-    },
+    data: { refundedAmount: totalRefunded, refundedAt: new Date(), status: newStatus },
   });
+
+  // Upsert a PaymentRefund row for every refund on this charge so we never
+  // miss one regardless of how many times this function is called.
+  for (const r of allRefunds) {
+    await prisma.paymentRefund.upsert({
+      where: { stripeRefundId: r.id },
+      update: {},
+      create: { paymentId: payment.id, amount: r.amount / 100, stripeRefundId: r.id },
+    });
+  }
 
   await audit({
     action: "REFUND_ISSUED",
     sessionId: payment.sessionId,
     driverId: payment.session.driverId,
-    details: `Refunded $${totalRefunded.toFixed(2)} on charge ${charge.id}`,
+    details: `Charge ${charge.id} — total refunded: $${totalRefunded.toFixed(2)} across ${allRefunds.length} refund(s)`,
   });
 
-  // QB Refund Receipt — best effort.
-  if (latestRefundId) {
+  // Write a QB Refund Receipt for each refund that doesn't have one yet.
+  for (const r of allRefunds) {
+    const existing = await prisma.paymentRefund.findUnique({ where: { stripeRefundId: r.id } });
+    if (existing?.qbRefundReceiptId) continue; // already written
     await writeRefundReceiptSafe({
       driverId: payment.session.driverId,
-      amount: totalRefunded,
+      amount: r.amount / 100,
       description: `Refund — charge ${charge.id}`,
-      stripeEventId: event.id,
-      stripeRefundId: latestRefundId,
+      stripeEventId: eventId,
+      stripeRefundId: r.id,
+      qbSalesReceiptId: payment.qbSalesReceiptId ?? undefined,
     });
   }
+}
+
+async function handleChargeRefunded(event: Stripe.Event) {
+  const charge = event.data.object as Stripe.Charge;
+  await processChargeRefund(charge, event.id);
 }
 
 async function handleChargeDisputed(event: Stripe.Event) {
@@ -775,15 +775,22 @@ async function writeSalesReceiptSafe(args: {
       stripeChargeId: args.stripeChargeId,
     });
 
+    // Store the QB receipt ID so the admin can deep-link to it.
+    await prisma.payment.updateMany({
+      where: { stripeChargeId: args.stripeChargeId },
+      data: { qbSalesReceiptId: receipt.Id },
+    });
+
     await audit({
       action: "SALES_RECEIPT_WRITTEN",
       driverId: args.driverId,
-      details: `QB Sales Receipt ${receipt.DocNumber} for $${args.amount.toFixed(2)} (charge ${args.stripeChargeId})`,
+      details: `QB Sales Receipt ${receipt.DocNumber} (id ${receipt.Id}) for $${args.amount.toFixed(2)} (charge ${args.stripeChargeId})`,
     });
   } catch (err) {
     const message = err instanceof QBAuthError
       ? `QB not connected: ${err.message}`
       : err instanceof Error ? err.message : "unknown error";
+    console.error("[QB] Sales Receipt write failed:", err);
     await audit({
       action: "SALES_RECEIPT_FAILED",
       driverId: args.driverId,
@@ -798,6 +805,7 @@ async function writeRefundReceiptSafe(args: {
   description: string;
   stripeEventId: string;
   stripeRefundId: string;
+  qbSalesReceiptId?: string;
 }) {
   try {
     const driver = await prisma.driver.findUnique({ where: { id: args.driverId } });
@@ -823,15 +831,24 @@ async function writeRefundReceiptSafe(args: {
       description: args.description,
       stripeEventId: args.stripeEventId,
       stripeRefundId: args.stripeRefundId,
+      linkedSalesReceiptId: args.qbSalesReceiptId,
     });
 
+    // Store the QB receipt ID on the PaymentRefund row for deep-linking.
+    await prisma.paymentRefund.updateMany({
+      where: { stripeRefundId: args.stripeRefundId },
+      data: { qbRefundReceiptId: receipt.Id },
+    });
+
+    const salesRef = args.qbSalesReceiptId ? ` for Sales Receipt ${args.qbSalesReceiptId}` : "";
     await audit({
-      action: "SALES_RECEIPT_WRITTEN",
+      action: "REFUND_ISSUED",
       driverId: args.driverId,
-      details: `QB Refund Receipt ${receipt.DocNumber} for $${args.amount.toFixed(2)} (refund ${args.stripeRefundId})`,
+      details: `QB Refund Receipt ${receipt.DocNumber} (id ${receipt.Id}) for $${args.amount.toFixed(2)} (refund ${args.stripeRefundId})${salesRef}`,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
+    console.error("[QB] Refund Receipt write failed:", err);
     await audit({
       action: "SALES_RECEIPT_FAILED",
       driverId: args.driverId,

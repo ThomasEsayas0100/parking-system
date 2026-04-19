@@ -7,19 +7,23 @@ import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
+import { refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
 
 // ---------------------------------------------------------------------------
 // PUT: edit a session (extend time, change status)
 // ---------------------------------------------------------------------------
 const SessionEditBody = z.object({
   sessionId: z.string().min(1),
-  action: z.enum(["extend", "cancel", "close"]),
+  action: z.enum(["extend", "cancel", "close", "adjust"]),
   // For extend: how many hours to add
   hours: z.number().int().min(1).max(720).optional(),
   // For cancel/close: reason required
   reason: z.string().min(1).max(500).optional(),
   // For close: backdate the session end to this time
   endedAt: z.string().optional(),
+  // For adjust: new effective end time (ISO string) and refund amount in dollars
+  effectiveEnd: z.string().optional(),
+  refundAmount: z.number().min(0).max(100_000).optional(),
 });
 
 export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
@@ -74,12 +78,12 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Session already completed" }, { status: 400 });
     }
 
-    // Void all pending/completed payments — cancelled sessions should not
-    // count toward revenue. QB-side charges are the manager's responsibility;
-    // we only update our own records here so dashboards stay accurate.
+    // Mark payments CANCELLED — session ended early by admin. The charge was
+    // collected; if a refund is owed the admin issues it via the Manage Session
+    // modal before or after cancelling.
     await prisma.payment.updateMany({
-      where: { sessionId, status: { notIn: ["VOIDED", "REFUNDED"] } },
-      data: { status: "VOIDED" },
+      where: { sessionId, status: { notIn: ["REFUNDED", "CANCELLED"] } },
+      data: { status: "CANCELLED" },
     });
 
     // Complete the session — spot is implicitly freed (no session referencing it = free)
@@ -143,6 +147,85 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
     });
 
     return json({ success: true, action: "closed", endedAt: closedAt.toISOString(), paymentsRemoved: deletedPayments.count });
+  }
+
+  if (action === "adjust") {
+    const { effectiveEnd, refundAmount } = body;
+
+    // --- 1. REFUNDS FIRST (atomicity: if refund throws, session is unchanged) ---
+    const refundsIssued: string[] = [];
+    if (refundAmount && refundAmount > 0.005) {
+      if (!stripeConfigured()) {
+        return json({ error: "Stripe is not configured — cannot issue refunds" }, { status: 409 });
+      }
+      const refundable = await prisma.payment.findMany({
+        where: {
+          sessionId,
+          type: { in: ["CHECKIN", "EXTENSION"] },
+          status: { in: ["COMPLETED", "PARTIALLY_REFUNDED"] },
+          stripePaymentIntentId: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      let remaining = Math.round(refundAmount * 100) / 100;
+      for (const p of refundable) {
+        if (remaining < 0.01) break;
+        const maxRefundable = Math.round((p.amount - p.refundedAmount) * 100) / 100;
+        if (maxRefundable < 0.01) continue;
+        const toRefund = Math.min(remaining, maxRefundable);
+        await refundPaymentIntent({
+          paymentIntentId: p.stripePaymentIntentId!,
+          amount: toRefund,
+          reason: "requested_by_customer",
+        });
+        refundsIssued.push(`${toRefund.toFixed(2)}`);
+        remaining = Math.round((remaining - toRefund) * 100) / 100;
+      }
+    }
+
+    // --- 2. SESSION UPDATE (only after all refunds succeed) ---
+    let newStatus = session.status;
+    let newEnd = session.expectedEnd;
+    let newEndedAt = session.endedAt;
+    if (effectiveEnd) {
+      newEnd = new Date(effectiveEnd);
+      if (newEnd < session.startedAt) {
+        return json({ error: "End time cannot be before session start" }, { status: 400 });
+      }
+      // Only complete the session if the new end is in the past.
+      // If it's still in the future, keep the session active with the updated expectedEnd.
+      if (newEnd <= new Date()) {
+        newStatus = "COMPLETED";
+        newEndedAt = newEnd;
+      } else {
+        newStatus = session.status === "OVERSTAY" ? "ACTIVE" : session.status;
+      }
+    }
+
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        expectedEnd: newEnd,
+        endedAt: newEndedAt,
+        status: newStatus,
+      },
+    });
+
+    // --- 3. AUDIT ---
+    const refundSummary = refundsIssued.length > 0
+      ? ` Refunds issued: $${refundsIssued.join(" + $")}.`
+      : "";
+    await audit({
+      action: "SPOT_FREED",
+      sessionId,
+      driverId: session.driverId,
+      vehicleId: session.vehicleId,
+      spotId: session.spotId,
+      details: `ADMIN adjusted session. New end: ${newEnd.toISOString()}.${refundSummary} Driver: ${session.driver.name}, Spot: ${session.spot.label}.`,
+    });
+
+    return json({ success: true, action: "adjusted", refundsIssued });
   }
 
   return json({ error: "Unknown action" }, { status: 400 });

@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
-import { refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
+import { refundPaymentIntent, stripeConfigured, getStripe } from "@/lib/stripe";
 import { log as audit } from "@/lib/audit";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { AdminRefundSchema } from "@/lib/schemas";
+import { processChargeRefund } from "@/app/api/stripe/webhook/route";
 
 /**
  * POST /api/admin/refund — admin-initiated Stripe refund.
@@ -54,13 +55,39 @@ export const POST = handler(
       reason: body.reason,
     });
 
-    // Audit now; the webhook will fire shortly and update the Payment row +
-    // write the QB Refund Receipt.
     await audit({
       action: "REFUND_ISSUED",
       sessionId: payment.sessionId,
       details: `ADMIN initiated refund ${refund.id} for $${(body.amount ?? payment.amount).toFixed(2)} on payment ${payment.id} (PI ${payment.stripePaymentIntentId})${body.reason ? ` — reason: ${body.reason}` : ""}`,
     });
+
+    // Process the refund synchronously so the UI reflects it immediately,
+    // even when the charge.refunded webhook hasn't arrived yet (e.g. local
+    // dev without Stripe CLI forwarding). The webhook handler is idempotent
+    // so a later delivery is a safe no-op.
+    try {
+      const stripe = getStripe();
+      let chargeId = payment.stripeChargeId;
+      if (!chargeId) {
+        // stripeChargeId is set by the checkout.session.completed webhook; if
+        // that webhook was missed, fall back to resolving via the PI.
+        const pi = await stripe.paymentIntents.retrieve(payment.stripePaymentIntentId, {
+          expand: ["latest_charge"],
+        });
+        chargeId = typeof pi.latest_charge === "string"
+          ? pi.latest_charge
+          : (pi.latest_charge as { id: string } | null)?.id ?? null;
+        if (chargeId) {
+          await prisma.payment.update({ where: { id: payment.id }, data: { stripeChargeId: chargeId } });
+        }
+      }
+      if (!chargeId) throw new Error("Could not resolve charge ID from PI");
+      const charge = await stripe.charges.retrieve(chargeId, { expand: ["refunds"] });
+      await processChargeRefund(charge, `admin_refund_${refund.id}`);
+    } catch (err) {
+      // Best-effort — webhook will catch up if this fails.
+      console.error("[admin/refund] synchronous processChargeRefund failed:", err);
+    }
 
     return json({
       refundId: refund.id,

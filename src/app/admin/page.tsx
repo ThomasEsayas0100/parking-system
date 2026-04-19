@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 
 import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail, ApiPaymentWithSession } from "@/types/domain";
 import { apiFetch, apiPost } from "@/lib/fetch";
@@ -10,6 +10,7 @@ import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 import PhoneInput, { digitsOnly } from "@/components/PhoneInput";
+import ManageSessionModal from "@/app/admin/ManageSessionModal";
 
 type Spot = ApiSpotWithSessions;
 type AuditEntry = ApiAuditEntry;
@@ -27,7 +28,7 @@ type SessionRow = {
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
   spot: { id: string; label: string; type: "BOBTAIL" | "TRUCK_TRAILER" };
-  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: string }[];
+  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: string; stripePaymentIntentId?: string | null; refundedAmount: number; status?: string; refunds?: { id: string; amount: number; stripeRefundId: string; qbRefundReceiptId: string | null; createdAt: string }[] }[];
 };
 
 type SessionsResponse = {
@@ -96,8 +97,8 @@ function calcDuration(start: string, end: string | null): string {
   return `${mins}m`;
 }
 
-function sumPayments(payments: { amount: number }[]): number {
-  return payments.reduce((s, p) => s + p.amount, 0);
+function sumPayments(payments: { amount: number; refundedAmount: number }[]): number {
+  return payments.reduce((s, p) => s + Math.max(0, p.amount - p.refundedAmount), 0);
 }
 
 /**
@@ -113,6 +114,7 @@ const QB_BASE = process.env.NODE_ENV !== "production"
 const qbLinks = {
   invoice: (id: string) => `${QB_BASE}/app/invoice?txnId=${id}`,
   payment: (id: string) => `${QB_BASE}/app/recvpayment?txnId=${id}`,
+  salesReceipt: (id: string) => `${QB_BASE}/app/salesreceipt?txnId=${id}`,
   customer: (id: string) => `${QB_BASE}/app/customerdetail?nameId=${id}`,
   refundReceipt: (id: string) => `${QB_BASE}/app/refundreceipt?txnId=${id}`,
   creditMemo: (customerId: string) => `${QB_BASE}/app/creditmemo/create?customerId=${customerId}`,
@@ -140,7 +142,6 @@ type PaymentRowRefs = {
   stripePaymentIntentId: string | null;
   stripeChargeId: string | null;
   stripeSubscriptionId: string | null;
-  stripeRefundId: string | null;
   legacyQbReference: string | null;
 };
 function isRealPayment(p: PaymentRowRefs): boolean {
@@ -150,10 +151,11 @@ function isRealPayment(p: PaymentRowRefs): boolean {
 }
 
 /** Canonical Stripe deep link for a payment row, if any Stripe IDs are set. */
-function stripeDashboardUrl(p: PaymentRowRefs): string | null {
-  if (p.stripePaymentIntentId) return stripeLinks.paymentIntent(p.stripePaymentIntentId);
-  if (p.stripeChargeId) return stripeLinks.charge(p.stripeChargeId);
-  if (p.stripeSubscriptionId) return stripeLinks.subscription(p.stripeSubscriptionId);
+function stripeDashboardUrl(p: PaymentRowRefs, testMode = false): string | null {
+  const base = testMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
+  if (p.stripePaymentIntentId) return `${base}/payments/${p.stripePaymentIntentId}`;
+  if (p.stripeChargeId) return `${base}/payments/${p.stripeChargeId}`;
+  if (p.stripeSubscriptionId) return `${base}/subscriptions/${p.stripeSubscriptionId}`;
   return null;
 }
 
@@ -237,8 +239,8 @@ export default function AdminDashboard() {
   const DRIVERS_LIMIT = 30;
 
   // ── Session actions state ──
-  const [sessionAction, setSessionAction] = useState<{ id: string; type: "extend" | "cancel" | "close" } | null>(null);
-  const [sessionActionHours, setSessionActionHours] = useState(4);
+  const [manageSession, setManageSession] = useState<SessionRow | null>(null);
+  const [sessionAction, setSessionAction] = useState<{ id: string; type: "cancel" | "close" } | null>(null);
   const [sessionActionReason, setSessionActionReason] = useState("");
   const [sessionActionEndedAt, setSessionActionEndedAt] = useState("");
   const [sessionActionLoading, setSessionActionLoading] = useState(false);
@@ -311,12 +313,27 @@ export default function AdminDashboard() {
     return p.toString();
   }, [sessSearch, sessStatus, sessOffset]);
 
+  const skipSessionSync = useRef(false);
+
   const loadSessions = useCallback(() => {
     setSessionsLoading(true);
     apiFetch<SessionsResponse>(`/api/sessions/history?${sessQueryStr}`)
-      .then((d) => setSessionsData(d))
+      .then((d) => {
+        setSessionsData(d);
+        if (skipSessionSync.current) { skipSessionSync.current = false; return; }
+        const ids = d.sessions.flatMap((s) => s.payments.map((p) => p.id));
+        if (!ids.length) return;
+        fetch("/api/admin/payments/sync-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paymentIds: ids }),
+        }).then((r) => r.json()).then((res) => {
+          if (res.synced > 0) { skipSessionSync.current = true; loadSessions(); }
+        }).catch(() => {/* silent */});
+      })
       .catch(() => setSessionsData(null))
       .finally(() => setSessionsLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessQueryStr]);
 
   const driversQueryStr = useMemo(() => {
@@ -426,6 +443,15 @@ export default function AdminDashboard() {
     const d = await res.json();
     if (res.ok) loadData();
     else alert(d.error || "Failed to clear data");
+  }
+
+  async function handleSandboxReset() {
+    if (!confirm("This will wipe ALL local DB history (drivers, vehicles, sessions, payments, audit log). Continue?")) return;
+    const res = await fetch("/api/dev/clear", { method: "POST" });
+    if (!res.ok) { alert("DB wipe failed"); return; }
+    loadData();
+    window.open("https://dashboard.stripe.com/test/developers", "_blank");
+    window.open("https://developer.intuit.com/app/developer/sandbox", "_blank");
   }
 
   async function handleOverride(spotId: string) {
@@ -546,11 +572,7 @@ export default function AdminDashboard() {
         sessionId: sessionAction.id,
         action: sessionAction.type,
       };
-      if (sessionAction.type === "extend") {
-        payload.hours = sessionActionHours;
-      } else {
-        payload.reason = sessionActionReason;
-      }
+      payload.reason = sessionActionReason;
       if (sessionAction.type === "close" && sessionActionEndedAt) {
         payload.endedAt = new Date(sessionActionEndedAt).toISOString();
       }
@@ -560,7 +582,6 @@ export default function AdminDashboard() {
         body: JSON.stringify(payload),
       });
       setSessionAction(null);
-      setSessionActionHours(4);
       setSessionActionReason("");
       setSessionActionEndedAt("");
       loadSessions();
@@ -608,6 +629,7 @@ export default function AdminDashboard() {
   ];
 
   return (
+    <>
     <div style={{ background: DARK_BG, minHeight: "100vh", color: FG, fontFamily: "system-ui, sans-serif" }}>
       {/* Header */}
       <div style={{ padding: mobile ? "16px 16px 0" : "20px 24px 0", borderBottom: `1px solid ${BORDER}` }}>
@@ -848,7 +870,14 @@ export default function AdminDashboard() {
                                     {p.type === "CHECKIN" || p.type === "MONTHLY_CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
                                     {p.hours ? ` (${p.hours}h)` : ""}
                                   </span>
-                                  <span style={{ color: FG, fontVariantNumeric: "tabular-nums" }}>${p.amount.toFixed(2)}</span>
+                                  {p.refundedAmount > 0 ? (
+                                    <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                                      <span style={{ color: "#9CA3AF", textDecoration: "line-through", marginRight: 4 }}>${p.amount.toFixed(2)}</span>
+                                      <span style={{ color: "#B45309", fontWeight: 600 }}>${(p.amount - p.refundedAmount).toFixed(2)}</span>
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: FG, fontVariantNumeric: "tabular-nums" }}>${p.amount.toFixed(2)}</span>
+                                  )}
                                 </div>
                               ))}
                               <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 6, paddingTop: 6, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
@@ -872,12 +901,6 @@ export default function AdminDashboard() {
                               <div style={{ gridColumn: mobile ? undefined : "1 / -1", borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 4 }}>
                                 {sessionAction?.id === s.id ? (
                                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                    {sessionAction.type === "extend" && (
-                                      <>
-                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Add hours:</span>
-                                        <input type="number" min={1} max={720} value={sessionActionHours} onChange={(e) => setSessionActionHours(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
-                                      </>
-                                    )}
                                     {sessionAction.type === "cancel" && (
                                       <>
                                         <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
@@ -918,7 +941,7 @@ export default function AdminDashboard() {
                                         background: sessionAction.type === "cancel" ? "#DC2626" : sessionAction.type === "close" ? "#92400E" : "#2D7A4A",
                                       }}
                                     >
-                                      {sessionActionLoading ? "..." : sessionAction.type === "extend" ? "Extend" : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
+                                      {sessionActionLoading ? "..." : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
                                     </button>
                                     <button onClick={() => { setSessionAction(null); setSessionActionEndedAt(""); setSessionActionReason(""); }} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
                                       Back
@@ -926,11 +949,8 @@ export default function AdminDashboard() {
                                   </div>
                                 ) : (
                                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "extend" })} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Extend Time
-                                    </button>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "close" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #D9770640", background: "transparent", color: "#92400E", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Close &amp; Backdate
+                                    <button onClick={() => setManageSession(s)} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${"#2D7A4A"}`, background: "transparent", color: "#2D7A4A", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                      Manage
                                     </button>
                                     <button onClick={() => setSessionAction({ id: s.id, type: "cancel" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                       Cancel Session
@@ -1271,6 +1291,43 @@ export default function AdminDashboard() {
 
             {/* Allow list management */}
             <AllowListManager mobile={mobile} />
+
+            {/* Sandbox reset — visible only when Stripe test keys are active */}
+            {settings?.stripeTestMode && (
+              <div style={{ marginTop: 40, padding: "20px 24px", background: "#1C1010", border: "1px solid #7F1D1D", borderRadius: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#FCA5A5", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+                  Sandbox Reset
+                </div>
+                <p style={{ fontSize: 13, color: "#FCA5A5", opacity: 0.75, margin: "0 0 16px" }}>
+                  Wipes all local history (drivers, sessions, payments, audit log) and opens the Stripe and QuickBooks sandbox reset pages in new tabs. Spots, rates, and settings are preserved.
+                </p>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={handleSandboxReset}
+                    style={{ padding: "10px 20px", background: "#7F1D1D", border: "1px solid #DC2626", borderRadius: 7, color: "#FCA5A5", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    Wipe Local DB + Open Reset Pages
+                  </button>
+                  <a
+                    href="https://dashboard.stripe.com/test/developers"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ padding: "10px 20px", background: "transparent", border: "1px solid #555", borderRadius: 7, color: "#999", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none" }}
+                  >
+                    Stripe Dashboard ↗
+                  </a>
+                  <a
+                    href="https://developer.intuit.com/app/developer/sandbox"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ padding: "10px 20px", background: "transparent", border: "1px solid #555", borderRadius: 7, color: "#999", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none" }}
+                  >
+                    QB Developer Portal ↗
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1612,8 +1669,18 @@ export default function AdminDashboard() {
       )}
 
     </div>
+    {manageSession && (
+      <ManageSessionModal
+        session={manageSession}
+        settings={settings}
+        onClose={() => setManageSession(null)}
+        onSuccess={() => loadSessions()}
+      />
+    )}
+    </>
   );
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sub-components
@@ -1634,15 +1701,238 @@ type PaymentSummary = {
 type QBPaymentRecord = { id: string; date: string; amount: number; customerName: string; memo: string; method: string };
 type QBProfitLoss = { totalIncome: number; totalExpenses: number; netIncome: number } | null;
 
+type StripeRefundRow = { id: string; amount: number; createdAt: string; status: string | null; reason: string | null };
+type DbRefundRow = { stripeRefundId: string; qbRefundReceiptId: string | null };
+
+function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment: PaymentRow; onClose: () => void; stripeTestMode: boolean }) {
+  const stripeBase = stripeTestMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
+
+  const [stripeRefunds, setStripeRefunds] = useState<StripeRefundRow[]>([]);
+  const [dbRefunds, setDbRefunds] = useState<DbRefundRow[]>(payment.refunds.map(r => ({ stripeRefundId: r.stripeRefundId, qbRefundReceiptId: r.qbRefundReceiptId })));
+  const [loadingRefunds, setLoadingRefunds] = useState(!!payment.stripeChargeId);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  const fetchRefunds = () => {
+    if (!payment.stripePaymentIntentId && !payment.stripeChargeId) return;
+    fetch(`/api/admin/payments/${payment.id}/stripe-charges`)
+      .then(r => r.json())
+      .then(data => {
+        setStripeRefunds(data.stripeRefunds ?? []);
+        setDbRefunds(data.dbRefunds ?? []);
+      })
+      .catch(() => {
+        setStripeRefunds(payment.refunds.map(r => ({ id: r.stripeRefundId, amount: r.amount, createdAt: r.createdAt, status: null, reason: null })));
+      })
+      .finally(() => setLoadingRefunds(false));
+  };
+
+  useEffect(() => {
+    fetchRefunds();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payment.id, payment.stripeChargeId]);
+
+  const syncRefunds = () => {
+    if (!payment.stripePaymentIntentId) return;
+    setSyncing(true);
+    setSyncMsg(null);
+    fetch(`/api/admin/payments/${payment.id}/sync-refunds`, { method: "POST" })
+      .then(r => r.json())
+      .then(data => {
+        setSyncMsg(data.ok ? `Synced — refunded: $${(data.refundedAmount ?? 0).toFixed(2)}` : (data.error ?? "Error"));
+        fetchRefunds();
+      })
+      .catch(() => setSyncMsg("Sync failed"))
+      .finally(() => setSyncing(false));
+  };
+
+  const paymentMissingQb = !!(payment.stripeChargeId && !payment.qbSalesReceiptId && payment.status !== "CANCELLED");
+
+  const typeLabel: Record<string, string> = {
+    CHECKIN: "Check-in",
+    MONTHLY_CHECKIN: "Monthly Check-in",
+    MONTHLY_RENEWAL: "Monthly Renewal",
+    EXTENSION: "Extension",
+    OVERSTAY: "Overstay",
+  };
+
+  const sessionStatus = payment.session?.status;
+  const spotLabel = payment.session?.spot?.label ?? null;
+
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+      " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  };
+
+  const thStyle: React.CSSProperties = { textAlign: "left", fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, padding: "0 12px 10px 0", borderBottom: "1px solid #E5E7EB" };
+  const tdStyle: React.CSSProperties = { padding: "10px 12px 10px 0", verticalAlign: "top", fontSize: 13, color: "#111827", borderBottom: "1px solid #F3F4F6" };
+  const tdLast: React.CSSProperties = { ...tdStyle, borderBottom: "none" };
+
+  const hasRows = stripeRefunds.length > 0;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: "#FFFFFF", borderRadius: 12, boxShadow: "0 20px 60px rgba(0,0,0,0.25)", padding: "24px 28px", width: "min(95vw, 720px)", maxHeight: "90vh", overflowY: "auto", position: "relative" }}
+      >
+        <button
+          onClick={onClose}
+          style={{ position: "absolute", top: 14, right: 16, background: "none", border: "none", color: "#9CA3AF", fontSize: 22, cursor: "pointer", lineHeight: 1, padding: 4 }}
+        >×</button>
+
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#111827", marginBottom: 2 }}>Transaction Details</div>
+        <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 20 }}>
+          {payment.session?.driver?.name ?? "Unknown driver"}
+          {spotLabel ? ` · Spot ${spotLabel}` : ""}
+        </div>
+
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Date & Time</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Amount</th>
+              <th style={thStyle}>Type</th>
+              <th style={thStyle}>Stripe</th>
+              <th style={thStyle}>QuickBooks</th>
+            </tr>
+          </thead>
+          <tbody>
+            {/* Payment row */}
+            <tr>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {fmtDate(payment.createdAt)}
+              </td>
+              <td style={{ ...(hasRows ? tdStyle : tdLast), textAlign: "right", fontWeight: 600, color: "#059669" }}>
+                +${payment.amount.toFixed(2)}
+                {payment.hours ? <div style={{ fontSize: 11, fontWeight: 400, color: "#6B7280" }}>{payment.hours}h</div> : null}
+              </td>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {typeLabel[payment.type] ?? payment.type}
+              </td>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {payment.stripePaymentIntentId && (
+                  <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", fontFamily: "monospace" }}>
+                    {payment.stripePaymentIntentId.slice(0, 22)}… ↗
+                  </a>
+                )}
+                {payment.stripeSubscriptionId && (
+                  <a href={`${stripeBase}/subscriptions/${payment.stripeSubscriptionId}`} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", fontFamily: "monospace", display: "block" }}>
+                    {payment.stripeSubscriptionId.slice(0, 22)}… ↗
+                  </a>
+                )}
+                {payment.legacyQbReference && !payment.stripePaymentIntentId && (
+                  <span style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{payment.legacyQbReference}</span>
+                )}
+                {!payment.stripePaymentIntentId && !payment.stripeSubscriptionId && !payment.legacyQbReference && (
+                  <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
+                )}
+              </td>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {payment.qbSalesReceiptId ? (
+                  <a href={qbLinks.salesReceipt(payment.qbSalesReceiptId)} target="_blank" rel="noopener noreferrer"
+                    style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
+                    Receipt ↗
+                  </a>
+                ) : paymentMissingQb ? (
+                  <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
+                ) : (
+                  <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
+                )}
+              </td>
+            </tr>
+
+            {/* Refund rows — sourced from Stripe live fetch */}
+            {loadingRefunds ? (
+              <tr>
+                <td colSpan={5} style={{ ...tdLast, color: "#9CA3AF", fontSize: 12, paddingTop: 12 }}>
+                  Loading refunds from Stripe…
+                </td>
+              </tr>
+            ) : stripeRefunds.map((r, i) => {
+              const isLast = i === stripeRefunds.length - 1;
+              const db = dbRefunds.find(d => d.stripeRefundId === r.id);
+              const qbRefundReceiptId = db?.qbRefundReceiptId ?? null;
+              return (
+                <tr key={r.id}>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    {fmtDate(r.createdAt)}
+                  </td>
+                  <td style={{ ...(isLast ? tdLast : tdStyle), textAlign: "right", fontWeight: 600, color: "#DC2626" }}>
+                    −${r.amount.toFixed(2)}
+                  </td>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    Refund
+                    {r.reason && <div style={{ fontSize: 11, color: "#9CA3AF" }}>{r.reason.replace(/_/g, " ")}</div>}
+                  </td>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    <a href={`${stripeBase}/refunds/${r.id}`} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", fontFamily: "monospace" }}>
+                      {r.id.slice(0, 22)}… ↗
+                    </a>
+                    {r.status && r.status !== "succeeded" && (
+                      <div style={{ fontSize: 11, color: "#F59E0B" }}>{r.status}</div>
+                    )}
+                  </td>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    {qbRefundReceiptId ? (
+                      <a href={qbLinks.refundReceipt(qbRefundReceiptId)} target="_blank" rel="noopener noreferrer"
+                        style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
+                        Receipt ↗
+                      </a>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {/* Current status footer */}
+        <div style={{ marginTop: 16, padding: "10px 14px", background: "#F9FAFB", borderRadius: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "#6B7280" }}>Current status:</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#111827", flex: 1 }}>
+            {sessionStatus === "ACTIVE" ? "Active" : sessionStatus === "OVERSTAY" ? "Overstay" : sessionStatus === "COMPLETED" ? "Completed" : (sessionStatus ?? "—")}
+            {spotLabel ? ` · Spot ${spotLabel}` : ""}
+          </span>
+          {payment.stripePaymentIntentId && (
+            <button
+              onClick={syncRefunds}
+              disabled={syncing}
+              style={{ fontSize: 11, padding: "3px 10px", borderRadius: 5, border: "1px solid #D1D5DB", background: "#fff", color: "#374151", cursor: syncing ? "default" : "pointer", opacity: syncing ? 0.6 : 1 }}
+            >
+              {syncing ? "Syncing…" : "↻ Sync from Stripe"}
+            </button>
+          )}
+          {syncMsg && <span style={{ fontSize: 11, color: syncMsg.startsWith("Synced") ? "#16A34A" : "#DC2626" }}>{syncMsg}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialSearch?: string }) {
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
   const [dailyRevenue, setDailyRevenue] = useState<{ date: string; amount: number }[]>([]);
+  const [divergentCount, setDivergentCount] = useState(0);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
   const [search, setSearch] = useState(initialSearch);
   const [loading, setLoading] = useState(true);
+  const [selectedPayment, setSelectedPayment] = useState<PaymentRow | null>(null);
+
+  const skipPaymentsSync = useRef(false);
+  const [stripeTestMode, setStripeTestMode] = useState(false);
   const LIMIT = 30;
 
   // Stripe reconciliation (read-only divergence check — never mutates DB)
@@ -1679,7 +1969,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
   }, []);
 
   // Load internal payments
-  useEffect(() => {
+  const loadPaymentsData = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
     if (typeFilter) params.set("type", typeFilter);
@@ -1691,9 +1981,23 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
         setSummary(d.summary ?? null);
         setTotal(d.total ?? 0);
         if (d.dailyRevenue) setDailyRevenue(d.dailyRevenue);
+        if (typeof d.divergentCount === "number") setDivergentCount(d.divergentCount);
+        if (skipPaymentsSync.current) { skipPaymentsSync.current = false; return; }
+        const ids = (d.payments ?? []).map((p: { id: string }) => p.id);
+        if (!ids.length) return;
+        fetch("/api/admin/payments/sync-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paymentIds: ids }),
+        }).then((r) => r.json()).then((res) => {
+          if (res.synced > 0) { skipPaymentsSync.current = true; loadPaymentsData(); }
+        }).catch(() => {/* silent */});
       })
       .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offset, typeFilter, search]);
+
+  useEffect(() => { loadPaymentsData(); }, [loadPaymentsData]);
 
   // Surface QB connection + Stripe webhook status (Sales Receipt writes
   // depend on QB; reconciliation status depends on webhook heartbeat).
@@ -1705,6 +2009,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
         setQbConnected(!!d.settings?.qbConnected);
         setLastStripeWebhookAt(d.settings?.lastStripeWebhookAt ?? null);
         setFlaggedStripeIds(d.settings?.stripeReconcileFlaggedIds ?? []);
+        setStripeTestMode(!!d.settings?.stripeTestMode);
         setQbPayments([]);
         setQbPL(null);
       })
@@ -1729,12 +2034,21 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
   const typeLabels: Record<string, string> = {
     CHECKIN: "Check-in",
     MONTHLY_CHECKIN: "Monthly",
+    MONTHLY_RENEWAL: "Renewal",
     EXTENSION: "Extension",
     OVERSTAY: "Overstay",
   };
 
   return (
     <div>
+      {selectedPayment && (
+        <TransactionDetailsPopup
+          payment={selectedPayment}
+          onClose={() => setSelectedPayment(null)}
+          stripeTestMode={stripeTestMode}
+        />
+      )}
+
       {/* Summary cards */}
       {summary && (
         <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(5, 1fr)", gap: 10, marginBottom: 20 }}>
@@ -1862,9 +2176,21 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
         </div>
       )}
 
+      {/* Divergence warning bar */}
+      {divergentCount > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#2C1810", border: "1px solid #DC2626", borderRadius: 8, marginBottom: 16, fontSize: 13, color: "#FCA5A5" }}>
+          <span style={{ fontSize: 16 }}>⚠</span>
+          <span>
+            <strong>{divergentCount} QB accounting {divergentCount === 1 ? "gap" : "gaps"} detected</strong>
+            {" "}— {divergentCount === 1 ? "a payment or refund is" : "some payments or refunds are"} missing a matching QB receipt.
+            Click <strong>Details</strong> on flagged rows to see which side is missing.
+          </span>
+        </div>
+      )}
+
       {/* Filters */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-        {["", "CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"].map((t) => (
+        {["", "CHECKIN", "MONTHLY_CHECKIN", "MONTHLY_RENEWAL", "EXTENSION", "OVERSTAY"].map((t) => (
           <button key={t || "ALL"} onClick={() => setTypeFilter(t)} style={chip(typeFilter === t, mobile)}>
             {t ? typeLabels[t] : "All"}
           </button>
@@ -1897,7 +2223,8 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                     { label: "Plate · Spot", align: "left",  hide: mobile },
                     { label: "Hrs",          align: "right", hide: mobile },
                     { label: "Amount",       align: "right" },
-                    { label: "Status",       align: "center"},
+                    { label: "Payment",      align: "center"},
+                    { label: "Session",      align: "center"},
                     { label: "Links",        align: "right" },
                   ].filter(c => !c.hide).map(c => (
                     <th key={c.label} style={{
@@ -1913,12 +2240,13 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
               <tbody>
                 {payments.map((p, idx) => {
                   const real = isRealPayment(p);
-                  const stripeUrl = stripeDashboardUrl(p);
+                  const stripeUrl = stripeDashboardUrl(p, stripeTestMode);
                   const stripeCustId = p.session?.driver?.stripeCustomerId;
                   const qbCustId = (p.session?.driver as { qbCustomerId?: string } | undefined)?.qbCustomerId;
-                  const isRefunded = p.status === "REFUNDED";
-                  const isVoided   = p.status === "VOIDED";
-                  const isDisputed = p.status === "DISPUTED";
+                  const isRefunded         = p.status === "REFUNDED";
+                  const isPartiallyRefunded = p.status === "PARTIALLY_REFUNDED";
+                  const isCancelled        = p.status === "CANCELLED";
+                  const isDisputed         = p.status === "DISPUTED";
                   const rowBg = idx % 2 === 0 ? CARD_BG : "#F8FAFC";
 
                   const typeBadgeStyle: React.CSSProperties = {
@@ -1938,7 +2266,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                   };
 
                   return (
-                    <tr key={p.id} style={{ background: rowBg, opacity: isVoided ? 0.5 : 1 }}>
+                    <tr key={p.id} style={{ background: rowBg, opacity: isCancelled ? 0.6 : 1 }}>
                       {/* Date */}
                       <td style={{ ...cell, whiteSpace: "nowrap", color: FG_DIM, minWidth: 90 }}>
                         {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
@@ -1978,26 +2306,43 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
 
                       {/* Amount */}
                       <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>
-                        <span style={{
-                          fontWeight: 700, fontVariantNumeric: "tabular-nums",
-                          color: isDisputed ? "#EF4444" : isRefunded ? "#92400E" : FG,
-                          textDecoration: isVoided ? "line-through" : undefined,
-                        }}>
-                          ${p.amount.toFixed(2)}
-                        </span>
-                        {p.refundedAmount > 0 && (
-                          <div style={{ fontSize: 10, color: "#92400E" }}>−${p.refundedAmount.toFixed(2)}</div>
+                        {p.refundedAmount > 0 ? (
+                          <>
+                            <div style={{ fontSize: 11, color: "#9CA3AF", textDecoration: "line-through", fontVariantNumeric: "tabular-nums" }}>
+                              ${p.amount.toFixed(2)}
+                            </div>
+                            <div style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: isRefunded ? "#92400E" : "#B45309" }}>
+                              ${(p.amount - p.refundedAmount).toFixed(2)}
+                            </div>
+                          </>
+                        ) : (
+                          <span style={{
+                            fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                            color: isDisputed ? "#EF4444" : FG,
+                            textDecoration: isCancelled ? "line-through" : undefined,
+                          }}>
+                            ${p.amount.toFixed(2)}
+                          </span>
                         )}
                       </td>
 
-                      {/* Status */}
+                      {/* Payment status */}
                       <td style={{ ...cell, textAlign: "center", whiteSpace: "nowrap" }}>
-                        {isRefunded && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>REFUNDED</span>}
-                        {isVoided   && <span style={{ fontSize: 9, fontWeight: 700, color: "#DC2626", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>VOIDED</span>}
-                        {isDisputed && <span style={{ fontSize: 9, fontWeight: 700, color: "#EF4444", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>DISPUTED</span>}
-                        {!isRefunded && !isVoided && !isDisputed && (
-                          <span style={{ fontSize: 9, color: "#2D7A4A", fontWeight: 600 }}>✓</span>
+                        {isRefunded          && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>REFUNDED</span>}
+                        {isPartiallyRefunded && <span style={{ fontSize: 9, fontWeight: 700, color: "#B45309", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>PARTIAL REFUND</span>}
+                        {isCancelled         && <span style={{ fontSize: 9, fontWeight: 700, color: "#6B7280", background: "#F3F4F6", padding: "2px 6px", borderRadius: 3 }}>CANCELLED</span>}
+                        {isDisputed          && <span style={{ fontSize: 9, fontWeight: 700, color: "#EF4444", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>DISPUTED</span>}
+                        {!isRefunded && !isPartiallyRefunded && !isCancelled && !isDisputed && (
+                          <span style={{ fontSize: 9, color: "#2D7A4A", fontWeight: 600 }}>PAID</span>
                         )}
+                      </td>
+
+                      {/* Session status */}
+                      <td style={{ ...cell, textAlign: "center", whiteSpace: "nowrap" }}>
+                        {p.session?.status === "ACTIVE"    && <span style={{ fontSize: 9, fontWeight: 700, color: "#2D7A4A", background: "#DCFCE7", padding: "2px 6px", borderRadius: 3 }}>ACTIVE</span>}
+                        {p.session?.status === "OVERSTAY"  && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>OVERSTAY</span>}
+                        {p.session?.status === "COMPLETED" && <span style={{ fontSize: 9, fontWeight: 700, color: "#636366", background: "#F2F2F7", padding: "2px 6px", borderRadius: 3 }}>COMPLETED</span>}
+                        {!p.session && <span style={{ fontSize: 9, color: "#C7C7CC" }}>—</span>}
                       </td>
 
                       {/* Links */}
@@ -2009,24 +2354,12 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                               Stripe ↗
                             </a>
                           )}
-                          {real && p.stripeRefundId && (
-                            <a href={stripeLinks.refund(p.stripeRefundId)} target="_blank" rel="noopener noreferrer"
-                               style={{ fontSize: 11, color: "#92400E", textDecoration: "none", fontWeight: 500 }}>
-                              Refund ↗
-                            </a>
-                          )}
-                          {real && qbCustId && !mobile && (
-                            <a href={qbLinks.customer(qbCustId)} target="_blank" rel="noopener noreferrer"
-                               style={{ fontSize: 11, color: "#22C55E", textDecoration: "none", fontWeight: 500 }}>
-                              QB ↗
-                            </a>
-                          )}
-                          {real && !stripeUrl && p.legacyQbReference && (
-                            <a href={qbLinks.invoice(p.legacyQbReference)} target="_blank" rel="noopener noreferrer"
-                               style={{ fontSize: 11, color: "#2563EB", textDecoration: "none" }}>
-                              QB (legacy) ↗
-                            </a>
-                          )}
+                          <button
+                            onClick={() => setSelectedPayment(p)}
+                            style={{ fontSize: 11, color: "#6366F1", background: "none", border: "1px solid #6366F1", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontWeight: 500 }}
+                          >
+                            Details
+                          </button>
                           {!real && (
                             <span style={{ fontSize: 10, color: FG_DIM }}>
                               {p.legacyQbReference?.startsWith("free_") ? "Free" : "Test"}

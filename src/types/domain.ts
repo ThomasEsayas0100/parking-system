@@ -37,6 +37,14 @@ export type ApiVehicle = {
   nickname: string | null;
 };
 
+export type ApiPaymentRefund = {
+  id: string;
+  amount: number;
+  stripeRefundId: string;
+  qbRefundReceiptId: string | null;
+  createdAt: string;
+};
+
 export type ApiPayment = {
   id: string;
   type: PaymentType;
@@ -48,18 +56,21 @@ export type ApiPayment = {
   stripeChargeId: string | null;
   stripeSubscriptionId: string | null;
   stripeInvoiceId: string | null;
-  stripeRefundId: string | null;
+  // QuickBooks accounting mirror — populated after webhook writes the receipt
+  qbSalesReceiptId: string | null;
   // Pre-Stripe reference, or "free_*" synthetic marker for payments-disabled rows
   legacyQbReference: string | null;
   status: PaymentStatus;
   refundedAmount: number;
   refundedAt: string | null;
+  refunds: ApiPaymentRefund[];
   createdAt: string;
 };
 
 /** Payment with full session/driver/vehicle/spot context (admin Payments tab). */
 export type ApiPaymentWithSession = ApiPayment & {
   session: {
+    status: "ACTIVE" | "OVERSTAY" | "COMPLETED";
     driver: {
       name: string;
       phone: string;
@@ -172,6 +183,8 @@ export type AppSettings = {
   // ─── Stripe operational status ────────────────────────────────────────
   /** Derived on the server from STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET. */
   stripeConfigured: boolean;
+  /** True when STRIPE_SECRET_KEY starts with "sk_test_" — drives test vs. live dashboard URLs. */
+  stripeTestMode: boolean;
   /** ISO string or null — set by the webhook on every incoming event. */
   lastStripeWebhookAt: string | null;
   /** ISO string or null — set by the admin reconcile endpoint. */
