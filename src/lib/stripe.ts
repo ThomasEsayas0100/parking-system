@@ -174,16 +174,19 @@ export async function createSubscriptionCheckoutSession(args: {
           currency: "usd",
           unit_amount: Math.round(args.monthlyAmount * 100),
           recurring: { interval: "month" },
-          product_data: { name: args.productName },
+          // End date in the product name — rendered large next to the price,
+          // the most prominent location Stripe's hosted Checkout exposes.
+          product_data: {
+            name: `${args.productName} — ${args.months} month${args.months > 1 ? "s" : ""} (ends ${endDateStr})`,
+          },
         },
       },
     ],
-    // Tell the driver this is not an indefinite commitment.
-    // submit_button custom_text exists in the API but is missing from SDK types at v20.
+    // Reinforce the end date in smaller print below the Subscribe button.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     custom_text: {
       submit: {
-        message: `Your subscription covers ${args.months} month${args.months > 1 ? "s" : ""} and ends on ${endDateStr}. It will not renew after that date.`,
+        message: `This subscription ends on ${endDateStr} and will not renew after that date.`,
       },
     } as any,
     // Echo metadata onto the Subscription object itself so future renewals
