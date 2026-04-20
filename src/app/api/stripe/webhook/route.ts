@@ -403,11 +403,16 @@ async function handleMonthlyCheckin(args: {
     include: { vehicle: true, spot: true },
   });
 
+  // Set cancel_at on the subscription so Stripe auto-cancels after the
+  // pre-selected period and stops charging the driver.
+  const cancelAt = Math.floor(expectedEnd.getTime() / 1000);
+  await getStripe().subscriptions.update(subscriptionId, { cancel_at: cancelAt });
+
   await audit({
     action: "SUBSCRIPTION_CREATED",
     sessionId: session.id,
     driverId: session.driverId,
-    details: `Monthly subscription created: sub=${subscriptionId}, first month $${amount.toFixed(2)}`,
+    details: `Monthly subscription created: sub=${subscriptionId}, first month $${amount.toFixed(2)}, cancel_at=${expectedEnd.toISOString()}`,
   });
   await audit({
     action: "CHECKIN",

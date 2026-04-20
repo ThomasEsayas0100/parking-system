@@ -159,10 +159,10 @@ export async function createSubscriptionCheckoutSession(args: {
 }): Promise<{ checkoutUrl: string; checkoutSessionId: string }> {
   const stripe = getStripe();
 
-  // cancel_at tells Stripe when to end the subscription. Stripe renders this
-  // prominently on the hosted Checkout page so the driver sees the end date
-  // and knows this is not an indefinite commitment.
-  const cancelAt = Math.floor(Date.now() / 1000) + args.months * 30 * 24 * 60 * 60;
+  // Build the end date string for the custom_text message.
+  const endDate = new Date();
+  endDate.setMonth(endDate.getMonth() + args.months);
+  const endDateStr = endDate.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
@@ -178,12 +178,18 @@ export async function createSubscriptionCheckoutSession(args: {
         },
       },
     ],
+    // Tell the driver this is not an indefinite commitment.
+    // submit_button custom_text exists in the API but is missing from SDK types at v20.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    custom_text: {
+      submit_button: {
+        message: `Your subscription covers ${args.months} month${args.months > 1 ? "s" : ""} and ends on ${endDateStr}. It will not renew after that date.`,
+      },
+    } as any,
     // Echo metadata onto the Subscription object itself so future renewals
     // (which fire invoice.payment_succeeded with a subscription ref) can look
     // up the original driver/vehicle without re-reading Checkout.
-    // cancel_at is supported by the API but missing from SDK types at v20.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    subscription_data: { metadata: args.metadata, cancel_at: cancelAt } as any,
+    subscription_data: { metadata: args.metadata },
     metadata: args.metadata,
     success_url: args.successUrl,
     cancel_url: args.cancelUrl,
