@@ -1798,7 +1798,8 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
       .finally(() => setSyncing(false));
   };
 
-  const paymentMissingQb = !!(payment.stripeChargeId && !payment.qbSalesReceiptId);
+  const isStripePayment = !!(payment.stripeChargeId || payment.stripePaymentIntentId || payment.stripeSubscriptionId);
+  const paymentMissingQb = isStripePayment && !payment.qbSalesReceiptId;
 
   const typeLabel: Record<string, string> = {
     CHECKIN: "Check-in",
