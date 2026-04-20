@@ -103,6 +103,7 @@ export const POST = handler(
           monthlyAmount: amount,
           productName: description,
           customerId,
+          months: months!,
           successUrl,
           cancelUrl,
           metadata,

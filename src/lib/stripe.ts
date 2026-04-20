@@ -152,11 +152,18 @@ export async function createSubscriptionCheckoutSession(args: {
   monthlyAmount: number; // dollars per month
   productName: string;
   customerId: string;
+  months: number;
   successUrl: string;
   cancelUrl: string;
   metadata: CheckoutMetadata;
 }): Promise<{ checkoutUrl: string; checkoutSessionId: string }> {
   const stripe = getStripe();
+
+  // cancel_at tells Stripe when to end the subscription. Stripe renders this
+  // prominently on the hosted Checkout page so the driver sees the end date
+  // and knows this is not an indefinite commitment.
+  const cancelAt = Math.floor(Date.now() / 1000) + args.months * 30 * 24 * 60 * 60;
+
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
     customer: args.customerId,
@@ -174,7 +181,9 @@ export async function createSubscriptionCheckoutSession(args: {
     // Echo metadata onto the Subscription object itself so future renewals
     // (which fire invoice.payment_succeeded with a subscription ref) can look
     // up the original driver/vehicle without re-reading Checkout.
-    subscription_data: { metadata: args.metadata },
+    // cancel_at is supported by the API but missing from SDK types at v20.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    subscription_data: { metadata: args.metadata, cancel_at: cancelAt } as any,
     metadata: args.metadata,
     success_url: args.successUrl,
     cancel_url: args.cancelUrl,
