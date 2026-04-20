@@ -182,7 +182,7 @@ export async function createSubscriptionCheckoutSession(args: {
     // submit_button custom_text exists in the API but is missing from SDK types at v20.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     custom_text: {
-      submit_button: {
+      submit: {
         message: `Your subscription covers ${args.months} month${args.months > 1 ? "s" : ""} and ends on ${endDateStr}. It will not renew after that date.`,
       },
     } as any,
