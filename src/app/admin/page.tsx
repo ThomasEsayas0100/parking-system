@@ -890,7 +890,7 @@ export default function AdminDashboard() {
                               return (
                                 <DetailCol title="Timing">
                                   <DetailRow label="Started" value={fmtDate(s.startedAt)} />
-                                  <DetailRow label={isMonthlySession ? "Renews on" : "Expected"} value={fmtDate(s.expectedEnd)} />
+                                  <DetailRow label="Expected end" value={fmtDate(s.expectedEnd)} />
                                   <DetailRow label="Ended" value={fmtDate(s.endedAt)} />
                                   <DetailRow label="Duration" value={calcDuration(s.startedAt, s.endedAt)} />
                                   {isMonthlySession && (
