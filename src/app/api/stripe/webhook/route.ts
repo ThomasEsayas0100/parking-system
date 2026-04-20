@@ -529,9 +529,16 @@ async function handleOverstay(args: {
 }
 
 /**
- * Monthly subscription renewal. Fires on each cycle after the first. The
- * first invoice (billing_reason="subscription_create") is already handled
- * by checkout.session.completed → MONTHLY_CHECKIN, so we skip it here.
+ * Fires for every paid subscription invoice — both the first
+ * (billing_reason="subscription_create") and all renewals.
+ *
+ * For subscription_create: the Payment + Session rows were already written by
+ * checkout.session.completed, so we skip those writes. However, the charge
+ * may not have been resolved when that event fired, so we use this event
+ * (where the charge is always present) to write the QB Sales Receipt if still
+ * missing.
+ *
+ * For renewals: advance expectedEnd, create MONTHLY_RENEWAL Payment, write QB receipt.
  */
 async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   // `invoice.subscription` and `invoice.payment_intent` were removed from
@@ -540,28 +547,13 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     subscription?: string | Stripe.Subscription | null;
     payment_intent?: string | Stripe.PaymentIntent | null;
   };
-  if (invoice.billing_reason === "subscription_create") {
-    // Already handled by checkout.session.completed.
-    return;
-  }
 
   const subscriptionId = typeof invoice.subscription === "string"
     ? invoice.subscription
     : invoice.subscription?.id ?? null;
   if (!subscriptionId) return;
 
-  // Find the Session linked to this subscription (via the first Payment row).
-  const firstPayment = await prisma.payment.findFirst({
-    where: { stripeSubscriptionId: subscriptionId },
-    orderBy: { createdAt: "asc" },
-    include: { session: { include: { driver: true } } },
-  });
-  if (!firstPayment) {
-    console.warn(`[stripe-webhook] invoice.payment_succeeded for unknown subscription ${subscriptionId}`);
-    return;
-  }
-
-  const session = firstPayment.session;
+  // Resolve chargeId — always available by the time this event fires.
   const paymentIntentId = typeof invoice.payment_intent === "string"
     ? invoice.payment_intent
     : invoice.payment_intent?.id ?? null;
@@ -572,6 +564,38 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   }
 
   const amount = (invoice.amount_paid ?? 0) / 100;
+
+  if (invoice.billing_reason === "subscription_create") {
+    // Payment + Session already created by checkout.session.completed.
+    // Write the QB receipt now using the invoice payment row (lookup by invoiceId).
+    if (!chargeId) return;
+    const payment = await prisma.payment.findFirst({
+      where: { stripeInvoiceId: invoice.id },
+      include: { session: true },
+    });
+    if (!payment || payment.qbSalesReceiptId) return; // already written or not found
+    await writeSalesReceiptSafe({
+      driverId: payment.session.driverId,
+      amount: payment.amount,
+      description: "Monthly parking — first month",
+      stripeEventId: event.id,
+      stripeChargeId: chargeId,
+    });
+    return;
+  }
+
+  // Renewal path — find the session via the first subscription payment.
+  const firstPayment = await prisma.payment.findFirst({
+    where: { stripeSubscriptionId: subscriptionId },
+    orderBy: { createdAt: "asc" },
+    include: { session: true },
+  });
+  if (!firstPayment) {
+    console.warn(`[stripe-webhook] invoice.payment_succeeded for unknown subscription ${subscriptionId}`);
+    return;
+  }
+
+  const session = firstPayment.session;
   const newExpectedEnd = addMonths(session.expectedEnd, 1);
 
   await prisma.$transaction([
@@ -593,10 +617,11 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   ]);
 
   if (chargeId) {
+    const spot = await prisma.spot.findUnique({ where: { id: session.spotId } });
     await writeSalesReceiptSafe({
       driverId: session.driverId,
       amount,
-      description: `Monthly parking renewal — spot ${(await prisma.spot.findUnique({ where: { id: session.spotId } }))?.label ?? session.spotId}`,
+      description: `Monthly parking renewal — spot ${spot?.label ?? session.spotId}`,
       stripeEventId: event.id,
       stripeChargeId: chargeId,
     });
