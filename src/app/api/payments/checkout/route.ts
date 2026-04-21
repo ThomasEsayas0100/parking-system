@@ -7,6 +7,8 @@ import {
 } from "@/lib/stripe";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { CheckoutCreateSchema } from "@/lib/schemas";
+import { getSettings } from "@/lib/settings";
+import { hourlyRate, monthlyRate, overstayRate, ceilHours } from "@/lib/rates";
 
 /**
  * POST /api/payments/checkout — create a Stripe Checkout session.
@@ -15,6 +17,9 @@ import { CheckoutCreateSchema } from "@/lib/schemas";
  *
  *   CHECKIN / EXTENSION / OVERSTAY → payment mode (one-time PaymentIntent).
  *   MONTHLY_CHECKIN → subscription mode (recurring monthly invoice).
+ *
+ * Amount and description are computed server-side from current settings rates.
+ * The client never sends a dollar figure — that prevents price tampering.
  *
  * The returned `checkoutUrl` is a Stripe-hosted page the client redirects
  * to. On success, Stripe redirects back to `/payment-complete?cs={id}`.
@@ -34,7 +39,7 @@ export const POST = handler(
 
     const {
       driverId, sessionPurpose, vehicleId, sessionId,
-      amount, description, hours, months, termsVersion, overstayAuthorized,
+      hours, months, termsVersion, overstayAuthorized,
     } = body;
 
     // Per-purpose validation — catch misuse early so we don't create a
@@ -60,7 +65,9 @@ export const POST = handler(
     // plate + type can be embedded in Stripe checkout metadata (used by the
     // webhook to build standardized QB receipt descriptions).
     let licensePlate: string | undefined;
-    let vehicleType: string | undefined;
+    let vehicleType: "BOBTAIL" | "TRUCK_TRAILER" | undefined;
+    let overstayHours = 0;
+
     if (sessionId) {
       const session = await prisma.session.findUnique({
         where: { id: sessionId },
@@ -79,19 +86,58 @@ export const POST = handler(
         }
       }
       licensePlate = session.vehicle.licensePlate ?? undefined;
-      vehicleType = session.vehicle.type ?? undefined;
+      vehicleType = session.vehicle.type as "BOBTAIL" | "TRUCK_TRAILER";
+
+      if (sessionPurpose === "OVERSTAY") {
+        overstayHours = ceilHours(session.expectedEnd, new Date());
+        if (overstayHours <= 0) {
+          return json({ error: "Session is not yet in overstay" }, { status: 400 });
+        }
+      }
     }
+
     if (vehicleId) {
       const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
       if (!vehicle || vehicle.driverId !== driverId) {
         throw notFound("Vehicle not found");
       }
       licensePlate = vehicle.licensePlate ?? undefined;
-      vehicleType = vehicle.type ?? undefined;
+      vehicleType = vehicle.type as "BOBTAIL" | "TRUCK_TRAILER";
     }
 
     if (sessionPurpose === "MONTHLY_CHECKIN" && vehicleType === "BOBTAIL") {
       return json({ error: "Monthly parking is not available for bobtail vehicles." }, { status: 400 });
+    }
+
+    if (!vehicleType) {
+      return json({ error: "Vehicle type could not be determined" }, { status: 400 });
+    }
+
+    // Compute amount + description server-side from current settings rates.
+    const settings = await getSettings();
+    const plateStr = licensePlate ? ` — plate ${licensePlate}` : "";
+    const vLabel = vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/trailer";
+
+    let amount: number;
+    let description: string;
+
+    switch (sessionPurpose) {
+      case "CHECKIN":
+        amount = hourlyRate(settings, vehicleType) * hours!;
+        description = `${vLabel} parking — ${hours}h${plateStr}`;
+        break;
+      case "MONTHLY_CHECKIN":
+        amount = monthlyRate(settings, vehicleType) * months!;
+        description = `${vLabel} parking — ${months} month${months! > 1 ? "s" : ""}${plateStr}`;
+        break;
+      case "EXTENSION":
+        amount = hourlyRate(settings, vehicleType) * hours!;
+        description = `${hours}h extension — ${vLabel}${plateStr}`;
+        break;
+      case "OVERSTAY":
+        amount = overstayRate(settings, vehicleType) * overstayHours;
+        description = `Overstay fee — ${overstayHours}h${plateStr}`;
+        break;
     }
 
     const customerId = await getOrCreateStripeCustomer(driver);

@@ -117,10 +117,8 @@ export const CheckoutCreateSchema = z.object({
   vehicleId: idSchema.optional(),
   // Required for EXTENSION / OVERSTAY — identifies the existing session.
   sessionId: idSchema.optional(),
-  // Hourly amount (CHECKIN, EXTENSION, OVERSTAY) or monthly amount
-  // (MONTHLY_CHECKIN). In dollars.
-  amount: z.number().min(0.5).max(10000),
-  description: z.string().min(1).max(500),
+  // Amount and description are computed server-side from settings rates —
+  // never accepted from the client to prevent price tampering.
   hours: z.number().int().min(1).max(720).optional(),
   months: z.number().int().min(1).max(12).optional(),
   termsVersion: z.string().min(1).max(50).optional(),

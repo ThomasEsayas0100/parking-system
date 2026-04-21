@@ -425,11 +425,6 @@ function CheckInContent() {
         // lands on /payment-complete, so no sessionStorage handoff is needed —
         // /payment-complete reads the server-side Payment row by the
         // checkout_session_id in the URL.
-        const durationLabel = durationType === "MONTHLY"
-          ? "Monthly auto-renew"
-          : `${hours} hour${hours !== 1 ? "s" : ""}`;
-        const description = `Parking: ${vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/Trailer"} — ${durationLabel}`;
-
         const checkoutRes = await fetch("/api/payments/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -437,8 +432,6 @@ function CheckInContent() {
             driverId: driver.id,
             vehicleId,
             sessionPurpose: durationType === "MONTHLY" ? "MONTHLY_CHECKIN" : "CHECKIN",
-            amount: durationType === "MONTHLY" ? monthlyRate : totalAmount,
-            description,
             hours: durationType === "HOURLY" ? hours : undefined,
             months: durationType === "MONTHLY" ? months : undefined,
             termsVersion: settings.termsVersion,

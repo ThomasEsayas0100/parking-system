@@ -238,8 +238,6 @@ function ExitContent() {
           driverId: driver.id,
           sessionId: overstayInfo.sessionId,
           sessionPurpose: "OVERSTAY",
-          amount: overstayInfo.overstayAmount,
-          description: `Overstay settlement — ${overstayInfo.overstayHours}h`,
           hours: overstayInfo.overstayHours,
         }),
       });

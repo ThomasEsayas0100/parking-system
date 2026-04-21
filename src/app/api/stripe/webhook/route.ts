@@ -27,9 +27,10 @@ import { log as audit } from "@/lib/audit";
  * StripeEvent row is NOT written until all side effects succeed — a partial
  * failure shouldn't block a subsequent retry from completing the work.
  *
- * QB write failures are caught and audited as SALES_RECEIPT_FAILED without
- * failing the webhook — the DB record is authoritative and the admin can
- * reconcile QB manually.
+ * QB auth failures (QBAuthError — QB not connected) are caught and audited
+ * without failing the webhook. All other QB errors propagate so the webhook
+ * returns 500 and Stripe retries the event — the StripeEvent row is not
+ * written until all side effects succeed, so the retry is safe.
  */
 export async function POST(req: NextRequest) {
   // Stripe requires the raw request body for signature verification. Next's
@@ -158,19 +159,33 @@ export async function processCheckoutSession(
   session: Stripe.Checkout.Session,
   eventId: string,
 ): Promise<void> {
-  // Idempotency: if the Payment row already exists, skip all side effects.
+  // Parse metadata early — needed for the QB retry in the idempotency path.
+  const metadata = (session.metadata ?? {}) as CheckoutMetadata;
+  const purpose = metadata.sessionPurpose as SessionPurpose | undefined;
+
+  // Idempotency: if the Payment row already exists the DB write succeeded.
+  // Re-attempt the QB receipt write if it's still missing — this handles the
+  // case where a prior run wrote the Payment but QB failed; Stripe retried the
+  // webhook, and we retry just the QB write.
   const existing = await prisma.payment.findFirst({
     where: { stripeCheckoutSessionId: session.id },
   });
-  if (existing) return;
-
-  const metadata = (session.metadata ?? {}) as CheckoutMetadata;
+  if (existing) {
+    if (!existing.qbSalesReceiptId && existing.stripeChargeId && metadata.driverId && purpose) {
+      await writeSalesReceiptSafe({
+        driverId: metadata.driverId,
+        amount: existing.amount,
+        description: salesReceiptDescription(purpose, metadata),
+        stripeEventId: eventId,
+        stripeChargeId: existing.stripeChargeId,
+      });
+    }
+    return;
+  }
 
   if (!metadata.driverId) {
     throw new Error(`checkout.session missing driverId metadata (cs=${session.id})`);
   }
-
-  const purpose = metadata.sessionPurpose;
   if (!purpose) {
     throw new Error(`checkout.session missing sessionPurpose metadata (cs=${session.id})`);
   }
@@ -630,6 +645,27 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   });
   const renewalPosition = existingMonthlyCount + 1; // new payment will be this position
 
+  // Idempotency: if the Payment row already exists, the DB write succeeded on
+  // a prior delivery. Re-attempt the QB receipt write if it's still missing.
+  const existingRenewal = await prisma.payment.findFirst({
+    where: { stripeInvoiceId: invoice.id, type: "MONTHLY_RENEWAL" },
+  });
+  if (existingRenewal) {
+    if (chargeId && !existingRenewal.qbSalesReceiptId) {
+      const vtR2 = vehicleTypeLabel(firstPayment.session.vehicle.type);
+      const plateR2 = plateSuffix(firstPayment.session.vehicle.licensePlate ?? undefined);
+      // existingMonthlyCount includes the already-created renewal, so it equals the position.
+      await writeSalesReceiptSafe({
+        driverId: session.driverId,
+        amount: existingRenewal.amount,
+        description: `${vtR2} parking — monthly, month ${existingMonthlyCount} of ${totalMonths}${plateR2}`,
+        stripeEventId: event.id,
+        stripeChargeId: chargeId,
+      });
+    }
+    return;
+  }
+
   // expectedEnd was set to the full contracted period at session creation — do NOT advance it.
   // Each MONTHLY_RENEWAL is a payment milestone within that period; the slot was already reserved.
   await prisma.$transaction([
@@ -881,7 +917,8 @@ async function writeSalesReceiptSafe(args: {
       details: `QB Sales Receipt ${receipt.DocNumber} (id ${receipt.Id}) for $${args.amount.toFixed(2)} (charge ${args.stripeChargeId})`,
     });
   } catch (err) {
-    const message = err instanceof QBAuthError
+    const isAuthError = err instanceof QBAuthError;
+    const message = isAuthError
       ? `QB not connected: ${err.message}`
       : err instanceof Error ? err.message : "unknown error";
     console.error("[QB] Sales Receipt write failed:", err);
@@ -890,6 +927,9 @@ async function writeSalesReceiptSafe(args: {
       driverId: args.driverId,
       details: `QB write failed for charge ${args.stripeChargeId}: ${message}. Reconcile manually.`,
     });
+    // QBAuthError means QB isn't connected — retrying won't help, swallow it.
+    // Any other error is unexpected; rethrow so webhook returns 500 and Stripe retries.
+    if (!isAuthError) throw err;
   }
 }
 
@@ -943,13 +983,19 @@ async function writeRefundReceiptSafe(args: {
       details: `QB Refund Receipt ${receipt.DocNumber} (id ${receipt.Id}) for $${args.amount.toFixed(2)} (refund ${args.stripeRefundId})${salesRef}`,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "unknown error";
+    const isAuthError = err instanceof QBAuthError;
+    const message = isAuthError
+      ? `QB not connected: ${err.message}`
+      : err instanceof Error ? err.message : "unknown error";
     console.error("[QB] Refund Receipt write failed:", err);
     await audit({
       action: "SALES_RECEIPT_FAILED",
       driverId: args.driverId,
       details: `QB Refund Receipt failed for refund ${args.stripeRefundId}: ${message}. Reconcile manually.`,
     });
+    // QBAuthError means QB isn't connected — retrying won't help, swallow it.
+    // Any other error is unexpected; rethrow so webhook returns 500 and Stripe retries.
+    if (!isAuthError) throw err;
   }
 }
 

@@ -123,8 +123,6 @@ function ExtendContent() {
           driverId,
           sessionId,
           sessionPurpose: "EXTENSION",
-          amount: totalAmount,
-          description: `Parking extension — ${hours}h`,
           hours,
         }),
       });
