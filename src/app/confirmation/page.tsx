@@ -49,6 +49,7 @@ function ConfirmationContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const gateOpened = searchParams.get("gateOpened");
+  const sessionIdParam = searchParams.get("sessionId");
 
   const [session, setSession] = useState<SessionData | null>(null);
   const [error, setError] = useState("");
@@ -64,10 +65,13 @@ function ConfirmationContent() {
     }
     setDriverId(saved.id);
 
-    apiFetch<{ session: SessionData | null }>(`/api/sessions?driverId=${saved.id}`)
+    apiFetch<{ session: SessionData | null; activeSessions: SessionData[] }>(`/api/sessions?driverId=${saved.id}`)
       .then((d) => {
-        if (d.session) {
-          setSession(d.session);
+        const target = sessionIdParam
+          ? d.activeSessions.find(s => s.id === sessionIdParam) ?? d.session
+          : d.session;
+        if (target) {
+          setSession(target);
         } else {
           setError("Session not found.");
         }
@@ -176,7 +180,9 @@ function ConfirmationContent() {
   }
 
   const expectedEnd = new Date(session.expectedEnd);
-  const totalPaid = session.payments.reduce((sum, p) => sum + p.amount, 0);
+  const totalPaid = session.payments
+    .filter(p => p.type !== "MONTHLY_RENEWAL")
+    .reduce((sum, p) => sum + p.amount, 0);
   const firstName = session.driver.name.split(" ")[0];
   const vehicleLabel =
     session.vehicle.type === "BOBTAIL" ? "Bobtail" : "Truck / Trailer";

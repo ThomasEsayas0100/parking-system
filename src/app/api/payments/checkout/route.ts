@@ -56,9 +56,16 @@ export const POST = handler(
     if (!driver) throw notFound("Driver not found");
 
     // Verify the referenced session exists + belongs to this driver for
-    // EXTENSION/OVERSTAY flows.
+    // EXTENSION/OVERSTAY flows. Fetch vehicle through the session so the
+    // plate + type can be embedded in Stripe checkout metadata (used by the
+    // webhook to build standardized QB receipt descriptions).
+    let licensePlate: string | undefined;
+    let vehicleType: string | undefined;
     if (sessionId) {
-      const session = await prisma.session.findUnique({ where: { id: sessionId } });
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: { vehicle: true },
+      });
       if (!session || session.driverId !== driverId) {
         throw notFound("Session not found");
       }
@@ -71,12 +78,20 @@ export const POST = handler(
           );
         }
       }
+      licensePlate = session.vehicle.licensePlate ?? undefined;
+      vehicleType = session.vehicle.type ?? undefined;
     }
     if (vehicleId) {
       const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
       if (!vehicle || vehicle.driverId !== driverId) {
         throw notFound("Vehicle not found");
       }
+      licensePlate = vehicle.licensePlate ?? undefined;
+      vehicleType = vehicle.type ?? undefined;
+    }
+
+    if (sessionPurpose === "MONTHLY_CHECKIN" && vehicleType === "BOBTAIL") {
+      return json({ error: "Monthly parking is not available for bobtail vehicles." }, { status: 400 });
     }
 
     const customerId = await getOrCreateStripeCustomer(driver);
@@ -90,6 +105,8 @@ export const POST = handler(
       ...(months !== undefined ? { months: String(months) } : {}),
       ...(termsVersion ? { termsVersion } : {}),
       ...(overstayAuthorized !== undefined ? { overstayAuthorized: String(overstayAuthorized) } : {}),
+      ...(licensePlate ? { licensePlate } : {}),
+      ...(vehicleType ? { vehicleType } : {}),
     };
 
     // Resolve success/cancel URLs against the incoming request origin so

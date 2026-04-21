@@ -271,6 +271,13 @@ function CheckInContent() {
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
   const vehicleType = selectedVehicle?.type || newVehicleType;
 
+  // Monthly is truck/trailer only — reset if bobtail is selected while on monthly
+  useEffect(() => {
+    if (vehicleType === "BOBTAIL" && durationType === "MONTHLY") {
+      setDurationType("HOURLY");
+    }
+  }, [vehicleType, durationType]);
+
   // Effective spot availability for the selected vehicle type
   // Bobtails can use truck spots if overflow is enabled
   const overflowEnabled = settings?.bobtailOverflow ?? true;
@@ -932,9 +939,10 @@ function CheckInContent() {
             </span>
           </div>
 
-          {/* Duration type toggle: Hourly / Monthly */}
+          {/* Duration type toggle: Hourly / Monthly (monthly not available for bobtails) */}
           <div className="flex gap-2 mb-4">
             {(["HOURLY", "MONTHLY"] as DurationType[]).map((dt) => {
+              if (dt === "MONTHLY" && vehicleType === "BOBTAIL") return null;
               const active = durationType === dt;
               return (
                 <button

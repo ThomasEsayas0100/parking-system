@@ -71,6 +71,7 @@ export type ApiPayment = {
 /** Payment with full session/driver/vehicle/spot context (admin Payments tab). */
 export type ApiPaymentWithSession = ApiPayment & {
   session: {
+    id: string;
     status: "ACTIVE" | "OVERSTAY" | "COMPLETED" | "CANCELLED";
     driver: {
       name: string;

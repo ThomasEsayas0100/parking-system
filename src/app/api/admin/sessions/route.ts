@@ -80,6 +80,36 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Session already ended" }, { status: 400 });
     }
 
+    // Cancel the Stripe subscription BEFORE updating the DB.
+    // If Stripe rejects the cancellation, we return an error and leave the session
+    // untouched — the admin must not believe a cancellation succeeded while the
+    // payment processor is still billing the driver.
+    if (stripeConfigured()) {
+      const monthlyPayment = await prisma.payment.findFirst({
+        where: { sessionId, stripeSubscriptionId: { not: null } },
+        select: { stripeSubscriptionId: true },
+      });
+      if (monthlyPayment?.stripeSubscriptionId) {
+        try {
+          await getStripe().subscriptions.cancel(monthlyPayment.stripeSubscriptionId);
+        } catch (e: unknown) {
+          // Stripe considers the subscription gone: treat as already cancelled (safe to proceed).
+          const alreadyGone =
+            e instanceof Error &&
+            (e.message.toLowerCase().includes("already been canceled") ||
+              e.message.toLowerCase().includes("no such subscription") ||
+              (e as { code?: string }).code === "resource_missing");
+          if (!alreadyGone) {
+            const msg = e instanceof Error ? e.message : "Unknown Stripe error";
+            throw conflict(
+              `Stripe subscription cancellation failed: ${msg}. ` +
+              `The session has NOT been cancelled — resolve this in Stripe before retrying.`
+            );
+          }
+        }
+      }
+    }
+
     // Payments keep their financial status (COMPLETED, REFUNDED, etc.).
     // The admin should issue refunds via the Manage Session modal before cancelling.
     await prisma.session.update({

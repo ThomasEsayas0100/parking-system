@@ -133,6 +133,8 @@ type CheckoutMetadata = {
   months?: string;
   termsVersion?: string;
   overstayAuthorized?: string;
+  licensePlate?: string;
+  vehicleType?: string;
 };
 
 /**
@@ -196,16 +198,17 @@ export async function processCheckoutSession(
       const sub = await stripe.subscriptions.retrieve(subscriptionId, { expand: ["latest_invoice"] });
       const latestInvoice = sub.latest_invoice as Stripe.Invoice | null;
       invoiceId = latestInvoice?.id ?? null;
-      if (latestInvoice) {
-        const legacyInvoice = latestInvoice as Stripe.Invoice & {
-          payment_intent?: string | Stripe.PaymentIntent | null;
-        };
-        paymentIntentId = typeof legacyInvoice.payment_intent === "string"
-          ? legacyInvoice.payment_intent
-          : legacyInvoice.payment_intent?.id ?? null;
-        if (paymentIntentId) {
-          const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
-          chargeId = typeof pi.latest_charge === "string" ? pi.latest_charge : pi.latest_charge?.id ?? null;
+      // In the clover API, invoice.payment_intent is gone. Use InvoicePayments API.
+      if (invoiceId) {
+        const invoicePayments = await stripe.invoicePayments.list({ invoice: invoiceId, limit: 1 });
+        const invoicePayment = invoicePayments.data[0];
+        if (invoicePayment) {
+          const piRef = invoicePayment.payment?.payment_intent;
+          paymentIntentId = typeof piRef === "string" ? piRef : piRef?.id ?? null;
+          if (paymentIntentId) {
+            const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+            chargeId = typeof pi.latest_charge === "string" ? pi.latest_charge : pi.latest_charge?.id ?? null;
+          }
         }
       }
     }
@@ -553,17 +556,28 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     : invoice.subscription?.id ?? null;
   if (!subscriptionId) return;
 
-  // Resolve chargeId — always available by the time this event fires.
-  const paymentIntentId = typeof invoice.payment_intent === "string"
-    ? invoice.payment_intent
-    : invoice.payment_intent?.id ?? null;
+  // Resolve chargeId via the InvoicePayments API.
+  // In the clover API (2025-09-30), invoice.charge and invoice.payment_intent
+  // were removed from the Invoice object and moved to InvoicePayment.payment.
+  const stripe = getStripe();
   let chargeId: string | null = null;
-  if (paymentIntentId) {
-    const pi = await getStripe().paymentIntents.retrieve(paymentIntentId);
-    chargeId = typeof pi.latest_charge === "string" ? pi.latest_charge : pi.latest_charge?.id ?? null;
+  let paymentIntentId: string | null = null;
+  const invoicePayments = await stripe.invoicePayments.list({ invoice: invoice.id, limit: 1 });
+  const invoicePayment = invoicePayments.data[0];
+  if (invoicePayment) {
+    const piRef = invoicePayment.payment?.payment_intent;
+    paymentIntentId = typeof piRef === "string" ? piRef : piRef?.id ?? null;
+    if (paymentIntentId) {
+      const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+      chargeId = typeof pi.latest_charge === "string" ? pi.latest_charge : pi.latest_charge?.id ?? null;
+    }
   }
 
   const amount = (invoice.amount_paid ?? 0) / 100;
+
+  // Fetch subscription metadata to get the contracted total months (N).
+  const sub = await stripe.subscriptions.retrieve(subscriptionId);
+  const totalMonths = parseInt(sub.metadata?.months ?? "1", 10);
 
   if (invoice.billing_reason === "subscription_create") {
     // Payment + Session already created by checkout.session.completed.
@@ -571,13 +585,22 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
     if (!chargeId) return;
     const payment = await prisma.payment.findFirst({
       where: { stripeInvoiceId: invoice.id },
-      include: { session: true },
+      include: { session: { include: { vehicle: true } } },
     });
     if (!payment || payment.qbSalesReceiptId) return; // already written or not found
+
+    // Backfill stripeChargeId — it was null at checkout time (charge hadn't settled yet).
+    // Do this before writeSalesReceiptSafe so the updateMany({ where: stripeChargeId }) finds the row.
+    if (!payment.stripeChargeId) {
+      await prisma.payment.update({ where: { id: payment.id }, data: { stripeChargeId: chargeId } });
+    }
+
+    const vt0 = vehicleTypeLabel(payment.session.vehicle.type);
+    const plate0 = plateSuffix(payment.session.vehicle.licensePlate ?? undefined);
     await writeSalesReceiptSafe({
       driverId: payment.session.driverId,
       amount: payment.amount,
-      description: "Monthly parking — first month",
+      description: `${vt0} parking — monthly, month 1 of ${totalMonths}${plate0}`,
       stripeEventId: event.id,
       stripeChargeId: chargeId,
     });
@@ -588,7 +611,7 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   const firstPayment = await prisma.payment.findFirst({
     where: { stripeSubscriptionId: subscriptionId },
     orderBy: { createdAt: "asc" },
-    include: { session: true },
+    include: { session: { include: { vehicle: true } } },
   });
   if (!firstPayment) {
     console.warn(`[stripe-webhook] invoice.payment_succeeded for unknown subscription ${subscriptionId}`);
@@ -596,12 +619,23 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   }
 
   const session = firstPayment.session;
-  const newExpectedEnd = addMonths(session.expectedEnd, 1);
 
+  // Skip if the session was already admin-cancelled — the subscription should have been
+  // cancelled in Stripe at the same time, but this guards against race conditions.
+  if (session.status === "CANCELLED" || session.status === "COMPLETED") return;
+
+  // Count existing monthly payments to determine position before creating the new one.
+  const existingMonthlyCount = await prisma.payment.count({
+    where: { sessionId: session.id, type: { in: ["MONTHLY_CHECKIN", "MONTHLY_RENEWAL"] } },
+  });
+  const renewalPosition = existingMonthlyCount + 1; // new payment will be this position
+
+  // expectedEnd was set to the full contracted period at session creation — do NOT advance it.
+  // Each MONTHLY_RENEWAL is a payment milestone within that period; the slot was already reserved.
   await prisma.$transaction([
     prisma.session.update({
       where: { id: session.id },
-      data: { expectedEnd: newExpectedEnd, reminderSent: false, billingStatus: "CURRENT" },
+      data: { reminderSent: false, billingStatus: "CURRENT" },
     }),
     prisma.payment.create({
       data: {
@@ -617,11 +651,12 @@ async function handleInvoicePaymentSucceeded(event: Stripe.Event) {
   ]);
 
   if (chargeId) {
-    const spot = await prisma.spot.findUnique({ where: { id: session.spotId } });
+    const vtR = vehicleTypeLabel(firstPayment.session.vehicle.type);
+    const plateR = plateSuffix(firstPayment.session.vehicle.licensePlate ?? undefined);
     await writeSalesReceiptSafe({
       driverId: session.driverId,
       amount,
-      description: `Monthly parking renewal — spot ${spot?.label ?? session.spotId}`,
+      description: `${vtR} parking — monthly, month ${renewalPosition} of ${totalMonths}${plateR}`,
       stripeEventId: event.id,
       stripeChargeId: chargeId,
     });
@@ -665,14 +700,14 @@ async function handleInvoicePaymentFailed(event: Stripe.Event) {
 export async function processChargeRefund(charge: Stripe.Charge, eventId: string): Promise<void> {
   let payment = await prisma.payment.findFirst({
     where: { stripeChargeId: charge.id },
-    include: { session: { include: { driver: true } } },
+    include: { session: { include: { driver: true, vehicle: true } } },
   });
   // Fallback: if stripeChargeId wasn't written (missed checkout webhook), try PI.
   if (!payment && charge.payment_intent) {
     const piId = typeof charge.payment_intent === "string" ? charge.payment_intent : charge.payment_intent.id;
     payment = await prisma.payment.findFirst({
       where: { stripePaymentIntentId: piId },
-      include: { session: { include: { driver: true } } },
+      include: { session: { include: { driver: true, vehicle: true } } },
     });
     if (payment) {
       await prisma.payment.update({ where: { id: payment.id }, data: { stripeChargeId: charge.id } });
@@ -722,9 +757,10 @@ export async function processChargeRefund(charge: Stripe.Charge, eventId: string
     await writeRefundReceiptSafe({
       driverId: payment.session.driverId,
       amount: r.amount / 100,
-      description: `Refund — charge ${charge.id}`,
+      description: refundDescription(payment),
       stripeEventId: eventId,
       stripeRefundId: r.id,
+      stripeChargeId: charge.id,
       qbSalesReceiptId: payment.qbSalesReceiptId ?? undefined,
     });
   }
@@ -768,6 +804,11 @@ async function handleSubscriptionDeleted(event: Stripe.Event) {
   if (!firstPayment) return;
 
   const session = firstPayment.session;
+
+  // If the admin already cancelled this session in the DB (and Stripe is confirming
+  // the subscription is gone), treat as a no-op — billing status is already handled.
+  if (session.status === "CANCELLED") return;
+
   const now = new Date();
 
   // Clamp session end to now for immediate mid-period cancellations.
@@ -858,6 +899,7 @@ async function writeRefundReceiptSafe(args: {
   description: string;
   stripeEventId: string;
   stripeRefundId: string;
+  stripeChargeId?: string;
   qbSalesReceiptId?: string;
 }) {
   try {
@@ -884,6 +926,7 @@ async function writeRefundReceiptSafe(args: {
       description: args.description,
       stripeEventId: args.stripeEventId,
       stripeRefundId: args.stripeRefundId,
+      stripeChargeId: args.stripeChargeId,
       linkedSalesReceiptId: args.qbSalesReceiptId,
     });
 
@@ -910,15 +953,39 @@ async function writeRefundReceiptSafe(args: {
   }
 }
 
+function vehicleTypeLabel(type: string | undefined): string {
+  return type === "BOBTAIL" ? "Bobtail" : "Truck/trailer";
+}
+
+function refundDescription(payment: { type: string; hours: number | null; session: { vehicle: { type: string; licensePlate: string | null } } }): string {
+  const vt = vehicleTypeLabel(payment.session.vehicle.type);
+  const plate = plateSuffix(payment.session.vehicle.licensePlate ?? undefined);
+  const typeMap: Record<string, string> = {
+    CHECKIN: `check-in, ${payment.hours ?? "?"}h`,
+    EXTENSION: `extension, ${payment.hours ?? "?"}h`,
+    OVERSTAY: `overstay, ${payment.hours ?? "?"}h`,
+    MONTHLY_CHECKIN: "monthly",
+    MONTHLY_RENEWAL: "monthly renewal",
+  };
+  const detail = typeMap[payment.type] ?? payment.type.toLowerCase();
+  return `Refund — ${vt} parking, ${detail}${plate}`;
+}
+
+function plateSuffix(plate: string | undefined): string {
+  return plate ? ` · Plate ${plate}` : "";
+}
+
 function salesReceiptDescription(purpose: SessionPurpose, metadata: CheckoutMetadata): string {
+  const vt = vehicleTypeLabel(metadata.vehicleType);
+  const plate = plateSuffix(metadata.licensePlate);
   switch (purpose) {
     case "CHECKIN":
-      return `Parking — ${metadata.hours ?? "?"}h`;
+      return `${vt} parking — check-in, ${metadata.hours ?? "?"}h${plate}`;
     case "MONTHLY_CHECKIN":
-      return "Monthly parking — first month";
+      return `${vt} parking — monthly, month 1 of ${metadata.months ?? "?"}${plate}`;
     case "EXTENSION":
-      return `Parking extension — ${metadata.hours ?? "?"}h`;
+      return `${vt} parking — extension, ${metadata.hours ?? "?"}h${plate}`;
     case "OVERSTAY":
-      return "Overstay settlement";
+      return `${vt} parking — overstay, ${metadata.hours ?? "?"}h${plate}`;
   }
 }

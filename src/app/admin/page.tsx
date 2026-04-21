@@ -11,6 +11,7 @@ import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 import PhoneInput, { digitsOnly } from "@/components/PhoneInput";
 import ManageSessionModal from "@/app/admin/ManageSessionModal";
+import ReconcileView from "@/app/admin/ReconcileView";
 
 type Spot = ApiSpotWithSessions;
 type AuditEntry = ApiAuditEntry;
@@ -171,6 +172,19 @@ function stripeDashboardUrl(p: PaymentRowRefs, testMode = false): string | null 
 // Shared inline style constants — light theme
 // ---------------------------------------------------------------------------
 const DARK_BG = "#F2F2F7";
+/** Returns "Monthly (X/N)" progress label for a monthly payment within its session's billing cycle. */
+function monthlyLabel(
+  allPayments: { id: string; type: string; createdAt: string }[],
+  currentId: string,
+): string {
+  const monthly = allPayments
+    .filter(p => p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL")
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const idx = monthly.findIndex(p => p.id === currentId);
+  if (idx < 0) return "Monthly";
+  return `Monthly (${idx + 1} of ${monthly.length})`;
+}
+
 const CARD_BG = "#FFFFFF";
 const BORDER = "#E5E5EA";
 const FG = "#1C1C1E";
@@ -208,7 +222,7 @@ export default function AdminDashboard() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
-  const [tab, setTab] = useState<"overview" | "sessions" | "payments" | "drivers" | "log" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "sessions" | "payments" | "reconcile" | "drivers" | "log" | "settings">("overview");
   const [paymentsInitialSearch, setPaymentsInitialSearch] = useState("");
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
@@ -224,6 +238,17 @@ export default function AdminDashboard() {
     const q = params.get("q");
     if (q) setPaymentsInitialSearch(q);
     if (t || q) window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+  useEffect(() => {
+    document.body.style.background = DARK_BG;
+    document.body.style.color = FG;
+    document.body.style.fontFamily = "system-ui, sans-serif";
+    return () => {
+      document.body.style.background = "";
+      document.body.style.color = "";
+      document.body.style.fontFamily = "";
+    };
   }, []);
 
   // ── Drivers tab state ──
@@ -246,12 +271,27 @@ export default function AdminDashboard() {
   const [editErrors, setEditErrors] = useState<{ name?: string; email?: string; phone?: string }>({});
   const DRIVERS_LIMIT = 30;
 
+  // ── Toast notifications (money-movement events) ──
+  type AdminToast = { id: number; message: string; status: "success" | "error" };
+  const [toasts, setToasts] = useState<AdminToast[]>([]);
+  function pushToast(message: string, status: "success" | "error") {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, status }]);
+    if (status === "success") {
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
+    }
+  }
+  function dismissToast(id: number) {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }
+
   // ── Session actions state ──
   const [manageSession, setManageSession] = useState<SessionRow | null>(null);
   const [sessionAction, setSessionAction] = useState<{ id: string; type: "cancel" | "close" } | null>(null);
   const [sessionActionReason, setSessionActionReason] = useState("");
   const [sessionActionEndedAt, setSessionActionEndedAt] = useState("");
   const [sessionActionLoading, setSessionActionLoading] = useState(false);
+  const [sessionActionError, setSessionActionError] = useState("");
 
   // ── New session modal ────────────────────────────────────────────────────
   type NsForm = {
@@ -575,6 +615,7 @@ export default function AdminDashboard() {
   async function handleSessionAction() {
     if (!sessionAction) return;
     setSessionActionLoading(true);
+    setSessionActionError("");
     try {
       const payload: Record<string, unknown> = {
         sessionId: sessionAction.id,
@@ -584,18 +625,37 @@ export default function AdminDashboard() {
       if (sessionAction.type === "close" && sessionActionEndedAt) {
         payload.endedAt = new Date(sessionActionEndedAt).toISOString();
       }
-      await fetch("/api/admin/sessions", {
+      const res = await fetch("/api/admin/sessions", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const errMsg = body.error ?? `Server error (${res.status})`;
+        setSessionActionError(errMsg);
+        if (sessionAction.type === "cancel") {
+          pushToast(`Cancellation failed: ${errMsg}`, "error");
+        }
+        return;
+      }
+      if (sessionAction.type === "cancel") {
+        pushToast("Session cancelled — Stripe subscription stopped and will no longer bill.", "success");
+      }
       setSessionAction(null);
       setSessionActionReason("");
       setSessionActionEndedAt("");
       loadSessions();
       loadData();
-    } catch { /* silent */ }
-    finally { setSessionActionLoading(false); }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : "Network error — action may not have completed.";
+      setSessionActionError(errMsg);
+      if (sessionAction.type === "cancel") {
+        pushToast(`Cancellation failed: ${errMsg}`, "error");
+      }
+    } finally {
+      setSessionActionLoading(false);
+    }
   }
 
   // ── Driver update ──
@@ -631,6 +691,7 @@ export default function AdminDashboard() {
     { key: "overview", label: "Overview" },
     { key: "sessions", label: "Sessions" },
     { key: "payments", label: "Payments" },
+    { key: "reconcile", label: "Reconcile" },
     { key: "drivers", label: "Drivers" },
     { key: "log", label: "Log" },
     { key: "settings", label: "Settings" },
@@ -638,7 +699,6 @@ export default function AdminDashboard() {
 
   return (
     <>
-    <div style={{ background: DARK_BG, minHeight: "100vh", color: FG, fontFamily: "system-ui, sans-serif" }}>
       {/* Header */}
       <div style={{ padding: mobile ? "16px 16px 0" : "20px 24px 0", borderBottom: `1px solid ${BORDER}` }}>
         <h1 style={{ fontSize: mobile ? 17 : 20, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 12 }}>
@@ -667,7 +727,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div style={{ padding: mobile ? "16px 16px 32px" : "24px 24px 40px" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: tab === "reconcile" ? 0 : mobile ? "16px 16px 32px" : "24px 24px 40px" }}>
 
         {/* ═══ OVERVIEW (Lot Map) ═══ */}
         {tab === "overview" && (
@@ -913,10 +973,27 @@ export default function AdminDashboard() {
 
                             {/* Payments */}
                             <DetailCol title="Payments">
+                              {(() => {
+                                const subId = s.payments.find(p => p.stripeSubscriptionId)?.stripeSubscriptionId;
+                                if (!subId) return null;
+                                const stripeBase = settings?.stripeTestMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
+                                return (
+                                  <a
+                                    href={`${stripeBase}/subscriptions/${subId}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", display: "block", marginBottom: 8, fontWeight: 600 }}
+                                  >
+                                    Stripe Subscription ↗
+                                  </a>
+                                );
+                              })()}
                               {s.payments.map((p) => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
                                   <span style={{ color: p.type === "OVERSTAY" ? "#DC2626" : FG_MUTED }}>
-                                    {p.type === "CHECKIN" || p.type === "MONTHLY_CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
+                                    {p.type === "CHECKIN" ? "Hourly"
+                                      : p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL" ? monthlyLabel(s.payments, p.id)
+                                      : p.type === "EXTENSION" ? "Extension" : "Overstay"}
                                     {p.hours ? ` (${p.hours}h)` : ""}
                                   </span>
                                   {p.refundedAmount > 0 ? (
@@ -985,6 +1062,11 @@ export default function AdminDashboard() {
                                         </>
                                       );
                                     })()}
+                                    {sessionActionError && (
+                                      <div style={{ width: "100%", background: "#FEF2F2", border: "1px solid #DC2626", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#991B1B", fontWeight: 600 }}>
+                                        ⚠ {sessionActionError}
+                                      </div>
+                                    )}
                                     <button
                                       onClick={handleSessionAction}
                                       disabled={sessionActionLoading}
@@ -995,7 +1077,7 @@ export default function AdminDashboard() {
                                     >
                                       {sessionActionLoading ? "..." : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
                                     </button>
-                                    <button onClick={() => { setSessionAction(null); setSessionActionEndedAt(""); setSessionActionReason(""); }} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
+                                    <button onClick={() => { setSessionAction(null); setSessionActionEndedAt(""); setSessionActionReason(""); setSessionActionError(""); }} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
                                       Back
                                     </button>
                                   </div>
@@ -1039,6 +1121,7 @@ export default function AdminDashboard() {
 
         {/* ═══ PAYMENTS ═══ */}
         {tab === "payments" && <PaymentsTab mobile={mobile} initialSearch={paymentsInitialSearch} />}
+        {tab === "reconcile" && <ReconcileView mobile={mobile} />}
 
         {/* ═══ DRIVERS ═══ */}
         {tab === "drivers" && (
@@ -1720,7 +1803,6 @@ export default function AdminDashboard() {
         </div>
       )}
 
-    </div>
     {manageSession && (
       <ManageSessionModal
         session={manageSession}
@@ -1729,6 +1811,39 @@ export default function AdminDashboard() {
         onSuccess={() => loadSessions()}
       />
     )}
+
+    {/* Toast notifications — top-right, money-movement events */}
+    <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none" }}>
+      {toasts.map(t => (
+        <div
+          key={t.id}
+          style={{
+            pointerEvents: "all",
+            background: t.status === "success" ? "#14532D" : "#7F1D1D",
+            border: `1px solid ${t.status === "success" ? "#16A34A" : "#DC2626"}`,
+            color: "#fff",
+            borderRadius: 10,
+            padding: "12px 14px",
+            maxWidth: 380,
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-start",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+            animation: "slideInRight 0.2s ease",
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{t.status === "success" ? "✓" : "⚠"}</span>
+          <span style={{ flex: 1, fontSize: 13, lineHeight: 1.45 }}>{t.message}</span>
+          <button
+            onClick={() => dismissToast(t.id)}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+    <style>{`@keyframes slideInRight { from { transform: translateX(32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`}</style>
     </>
   );
 }
@@ -1756,7 +1871,7 @@ type QBProfitLoss = { totalIncome: number; totalExpenses: number; netIncome: num
 type StripeRefundRow = { id: string; amount: number; createdAt: string; status: string | null; reason: string | null };
 type DbRefundRow = { stripeRefundId: string; qbRefundReceiptId: string | null };
 
-function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment: PaymentRow; onClose: () => void; stripeTestMode: boolean }) {
+function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTestMode }: { payment: PaymentRow; siblingPayments: PaymentRow[]; onClose: () => void; stripeTestMode: boolean }) {
   const stripeBase = stripeTestMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
 
   const [stripeRefunds, setStripeRefunds] = useState<StripeRefundRow[]>([]);
@@ -1764,6 +1879,7 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
   const [loadingRefunds, setLoadingRefunds] = useState(!!payment.stripeChargeId);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [qbSalesReceiptId, setQbSalesReceiptId] = useState<string | null>(payment.qbSalesReceiptId);
 
   const fetchRefunds = () => {
     if (!payment.stripePaymentIntentId && !payment.stripeChargeId) return;
@@ -1784,30 +1900,56 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payment.id, payment.stripeChargeId]);
 
-  const syncRefunds = () => {
-    if (!payment.stripePaymentIntentId) return;
+  const syncToQB = async () => {
     setSyncing(true);
     setSyncMsg(null);
-    fetch(`/api/admin/payments/${payment.id}/sync-refunds`, { method: "POST" })
-      .then(r => r.json())
-      .then(data => {
-        setSyncMsg(data.ok ? `Synced — refunded: $${(data.refundedAmount ?? 0).toFixed(2)}` : (data.error ?? "Error"));
-        fetchRefunds();
-      })
-      .catch(() => setSyncMsg("Sync failed"))
-      .finally(() => setSyncing(false));
+    try {
+      const [receiptData, refundsData] = await Promise.all([
+        fetch(`/api/admin/payments/${payment.id}/sync-receipt`, { method: "POST" }).then(r => r.json()),
+        fetch(`/api/admin/payments/${payment.id}/sync-refunds`, { method: "POST" }).then(r => r.json()),
+      ]);
+      if (receiptData.ok) setQbSalesReceiptId(receiptData.qbSalesReceiptId);
+      if (refundsData.ok) fetchRefunds();
+      const errors = [
+        !receiptData.ok ? (receiptData.error ?? "Receipt sync failed") : null,
+        !refundsData.ok ? (refundsData.error ?? "Refund sync failed") : null,
+      ].filter(Boolean);
+      if (errors.length) {
+        setSyncMsg(errors.join(" · "));
+      } else {
+        const parts = [
+          !receiptData.alreadySynced ? "Receipt written" : null,
+          (refundsData.refundedAmount ?? 0) > 0 ? `Refunds: $${(refundsData.refundedAmount as number).toFixed(2)}` : null,
+        ].filter(Boolean);
+        setSyncMsg(parts.length ? parts.join(" · ") : "Already up to date");
+      }
+    } catch {
+      setSyncMsg("Sync failed");
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const isStripePayment = !!(payment.stripeChargeId || payment.stripePaymentIntentId || payment.stripeSubscriptionId);
-  const paymentMissingQb = isStripePayment && !payment.qbSalesReceiptId;
+  const paymentMissingQb = isStripePayment && !qbSalesReceiptId;
 
-  const typeLabel: Record<string, string> = {
-    CHECKIN: "Check-in",
-    MONTHLY_CHECKIN: "Monthly Check-in",
-    MONTHLY_RENEWAL: "Monthly Renewal",
+  // Position-aware label for monthly payments: "Check-in (1/3)", "Renewal (2/3)", etc.
+  const monthlyPayments = siblingPayments
+    .filter(p => p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL")
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const isMonthly = payment.type === "MONTHLY_CHECKIN" || payment.type === "MONTHLY_RENEWAL";
+  const monthlyTotal = monthlyPayments.length;
+  const monthlyIndex = isMonthly ? monthlyPayments.findIndex(p => p.id === payment.id) : -1;
+
+  const baseTypeLabel: Record<string, string> = {
+    CHECKIN: "Hourly",
     EXTENSION: "Extension",
     OVERSTAY: "Overstay",
   };
+
+  const typeLabel = isMonthly && monthlyIndex >= 0
+    ? monthlyLabel(siblingPayments, payment.id)
+    : (baseTypeLabel[payment.type] ?? payment.type);
 
   const sessionStatus = payment.session?.status;
   const spotLabel = payment.session?.spot?.label ?? null;
@@ -1839,10 +1981,23 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
         >×</button>
 
         <div style={{ fontSize: 15, fontWeight: 700, color: "#111827", marginBottom: 2 }}>Transaction Details</div>
-        <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 20 }}>
+        <div style={{ fontSize: 12, color: "#6B7280", marginBottom: payment.stripeSubscriptionId ? 10 : 20 }}>
           {payment.session?.driver?.name ?? "Unknown driver"}
           {spotLabel ? ` · Spot ${spotLabel}` : ""}
         </div>
+
+        {payment.stripeSubscriptionId && (
+          <div style={{ marginBottom: 16 }}>
+            <a
+              href={`${stripeBase}/subscriptions/${payment.stripeSubscriptionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 12, color: "#6366F1", textDecoration: "none", fontWeight: 600 }}
+            >
+              View subscription in Stripe ↗
+            </a>
+          </div>
+        )}
 
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
@@ -1865,34 +2020,31 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
                 {payment.hours ? <div style={{ fontSize: 11, fontWeight: 400, color: "#6B7280" }}>{payment.hours}h</div> : null}
               </td>
               <td style={hasRows ? tdStyle : tdLast}>
-                {typeLabel[payment.type] ?? payment.type}
+                {typeLabel}
               </td>
               <td style={hasRows ? tdStyle : tdLast}>
                 {payment.stripePaymentIntentId && (
                   <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
-                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", fontFamily: "monospace" }}>
-                    {payment.stripePaymentIntentId.slice(0, 22)}… ↗
-                  </a>
-                )}
-                {payment.stripeSubscriptionId && (
-                  <a href={`${stripeBase}/subscriptions/${payment.stripeSubscriptionId}`} target="_blank" rel="noopener noreferrer"
-                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", fontFamily: "monospace", display: "block" }}>
-                    {payment.stripeSubscriptionId.slice(0, 22)}… ↗
+                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none" }}>
+                    View payment ↗
                   </a>
                 )}
                 {payment.legacyQbReference && !payment.stripePaymentIntentId && (
                   <span style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{payment.legacyQbReference}</span>
                 )}
-                {!payment.stripePaymentIntentId && !payment.stripeSubscriptionId && !payment.legacyQbReference && (
+                {!payment.stripePaymentIntentId && !payment.legacyQbReference && (
                   <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
                 )}
               </td>
               <td style={hasRows ? tdStyle : tdLast}>
-                {payment.qbSalesReceiptId ? (
-                  <a href={qbLinks.salesReceipt(payment.qbSalesReceiptId)} target="_blank" rel="noopener noreferrer"
-                    style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
-                    Receipt ↗
-                  </a>
+                {qbSalesReceiptId ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <a href={qbLinks.salesReceipt(qbSalesReceiptId)} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
+                      View Receipt ↗
+                    </a>
+                    <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>#{qbSalesReceiptId}</span>
+                  </div>
                 ) : paymentMissingQb ? (
                   <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
                 ) : (
@@ -1937,7 +2089,7 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
                     {qbRefundReceiptId ? (
                       <a href={qbLinks.refundReceipt(qbRefundReceiptId)} target="_blank" rel="noopener noreferrer"
                         style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
-                        Receipt ↗
+                        View Receipt ↗
                       </a>
                     ) : (
                       <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
@@ -1956,16 +2108,20 @@ function TransactionDetailsPopup({ payment, onClose, stripeTestMode }: { payment
             {sessionStatus === "ACTIVE" ? "Active" : sessionStatus === "OVERSTAY" ? "Overstay" : sessionStatus === "COMPLETED" ? "Completed" : sessionStatus === "CANCELLED" ? "Cancelled" : (sessionStatus ?? "—")}
             {spotLabel ? ` · Spot ${spotLabel}` : ""}
           </span>
-          {payment.stripePaymentIntentId && (
-            <button
-              onClick={syncRefunds}
-              disabled={syncing}
-              style={{ fontSize: 11, padding: "3px 10px", borderRadius: 5, border: "1px solid #D1D5DB", background: "#fff", color: "#374151", cursor: syncing ? "default" : "pointer", opacity: syncing ? 0.6 : 1 }}
-            >
-              {syncing ? "Syncing…" : "↻ Sync from Stripe"}
-            </button>
-          )}
-          {syncMsg && <span style={{ fontSize: 11, color: syncMsg.startsWith("Synced") ? "#16A34A" : "#DC2626" }}>{syncMsg}</span>}
+          {isStripePayment && (() => {
+            const allSynced = !!qbSalesReceiptId && dbRefunds.every(r => r.qbRefundReceiptId);
+            return (
+              <button
+                onClick={syncToQB}
+                disabled={syncing || allSynced}
+                title={allSynced ? "All receipts already generated" : undefined}
+                style={{ fontSize: 11, padding: "3px 10px", borderRadius: 5, border: `1px solid ${allSynced ? "#E5E7EB" : "#D1FAE5"}`, background: allSynced ? "#F9FAFB" : "#ECFDF5", color: allSynced ? "#9CA3AF" : "#065F46", cursor: (syncing || allSynced) ? "default" : "pointer", opacity: syncing ? 0.6 : 1 }}
+              >
+                {syncing ? "Syncing…" : "Generate Receipts"}
+              </button>
+            );
+          })()}
+          {syncMsg && <span style={{ fontSize: 11, color: syncMsg.startsWith("Sync failed") || syncMsg.includes("failed") ? "#DC2626" : "#16A34A" }}>{syncMsg}</span>}
         </div>
       </div>
     </div>
@@ -2085,9 +2241,9 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
   const unmatchedQB: typeof qbPayments = [];
 
   const typeLabels: Record<string, string> = {
-    CHECKIN: "Check-in",
+    CHECKIN: "Hourly",
     MONTHLY_CHECKIN: "Monthly",
-    MONTHLY_RENEWAL: "Renewal",
+    MONTHLY_RENEWAL: "Monthly",
     EXTENSION: "Extension",
     OVERSTAY: "Overstay",
   };
@@ -2097,6 +2253,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
       {selectedPayment && (
         <TransactionDetailsPopup
           payment={selectedPayment}
+          siblingPayments={payments.filter(p => p.session?.id && p.session.id === selectedPayment.session?.id)}
           onClose={() => setSelectedPayment(null)}
           stripeTestMode={stripeTestMode}
         />
@@ -2329,7 +2486,11 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
 
                       {/* Type */}
                       <td style={{ ...cell }}>
-                        <span style={typeBadgeStyle}>{typeLabels[p.type] ?? p.type}</span>
+                        <span style={typeBadgeStyle}>
+                          {(p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL")
+                            ? monthlyLabel(payments.filter(q => q.session?.id && q.session.id === p.session?.id), p.id)
+                            : (typeLabels[p.type] ?? p.type)}
+                        </span>
                       </td>
 
                       {/* Driver */}

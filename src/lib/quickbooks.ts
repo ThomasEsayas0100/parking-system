@@ -289,11 +289,13 @@ type QBSalesReceipt = { Id: string; DocNumber: string; TotalAmt: number };
 
 /**
  * Write a Sales Receipt to QB. Idempotent by Stripe event ID — the event ID
- * is stored in `PrivateNote` so replayed webhooks are detectable (we query
- * first, write only if not found).
+ * PrivateNote format (canonical): `charge:${stripeChargeId} ref:${stripeEventId}`
+ * The charge ID is always first and is the deduplication key — we query QB for
+ * an existing receipt with that charge ID before creating a new one. This catches
+ * duplicates regardless of which caller path (webhook vs admin sync) wrote the
+ * original.
  *
- * Returns the QB Sales Receipt ID so callers can store it on the Payment row
- * for admin deep-linking.
+ * Returns the QB Sales Receipt (existing or new) so callers can store its ID.
  */
 export async function writeSalesReceipt(args: {
   customerId: string;
@@ -302,10 +304,17 @@ export async function writeSalesReceipt(args: {
   stripeEventId: string;
   stripeChargeId: string;
 }): Promise<QBSalesReceipt> {
-  // Idempotency is handled upstream by the StripeEvent table — each Stripe
-  // event ID is processed at most once, so we write without a pre-check.
-  // PrivateNote stores the Stripe reference for human reconciliation in QB.
-  const privateNote = `stripe:${args.stripeEventId} charge:${args.stripeChargeId}`;
+  // Pre-check: query QB for any receipt already tagged with this charge ID.
+  // The LIKE query matches both the new `charge:xxx ref:yyy` format and the
+  // legacy `stripe:xxx charge:xxx` format written by earlier code.
+  const searchRes = await qbFetch<{ QueryResponse: { SalesReceipt?: QBSalesReceipt[] } }>(
+    `/query?query=${encodeURIComponent(`SELECT * FROM SalesReceipt WHERE PrivateNote LIKE '%charge:${args.stripeChargeId}%' MAXRESULTS 1`)}`,
+  ).catch(() => null);
+  const existing = searchRes?.QueryResponse?.SalesReceipt?.[0];
+  if (existing) return existing;
+
+  // Canonical PrivateNote: charge ID first so it's the sortable/searchable key.
+  const privateNote = `charge:${args.stripeChargeId} ref:${args.stripeEventId}`;
 
   const [itemId, depositAccountId] = await Promise.all([getServiceItemId(), getDepositAccountId()]);
 
@@ -348,11 +357,20 @@ export async function writeRefundReceipt(args: {
   description: string;
   stripeEventId: string;
   stripeRefundId: string;
+  stripeChargeId?: string;
   linkedSalesReceiptId?: string;
 }): Promise<QBRefundReceipt> {
-  // Idempotency handled upstream by StripeEvent table; write directly.
+  // Pre-check: return existing RefundReceipt if this refund ID was already written.
+  const searchRes = await qbFetch<{ QueryResponse: { RefundReceipt?: QBRefundReceipt[] } }>(
+    `/query?query=${encodeURIComponent(`SELECT * FROM RefundReceipt WHERE PrivateNote LIKE '%refund:${args.stripeRefundId}%' MAXRESULTS 1`)}`,
+  ).catch(() => null);
+  const existing = searchRes?.QueryResponse?.RefundReceipt?.[0];
+  if (existing) return existing;
+
+  // Canonical PrivateNote: refund ID first (dedup key), then charge ID, then event ref.
+  const chargeRef = args.stripeChargeId ? ` charge:${args.stripeChargeId}` : "";
   const salesRef = args.linkedSalesReceiptId ? ` salesreceipt:${args.linkedSalesReceiptId}` : "";
-  const privateNote = `stripe:${args.stripeEventId} refund:${args.stripeRefundId}${salesRef}`;
+  const privateNote = `refund:${args.stripeRefundId}${chargeRef} ref:${args.stripeEventId}${salesRef}`;
 
   const [itemId, depositAccountId] = await Promise.all([getServiceItemId(), getDepositAccountId()]);
 
@@ -386,4 +404,46 @@ export async function writeRefundReceipt(args: {
   );
 
   return createRes.RefundReceipt;
+}
+
+// ---------------------------------------------------------------------------
+// List recent Sales Receipts — used by the Charges & Receipts reconcile tab
+// ---------------------------------------------------------------------------
+
+export type QBSalesReceiptListItem = {
+  Id: string;
+  DocNumber: string;
+  TxnDate: string;           // "YYYY-MM-DD"
+  TotalAmt: number;
+  CustomerRef: { value: string; name?: string } | null;
+  PrivateNote: string | null; // contains "charge:ch_xxx ref:evt_xxx" for our receipts
+};
+
+export async function listRecentSalesReceipts(sinceDaysAgo: number): Promise<QBSalesReceiptListItem[]> {
+  const since = new Date(Date.now() - sinceDaysAgo * 24 * 60 * 60 * 1000);
+  const dateStr = since.toISOString().split("T")[0];
+  const query = `SELECT * FROM SalesReceipt WHERE TxnDate >= '${dateStr}' ORDERBY TxnDate DESC MAXRESULTS 200`;
+  const res = await qbFetch<{
+    QueryResponse: { SalesReceipt?: QBSalesReceiptListItem[] };
+  }>(`/query?query=${encodeURIComponent(query)}`);
+  return res.QueryResponse.SalesReceipt ?? [];
+}
+
+export type QBRefundReceiptListItem = {
+  Id: string;
+  DocNumber: string;
+  TxnDate: string;
+  TotalAmt: number;
+  CustomerRef: { value: string; name?: string } | null;
+  PrivateNote: string | null; // contains "refund:re_xxx charge:ch_xxx ref:evt_xxx"
+};
+
+export async function listRecentRefundReceipts(sinceDaysAgo: number): Promise<QBRefundReceiptListItem[]> {
+  const since = new Date(Date.now() - sinceDaysAgo * 24 * 60 * 60 * 1000);
+  const dateStr = since.toISOString().split("T")[0];
+  const query = `SELECT * FROM RefundReceipt WHERE TxnDate >= '${dateStr}' ORDERBY TxnDate DESC MAXRESULTS 200`;
+  const res = await qbFetch<{
+    QueryResponse: { RefundReceipt?: QBRefundReceiptListItem[] };
+  }>(`/query?query=${encodeURIComponent(query)}`);
+  return res.QueryResponse.RefundReceipt ?? [];
 }

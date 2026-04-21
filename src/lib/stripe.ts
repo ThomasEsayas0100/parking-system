@@ -257,6 +257,24 @@ export async function listRecentCharges(sinceDaysAgo: number): Promise<Stripe.Ch
   return charges;
 }
 
+export async function listRecentRefunds(sinceDaysAgo: number): Promise<Stripe.Refund[]> {
+  const stripe = getStripe();
+  const since = Math.floor((Date.now() - sinceDaysAgo * 24 * 60 * 60 * 1000) / 1000);
+  const refunds: Stripe.Refund[] = [];
+  let startingAfter: string | undefined;
+  for (let i = 0; i < 10; i++) {
+    const page = await stripe.refunds.list({
+      created: { gte: since },
+      limit: 100,
+      starting_after: startingAfter,
+    });
+    refunds.push(...page.data);
+    if (!page.has_more) break;
+    startingAfter = page.data[page.data.length - 1]?.id;
+  }
+  return refunds;
+}
+
 /**
  * Verify a Stripe webhook signature and parse the event. Throws if signature
  * is invalid (forged or misconfigured) — caller should return 400 in that
