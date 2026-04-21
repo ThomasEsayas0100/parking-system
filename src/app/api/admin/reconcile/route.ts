@@ -16,6 +16,7 @@ type ReconcileRefundRow = {
 type ReconcilePaymentRow = {
   id: string;
   type: string;
+  status: string;
   amount: number;
   hours: number | null;
   createdAt: string;
@@ -78,6 +79,7 @@ export const GET = handler({}, async ({ req }) => {
           amount: true,
           hours: true,
           createdAt: true,
+          status: true,
           stripeChargeId: true,
           stripePaymentIntentId: true,
           stripeSubscriptionId: true,
@@ -157,6 +159,11 @@ export const GET = handler({}, async ({ req }) => {
           health = worstHealth(health, "warning");
         }
       }
+
+      if ((p.status === "REFUNDED" || p.status === "PARTIALLY_REFUNDED") && p.refunds.length === 0) {
+        issues.push("Refund recorded on payment but no refund detail row — charge.refunded webhook may have been missed");
+        health = worstHealth(health, "warning");
+      }
     }
 
     // Check 3: monthly — Stripe invoice count vs DB payment count
@@ -199,6 +206,7 @@ export const GET = handler({}, async ({ req }) => {
       payments: session.payments.map((p) => ({
         id: p.id,
         type: p.type,
+        status: p.status,
         amount: p.amount,
         hours: p.hours,
         createdAt: p.createdAt.toISOString(),

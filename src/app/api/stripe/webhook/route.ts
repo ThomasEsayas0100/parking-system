@@ -93,12 +93,10 @@ export async function POST(req: NextRequest) {
         break;
     }
 
-    await prisma.stripeEvent.create({
-      data: {
-        id: event.id,
-        type: event.type,
-        payload: event as unknown as object,
-      },
+    await prisma.stripeEvent.upsert({
+      where: { id: event.id },
+      create: { id: event.id, type: event.type, payload: event as unknown as object },
+      update: {},
     });
 
     await prisma.settings.update({
@@ -300,10 +298,38 @@ async function handleCheckin(args: {
     return;
   }
 
-  const spot = await assignSpot(vehicle.type);
-  if (!spot) {
-    // No spot — payment was already captured. Admin must refund manually.
-    // Audit loudly so it's visible.
+  const now = new Date();
+  const expectedEnd = addHours(now, hours);
+
+  // Atomic: FOR UPDATE SKIP LOCKED in assignSpot locks the spot row; session.create
+  // claims it — both inside the same transaction so no concurrent check-in can race.
+  const txResult = await prisma.$transaction(async (tx) => {
+    const spot = await assignSpot(vehicle.type, tx);
+    if (!spot) return null;
+    const created = await tx.session.create({
+      data: {
+        driverId: metadata.driverId!,
+        vehicleId: vehicle.id,
+        spotId: spot.id,
+        expectedEnd,
+        termsVersion: metadata.termsVersion,
+        overstayAuthorized: metadata.overstayAuthorized === "true",
+        payments: {
+          create: {
+            type: "CHECKIN",
+            amount,
+            hours,
+            stripeCheckoutSessionId: checkoutSessionId,
+            stripePaymentIntentId: paymentIntentId,
+            stripeChargeId: chargeId,
+          },
+        },
+      },
+    });
+    return { session: created, spotLabel: spot.label };
+  });
+
+  if (!txResult) {
     await audit({
       action: "SALES_RECEIPT_FAILED",
       driverId: metadata.driverId,
@@ -311,31 +337,7 @@ async function handleCheckin(args: {
     });
     throw new Error("No spot available after successful payment — admin must refund");
   }
-
-  const now = new Date();
-  const expectedEnd = addHours(now, hours);
-
-  const session = await prisma.session.create({
-    data: {
-      driverId: metadata.driverId,
-      vehicleId: vehicle.id,
-      spotId: spot.id,
-      expectedEnd,
-      termsVersion: metadata.termsVersion,
-      overstayAuthorized: metadata.overstayAuthorized === "true",
-      payments: {
-        create: {
-          type: "CHECKIN",
-          amount,
-          hours,
-          stripeCheckoutSessionId: checkoutSessionId,
-          stripePaymentIntentId: paymentIntentId,
-          stripeChargeId: chargeId,
-        },
-      },
-    },
-    include: { vehicle: true, spot: true },
-  });
+  const { session, spotLabel } = txResult;
 
   await audit({
     action: "CHECKIN",
@@ -343,7 +345,7 @@ async function handleCheckin(args: {
     driverId: session.driverId,
     vehicleId: session.vehicleId,
     spotId: session.spotId,
-    details: `Checked in for ${hours}h, paid $${amount.toFixed(2)}, plate: ${session.vehicle.licensePlate}, terms:v${metadata.termsVersion}`,
+    details: `Checked in for ${hours}h, paid $${amount.toFixed(2)}, spot: ${spotLabel}, plate: ${vehicle.licensePlate ?? "–"}, terms:v${metadata.termsVersion}`,
   });
 }
 
@@ -384,8 +386,38 @@ async function handleMonthlyCheckin(args: {
     return;
   }
 
-  const spot = await assignSpot(vehicle.type);
-  if (!spot) {
+  const now = new Date();
+  const initialMonths = metadata.months ? parseInt(metadata.months, 10) : 1;
+  const expectedEnd = addMonths(now, initialMonths);
+
+  const txResult = await prisma.$transaction(async (tx) => {
+    const spot = await assignSpot(vehicle.type, tx);
+    if (!spot) return null;
+    const created = await tx.session.create({
+      data: {
+        driverId: metadata.driverId!,
+        vehicleId: vehicle.id,
+        spotId: spot.id,
+        expectedEnd,
+        termsVersion: metadata.termsVersion,
+        overstayAuthorized: metadata.overstayAuthorized === "true",
+        payments: {
+          create: {
+            type: "MONTHLY_CHECKIN",
+            amount,
+            stripeCheckoutSessionId: checkoutSessionId,
+            stripePaymentIntentId: paymentIntentId,
+            stripeChargeId: chargeId,
+            stripeSubscriptionId: subscriptionId,
+            stripeInvoiceId: invoiceId,
+          },
+        },
+      },
+    });
+    return { session: created, spotLabel: spot.label };
+  });
+
+  if (!txResult) {
     await audit({
       action: "SALES_RECEIPT_FAILED",
       driverId: metadata.driverId,
@@ -393,33 +425,7 @@ async function handleMonthlyCheckin(args: {
     });
     throw new Error("No spot available after successful monthly signup");
   }
-
-  const now = new Date();
-  const initialMonths = metadata.months ? parseInt(metadata.months, 10) : 1;
-  const expectedEnd = addMonths(now, initialMonths);
-
-  const session = await prisma.session.create({
-    data: {
-      driverId: metadata.driverId,
-      vehicleId: vehicle.id,
-      spotId: spot.id,
-      expectedEnd,
-      termsVersion: metadata.termsVersion,
-      overstayAuthorized: metadata.overstayAuthorized === "true",
-      payments: {
-        create: {
-          type: "MONTHLY_CHECKIN",
-          amount,
-          stripeCheckoutSessionId: checkoutSessionId,
-          stripePaymentIntentId: paymentIntentId,
-          stripeChargeId: chargeId,
-          stripeSubscriptionId: subscriptionId,
-          stripeInvoiceId: invoiceId,
-        },
-      },
-    },
-    include: { vehicle: true, spot: true },
-  });
+  const { session, spotLabel } = txResult;
 
   // Set cancel_at on the subscription so Stripe auto-cancels after the
   // pre-selected period and stops charging the driver.
@@ -438,7 +444,7 @@ async function handleMonthlyCheckin(args: {
     driverId: session.driverId,
     vehicleId: session.vehicleId,
     spotId: session.spotId,
-    details: `Monthly checkin, plate: ${session.vehicle.licensePlate}, terms:v${metadata.termsVersion}`,
+    details: `Monthly checkin, spot: ${spotLabel}, plate: ${vehicle.licensePlate ?? "–"}, terms:v${metadata.termsVersion}`,
   });
 }
 

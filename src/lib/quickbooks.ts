@@ -60,6 +60,11 @@ function validateEnvironment(realmId: string): void {
 // ---------------------------------------------------------------------------
 import { prisma } from "./prisma";
 
+// In-flight refresh lock: if two concurrent QB calls both detect an expired
+// token, only one refresh runs. The second awaits the same promise so the
+// refresh token is never exchanged twice (which causes Intuit "invalid_grant").
+let _refreshPromise: Promise<{ accessToken: string; realmId: string }> | null = null;
+
 async function getTokens(): Promise<{ accessToken: string; realmId: string }> {
   const settings = await prisma.settings.findUnique({ where: { id: "default" } });
   if (!settings?.qbAccessToken || !settings?.qbRealmId) {
@@ -71,7 +76,11 @@ async function getTokens(): Promise<{ accessToken: string; realmId: string }> {
   if (settings.qbTokenExpiresAt && settings.qbRefreshToken) {
     const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
     if (settings.qbTokenExpiresAt < fiveMinFromNow) {
-      return refreshAccessToken(settings.qbRefreshToken, settings.qbRealmId);
+      if (!_refreshPromise) {
+        _refreshPromise = refreshAccessToken(settings.qbRefreshToken, settings.qbRealmId)
+          .finally(() => { _refreshPromise = null; });
+      }
+      return _refreshPromise;
     }
   }
 
