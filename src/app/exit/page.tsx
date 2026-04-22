@@ -17,7 +17,7 @@ type ExitSession = {
   startedAt: string;
   spot: { label: string };
   vehicle: { licensePlate: string; type: string };
-  payments: Pick<ApiPayment, "amount" | "hours" | "type">[];
+  payments: Pick<ApiPayment, "amount" | "days" | "type">[];
 };
 
 type State =
@@ -238,7 +238,7 @@ function ExitContent() {
           driverId: driver.id,
           sessionId: overstayInfo.sessionId,
           sessionPurpose: "OVERSTAY",
-          hours: overstayInfo.overstayHours,
+          days: overstayInfo.overstayDays,
         }),
       });
       const checkoutData = await checkoutRes.json();
@@ -439,7 +439,7 @@ function ActiveSessionView({
           <div style={styles.cardRow}>
             <span style={styles.cardKey}>Paid</span>
             <span style={styles.cardVal}>
-              ${checkinPayment.amount.toFixed(2)} · {checkinPayment.hours}h
+              ${checkinPayment.amount.toFixed(2)} · {checkinPayment.days}d
             </span>
           </div>
         )}
@@ -508,11 +508,11 @@ function OverstayView({
             <div style={{ ...styles.cardDivider }} />
             <div style={styles.cardRow}>
               <span style={styles.cardKey}>Duration</span>
-              <span style={styles.cardVal}>{overstayInfo.overstayHours}h</span>
+              <span style={styles.cardVal}>{overstayInfo.overstayDays}d</span>
             </div>
             <div style={styles.cardRow}>
               <span style={styles.cardKey}>Rate</span>
-              <span style={styles.cardVal}>${overstayInfo.overstayRate}/hr</span>
+              <span style={styles.cardVal}>${overstayInfo.overstayRate}/day</span>
             </div>
             <div style={{ ...styles.cardRow, marginTop: 8 }}>
               <span style={{ ...styles.cardKey, fontWeight: 600 }}>

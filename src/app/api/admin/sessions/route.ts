@@ -6,7 +6,7 @@ import { log as audit } from "@/lib/audit";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
-import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
+import { dailyRate, monthlyRate, addDays, addMonths } from "@/lib/rates";
 import { getStripe, refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
 
 // ---------------------------------------------------------------------------
@@ -15,8 +15,8 @@ import { getStripe, refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
 const SessionEditBody = z.object({
   sessionId: z.string().min(1),
   action: z.enum(["extend", "cancel", "close", "adjust", "cancel-subscription"]),
-  // For extend: how many hours to add
-  hours: z.number().int().min(1).max(720).optional(),
+  // For extend: how many days to add
+  days: z.number().int().min(1).max(365).optional(),
   // For cancel/close: reason required
   reason: z.string().min(1).max(500).optional(),
   // For close: backdate the session end to this time
@@ -31,7 +31,7 @@ const SessionEditBody = z.object({
 export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
   await requireAdmin();
 
-  const { sessionId, action, hours, reason, endedAt } = body;
+  const { sessionId, action, days, reason, endedAt } = body;
 
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
@@ -41,15 +41,15 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
   if (!session) throw notFound("Session not found");
 
   if (action === "extend") {
-    if (!hours) {
-      return json({ error: "Hours required for extension" }, { status: 400 });
+    if (!days) {
+      return json({ error: "Days required for extension" }, { status: 400 });
     }
 
     if (!["ACTIVE", "OVERSTAY"].includes(session.status)) {
       return json({ error: "Can only extend active or overstay sessions" }, { status: 400 });
     }
 
-    const newEnd = new Date(session.expectedEnd.getTime() + hours * 60 * 60 * 1000);
+    const newEnd = addDays(session.expectedEnd, days);
 
     // If session was OVERSTAY, extending it brings it back to ACTIVE
     const newStatus = session.status === "OVERSTAY" ? "ACTIVE" : session.status;
@@ -65,7 +65,7 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `ADMIN extended ${hours}h, new expiry: ${newEnd.toISOString()}, driver: ${session.driver.name}`,
+      details: `ADMIN extended ${days}d, new expiry: ${newEnd.toISOString()}, driver: ${session.driver.name}`,
     });
 
     return json({ session: updated });
@@ -213,6 +213,7 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
     let newStatus = session.status;
     let newEnd = session.expectedEnd;
     let newEndedAt = session.endedAt;
+    let deletedOverstay = 0;
     if (effectiveEnd) {
       newEnd = new Date(effectiveEnd);
       if (newEnd < session.startedAt) {
@@ -223,6 +224,11 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       if (newEnd <= new Date()) {
         newStatus = "COMPLETED";
         newEndedAt = newEnd;
+        // Parity with close action: remove overstay payments charged after the effective end.
+        const result = await prisma.payment.deleteMany({
+          where: { sessionId, type: "OVERSTAY", createdAt: { gt: newEnd } },
+        });
+        deletedOverstay = result.count;
       } else {
         newStatus = session.status === "OVERSTAY" ? "ACTIVE" : session.status;
       }
@@ -241,13 +247,15 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
     const refundSummary = refundsIssued.length > 0
       ? ` Refunds issued: $${refundsIssued.join(" + $")}.`
       : "";
+    const overstayNote = deletedOverstay > 0 ? ` Removed ${deletedOverstay} overstay payment(s).` : "";
+    const reasonNote = body.reason ? ` Reason: ${body.reason}.` : "";
     await audit({
       action: "SPOT_FREED",
       sessionId,
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `ADMIN adjusted session. New end: ${newEnd.toISOString()}.${refundSummary} Driver: ${session.driver.name}, Spot: ${session.spot.label}.`,
+      details: `ADMIN adjusted session. New end: ${newEnd.toISOString()}.${refundSummary}${overstayNote}${reasonNote} Driver: ${session.driver.name}, Spot: ${session.spot.label}.`,
     });
 
     return json({ success: true, action: "adjusted", refundsIssued });
@@ -301,8 +309,8 @@ const AdminSessionCreateSchema = z.object({
   unitNumber: z.string().trim().max(50).optional(),
   nickname: z.string().trim().max(80).optional(),
   // Duration
-  durationType: z.enum(["HOURLY", "MONTHLY"]),
-  hours: z.number().int().min(1).max(72).optional(),
+  durationType: z.enum(["DAILY", "MONTHLY"]),
+  days: z.number().int().min(1).max(30).optional(),
   months: z.number().int().min(1).max(12).optional(),
   // Spot (omit for auto-assign)
   spotId: z.string().min(1).max(200).optional(),
@@ -312,8 +320,8 @@ const AdminSessionCreateSchema = z.object({
   (d) => d.licensePlate || d.unitNumber,
   { message: "Provide license plate or unit number", path: ["licensePlate"] }
 ).refine(
-  (d) => (d.durationType === "HOURLY" ? d.hours != null : d.months != null),
-  { message: "Provide hours (HOURLY) or months (MONTHLY)", path: ["hours"] }
+  (d) => (d.durationType === "DAILY" ? d.days != null : d.months != null),
+  { message: "Provide days (DAILY) or months (MONTHLY)", path: ["days"] }
 );
 
 export const POST = handler(
@@ -324,7 +332,7 @@ export const POST = handler(
     const {
       name, phone, email, vehicleType,
       licensePlate, unitNumber, nickname,
-      durationType, hours, months,
+      durationType, days, months,
       spotId, invoiceId,
     } = body;
 
@@ -423,11 +431,11 @@ export const POST = handler(
       paymentType = "MONTHLY_CHECKIN";
       durationLabel = `${mths} month${mths > 1 ? "s" : ""}`;
     } else {
-      const hrs = hours!;
-      expectedEnd = addHours(now, hrs);
-      amount = hourlyRate(settings, vehicleType) * hrs;
+      const d = days!;
+      expectedEnd = addDays(now, d);
+      amount = dailyRate(settings, vehicleType) * d;
       paymentType = "CHECKIN";
-      durationLabel = `${hrs}h`;
+      durationLabel = `${d}d`;
     }
 
     // ── Create session ───────────────────────────────────────────────────────

@@ -5,7 +5,7 @@ import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
-import { addHours, addMonths } from "@/lib/rates";
+import { addDays, addMonths } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionCreateSchema, idSchema } from "@/lib/schemas";
 
@@ -41,7 +41,7 @@ export const GET = handler(
 export const POST = handler(
   { body: SessionCreateSchema },
   async ({ body }) => {
-    const { driverId, vehicleId, durationType, hours, months, termsVersion, overstayAuthorized } = body;
+    const { driverId, vehicleId, durationType, days, months, termsVersion, overstayAuthorized } = body;
     const isMonthly = durationType === "MONTHLY";
 
     const existingSession = await prisma.session.findFirst({
@@ -64,9 +64,9 @@ export const POST = handler(
     if (!spot) throw conflict("No available spots for this vehicle type");
 
     const now = new Date();
-    const expectedEnd = isMonthly ? addMonths(now, months!) : addHours(now, hours!);
+    const expectedEnd = isMonthly ? addMonths(now, months!) : addDays(now, days!);
     const paymentType = isMonthly ? "MONTHLY_CHECKIN" : "CHECKIN";
-    const durationLabel = isMonthly ? `${months} month${months! > 1 ? "s" : ""}` : `${hours}h`;
+    const durationLabel = isMonthly ? `${months} month${months! > 1 ? "s" : ""}` : `${days}d`;
 
     // Free-mode Payment row records the event with zero amount. legacyQbReference
     // is repurposed here to flag "this is a free-mode row" so reconciliation
@@ -83,7 +83,7 @@ export const POST = handler(
           create: {
             type: paymentType,
             amount: 0,
-            hours: isMonthly ? null : hours,
+            days: isMonthly ? null : days,
             legacyQbReference: `free_${randomUUID()}`,
           },
         },

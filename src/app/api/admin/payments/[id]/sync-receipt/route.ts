@@ -114,9 +114,9 @@ export const POST = handler({}, async ({ params }) => {
     description = `${vt} parking — monthly, month ${position} of ${totalMonths}${plate}`;
   } else {
     const typeMap: Record<string, string> = {
-      CHECKIN: `${vt} parking — check-in, ${payment.hours ?? "?"}h${plate}`,
-      EXTENSION: `${vt} parking — extension, ${payment.hours ?? "?"}h${plate}`,
-      OVERSTAY: `${vt} parking — overstay, ${payment.hours ?? "?"}h${plate}`,
+      CHECKIN: `${vt} parking — check-in, ${payment.days ?? "?"}d${plate}`,
+      EXTENSION: `${vt} parking — extension, ${payment.days ?? "?"}d${plate}`,
+      OVERSTAY: `${vt} parking — overstay, ${payment.days ?? "?"}d${plate}`,
     };
     description = typeMap[payment.type] ?? `${vt} parking — ${payment.type.toLowerCase()}${plate}`;
   }

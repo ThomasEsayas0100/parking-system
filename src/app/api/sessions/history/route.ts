@@ -114,7 +114,7 @@ export const GET = handler(
               stripeSubscriptionId: true,
               legacyQbReference: true,
               amount: true,
-              hours: true,
+              days: true,
               status: true,
               refundedAmount: true,
               refundedAt: true,

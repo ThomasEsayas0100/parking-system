@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import type { ReconcileSessionRow } from "@/app/api/admin/reconcile/route";
+import { useToast } from "@/app/admin/ToastContext";
 
 // ---------------------------------------------------------------------------
 // Design tokens (match admin/page.tsx)
@@ -78,25 +79,39 @@ function StatusBadge({ health }: { health: "ok" | "warning" | "critical" }) {
   );
 }
 
-// Inline action pill (Write Receipt / Write Refund Receipt)
-function ActionBtn({ label, onClick, loading }: { label: string; onClick: () => void; loading: boolean }) {
+type WriteState = "idle" | "pending" | "success" | "error";
+
+// Inline action pill — three states: idle → pending (⏳) → success (✅) or error (🔴 Retry)
+function ActionBtn({
+  label,
+  state,
+  onTrigger,
+}: {
+  label: string;
+  state: WriteState;
+  onTrigger: () => void;
+}) {
+  if (state === "success") return <span style={{ fontSize: 13 }}>✅</span>;
+  if (state === "pending") {
+    return (
+      <button disabled style={{ padding: "2px 9px", borderRadius: 4, border: `1px solid #C7C7CC`, background: "#F2F2F7", color: "#8E8E93", fontSize: 11, fontWeight: 600, cursor: "not-allowed", whiteSpace: "nowrap" }}>
+        ⏳ Writing…
+      </button>
+    );
+  }
+  const isErr = state === "error";
   return (
     <button
-      disabled={loading}
-      onClick={onClick}
+      onClick={onTrigger}
       style={{
-        padding: "2px 9px",
-        borderRadius: 4,
-        border: `1px solid ${WARN}`,
-        background: WARN_LIGHT,
-        color: WARN,
-        fontSize: 11,
-        fontWeight: 600,
-        cursor: "pointer",
-        whiteSpace: "nowrap",
+        padding: "2px 9px", borderRadius: 4,
+        border: `1px solid ${isErr ? "#DC2626" : WARN}`,
+        background: isErr ? "#FEE2E2" : WARN_LIGHT,
+        color: isErr ? "#DC2626" : WARN,
+        fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
       }}
     >
-      {loading ? "Writing…" : label}
+      {isErr ? "🔴 Retry" : label}
     </button>
   );
 }
@@ -157,7 +172,8 @@ function StripeCell({ s, testMode }: { s: ReconcileSessionRow; testMode: boolean
 }
 
 function QBCell({ s, onRefresh }: { s: ReconcileSessionRow; onRefresh: () => void }) {
-  const [loading, setLoading] = useState(false);
+  const [writeState, setWriteState] = useState<WriteState>("idle");
+  const { addToast } = useToast();
 
   if (s.payments.length === 0) return <span style={{ color: FG_DIM, fontSize: 12 }}>—</span>;
 
@@ -172,7 +188,6 @@ function QBCell({ s, onRefresh }: { s: ReconcileSessionRow; onRefresh: () => voi
     );
   }
 
-  // Single payment
   const p = s.payments[0];
   if (!p) return <span style={{ color: FG_DIM, fontSize: 12 }}>—</span>;
 
@@ -186,20 +201,25 @@ function QBCell({ s, onRefresh }: { s: ReconcileSessionRow; onRefresh: () => voi
   }
   if (!p.stripeChargeId) return <span style={{ color: FG_DIM, fontSize: 12 }}>—</span>;
 
+  async function doWrite(e?: React.MouseEvent) {
+    e?.stopPropagation?.();
+    setWriteState("pending");
+    const res = await fetch(`/api/admin/payments/${p!.id}/sync-receipt`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setWriteState("success");
+      addToast({ type: "success", message: "QB Sales Receipt written" });
+      onRefresh();
+    } else {
+      setWriteState("error");
+      addToast({ type: "error", message: `QB write failed · ${data.error ?? "Unknown error"}` });
+    }
+  }
+
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span style={{ fontSize: 12, color: WARN }}>Missing</span>
-      <ActionBtn
-        label="Write Receipt"
-        loading={loading}
-        onClick={async (e?: React.MouseEvent) => {
-          e?.stopPropagation?.();
-          setLoading(true);
-          await fetch(`/api/admin/payments/${p.id}/sync-receipt`, { method: "POST" });
-          setLoading(false);
-          onRefresh();
-        }}
-      />
+      {writeState === "idle" && <span style={{ fontSize: 12, color: WARN }}>Missing</span>}
+      <ActionBtn label="Write Receipt" state={writeState} onTrigger={doWrite} />
     </span>
   );
 }
@@ -324,8 +344,22 @@ function PaymentLedgerRow({
   health: "ok" | "warning" | "critical";
   onRefresh: () => void;
 }) {
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [writeState, setWriteState] = useState<WriteState>("idle");
+  const { addToast } = useToast();
+
+  async function doWriteReceipt() {
+    setWriteState("pending");
+    const res = await fetch(`/api/admin/payments/${p.id}/sync-receipt`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setWriteState("success");
+      addToast({ type: "success", message: "QB Sales Receipt written" });
+      onRefresh();
+    } else {
+      setWriteState("error");
+      addToast({ type: "error", message: `QB write failed · ${data.error ?? "Unknown error"}` });
+    }
+  }
 
   return (
     <tr style={{ background: bg }}>
@@ -368,20 +402,7 @@ function PaymentLedgerRow({
         ) : p.stripeChargeId ? (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: WARN }}>Not written</span>
-            <ActionBtn
-              label="Write Receipt"
-              loading={loading}
-              onClick={async () => {
-                setLoading(true);
-                setErr(null);
-                const res = await fetch(`/api/admin/payments/${p.id}/sync-receipt`, { method: "POST" });
-                const data = await res.json().catch(() => ({}));
-                setLoading(false);
-                if (res.ok) onRefresh();
-                else setErr(data.error ?? "Failed");
-              }}
-            />
-            {err && <span style={{ fontSize: 11, color: ERR }}>{err}</span>}
+            <ActionBtn label="Write Receipt" state={writeState} onTrigger={doWriteReceipt} />
           </span>
         ) : (
           <span style={{ color: FG_DIM, fontSize: 12 }}>—</span>
@@ -409,9 +430,23 @@ function RefundLedgerRow({
   testMode: boolean;
   onRefresh: () => void;
 }) {
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [writeState, setWriteState] = useState<WriteState>("idle");
+  const { addToast } = useToast();
   const health: "ok" | "warning" | "critical" = r.qbRefundReceiptId ? "ok" : "warning";
+
+  async function doWriteRefundReceipt() {
+    setWriteState("pending");
+    const res = await fetch(`/api/admin/payments/${paymentId}/sync-refunds`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setWriteState("success");
+      addToast({ type: "success", message: "QB Refund Receipt written" });
+      onRefresh();
+    } else {
+      setWriteState("error");
+      addToast({ type: "error", message: `QB refund write failed · ${data.error ?? "Unknown error"}` });
+    }
+  }
 
   return (
     <tr style={{ background: bg, borderLeft: `3px solid #FCA5A5` }}>
@@ -449,20 +484,7 @@ function RefundLedgerRow({
         ) : (
           <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: WARN }}>Not written</span>
-            <ActionBtn
-              label="Write Refund Receipt"
-              loading={loading}
-              onClick={async () => {
-                setLoading(true);
-                setErr(null);
-                const res = await fetch(`/api/admin/payments/${paymentId}/sync-refunds`, { method: "POST" });
-                const data = await res.json().catch(() => ({}));
-                setLoading(false);
-                if (res.ok) onRefresh();
-                else setErr(data.error ?? "Failed");
-              }}
-            />
-            {err && <span style={{ fontSize: 11, color: ERR }}>{err}</span>}
+            <ActionBtn label="Write Refund Receipt" state={writeState} onTrigger={doWriteRefundReceipt} />
           </span>
         )}
       </td>
@@ -522,7 +544,8 @@ function MainStripeCell({ s, testMode }: { s: ReconcileSessionRow; testMode: boo
 }
 
 function MainQBCell({ s, onRefresh }: { s: ReconcileSessionRow; onRefresh: () => void }) {
-  const [loading, setLoading] = useState(false);
+  const [writeState, setWriteState] = useState<WriteState>("idle");
+  const { addToast } = useToast();
   if (s.payments.length === 0) return <span style={{ color: FG_DIM, fontSize: 12 }}>—</span>;
 
   if (s.sessionType === "MONTHLY") {
@@ -546,20 +569,26 @@ function MainQBCell({ s, onRefresh }: { s: ReconcileSessionRow; onRefresh: () =>
       </a>
     );
   if (!p.stripeChargeId) return <span style={{ color: FG_DIM, fontSize: 12 }}>—</span>;
+
+  async function doWrite(e?: React.MouseEvent) {
+    e?.stopPropagation?.();
+    setWriteState("pending");
+    const res = await fetch(`/api/admin/payments/${p!.id}/sync-receipt`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setWriteState("success");
+      addToast({ type: "success", message: "QB Sales Receipt written" });
+      onRefresh();
+    } else {
+      setWriteState("error");
+      addToast({ type: "error", message: `QB write failed · ${data.error ?? "Unknown error"}` });
+    }
+  }
+
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span style={{ fontSize: 12, color: WARN }}>Not written</span>
-      <ActionBtn
-        label="Write Receipt"
-        loading={loading}
-        onClick={async (e?: React.MouseEvent) => {
-          e?.stopPropagation?.();
-          setLoading(true);
-          await fetch(`/api/admin/payments/${p.id}/sync-receipt`, { method: "POST" });
-          setLoading(false);
-          onRefresh();
-        }}
-      />
+      {writeState === "idle" && <span style={{ fontSize: 12, color: WARN }}>Not written</span>}
+      <ActionBtn label="Write Receipt" state={writeState} onTrigger={doWrite} />
     </span>
   );
 }

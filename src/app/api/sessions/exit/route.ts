@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { triggerGateOpen } from "@/lib/gate";
 import { log as audit } from "@/lib/audit";
-import { overstayRate, ceilHours } from "@/lib/rates";
+import { overstayRate, ceilDays } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionExitSchema } from "@/lib/schemas";
 
@@ -45,15 +45,15 @@ export const POST = handler(
     if (isOverstayed) {
       const settings = await getSettings();
       const rate = overstayRate(settings, session.vehicle.type);
-      const overstayHours = ceilHours(session.expectedEnd, now);
-      const overstayAmount = rate * overstayHours;
+      const overstayDays = ceilDays(session.expectedEnd, now);
+      const overstayAmount = rate * overstayDays;
 
       if (settings.paymentRequired) {
         // Direct the client to the Stripe Checkout flow. /exit page uses
         // this response shape to render the fee screen + "Pay & exit" button.
         return json({
           requiresPayment: true,
-          overstayHours,
+          overstayDays,
           overstayAmount,
           overstayRate: rate,
           sessionId: session.id,
@@ -67,7 +67,7 @@ export const POST = handler(
             sessionId,
             type: "OVERSTAY",
             amount: overstayAmount,
-            hours: overstayHours,
+            days: overstayDays,
             legacyQbReference: `free_${randomUUID()}`,
           },
         }),
@@ -81,7 +81,7 @@ export const POST = handler(
         sessionId,
         driverId: session.driverId,
         vehicleId: session.vehicleId,
-        details: `Overstay ${overstayHours}h closed (payment disabled), plate: ${session.vehicle.licensePlate}`,
+        details: `Overstay ${overstayDays}d closed (payment disabled), plate: ${session.vehicle.licensePlate}`,
       });
     } else {
       await prisma.session.update({

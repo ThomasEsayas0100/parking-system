@@ -12,6 +12,7 @@ import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 import PhoneInput, { digitsOnly } from "@/components/PhoneInput";
 import ManageSessionModal from "@/app/admin/ManageSessionModal";
 import ReconcileView from "@/app/admin/ReconcileView";
+import { ToastProvider } from "@/app/admin/ToastContext";
 
 type Spot = ApiSpotWithSessions;
 type AuditEntry = ApiAuditEntry;
@@ -30,7 +31,7 @@ type SessionRow = {
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
   spot: { id: string; label: string; type: "BOBTAIL" | "TRUCK_TRAILER" };
-  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: string; stripePaymentIntentId?: string | null; stripeSubscriptionId?: string | null; refundedAmount: number; status?: string; refunds?: { id: string; amount: number; stripeRefundId: string; qbRefundReceiptId: string | null; createdAt: string }[] }[];
+  payments: { id: string; type: string; amount: number; days: number | null; createdAt: string; stripePaymentIntentId?: string | null; stripeSubscriptionId?: string | null; refundedAmount: number; status?: string; refunds?: { id: string; amount: number; stripeRefundId: string; qbRefundReceiptId: string | null; createdAt: string }[] }[];
 };
 
 type SessionsResponse = {
@@ -287,29 +288,26 @@ export default function AdminDashboard() {
 
   // ── Session actions state ──
   const [manageSession, setManageSession] = useState<SessionRow | null>(null);
-  const [sessionAction, setSessionAction] = useState<{ id: string; type: "cancel" | "close" } | null>(null);
-  const [sessionActionReason, setSessionActionReason] = useState("");
-  const [sessionActionEndedAt, setSessionActionEndedAt] = useState("");
-  const [sessionActionLoading, setSessionActionLoading] = useState(false);
-  const [sessionActionError, setSessionActionError] = useState("");
 
   // ── New session modal ────────────────────────────────────────────────────
   type NsForm = {
     name: string; phone: string; email: string;
     vehicleType: "BOBTAIL" | "TRUCK_TRAILER";
     licensePlate: string; unitNumber: string; nickname: string;
-    durationType: "HOURLY" | "MONTHLY";
-    hours: number; months: number;
+    startImmediately: boolean; startDate: string; startTime: string;
+    durationType: "DAILY" | "MONTHLY";
+    days: number; months: number;
     spotMode: "auto" | "manual"; spotId: string;
-    invoiceId: string;
+    stripeId: string; qbReceiptId: string;
   };
   const NS_DEFAULT: NsForm = {
     name: "", phone: "", email: "",
     vehicleType: "TRUCK_TRAILER",
     licensePlate: "", unitNumber: "", nickname: "",
-    durationType: "HOURLY", hours: 4, months: 1,
+    startImmediately: true, startDate: "", startTime: "",
+    durationType: "DAILY", days: 1, months: 1,
     spotMode: "auto", spotId: "",
-    invoiceId: "",
+    stripeId: "", qbReceiptId: "",
   };
   const [nsOpen, setNsOpen] = useState(false);
   const [nsForm, setNsForm] = useState<NsForm>(NS_DEFAULT);
@@ -533,12 +531,12 @@ export default function AdminDashboard() {
   // ── New session handlers ────────────────────────────────────────────────
   function nsSetField<K extends keyof NsForm>(k: K, v: NsForm[K]) {
     setNsForm((f) => ({ ...f, [k]: v }));
-    if (k === "invoiceId") setNsInvoice({ status: "idle", message: "" });
+    if (k === "stripeId") setNsInvoice({ status: "idle", message: "" });
     setNsErrors((e) => { const next = { ...e }; delete next[k]; return next; });
   }
 
   async function handleVerifyInvoice() {
-    const id = nsForm.invoiceId.trim();
+    const id = nsForm.stripeId.trim();
     if (!id) return;
     setNsInvoice({ status: "checking", message: "" });
     try {
@@ -569,13 +567,13 @@ export default function AdminDashboard() {
     if (digits.length !== 10) errs.phone = "Must be 10 digits";
     if (nsForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nsForm.email)) errs.email = "Invalid email";
     if (!nsForm.licensePlate.trim() && !nsForm.unitNumber.trim()) errs.licensePlate = "Provide plate or unit number";
-    if (nsForm.durationType === "HOURLY" && (nsForm.hours < 1 || nsForm.hours > 72)) errs.hours = "1–72 hours";
+    if (nsForm.durationType === "DAILY" && (nsForm.days < 1 || nsForm.days > 30)) errs.days = "1–30 days";
     if (nsForm.durationType === "MONTHLY" && (nsForm.months < 1 || nsForm.months > 12)) errs.months = "1–12 months";
     if (nsForm.spotMode === "manual" && !nsForm.spotId) errs.spotId = "Select a spot";
     // Invoice only required when payments are enabled
     if (nsPaymentRequired) {
-      if (!nsForm.invoiceId.trim()) errs.invoiceId = "Required";
-      else if (nsInvoice.status !== "ok") errs.invoiceId = "Must be verified before submitting";
+      if (!nsForm.stripeId.trim()) errs.stripeId = "Required";
+      else if (nsInvoice.status !== "ok") errs.stripeId = "Must be verified before submitting";
     }
     setNsErrors(errs);
     return Object.keys(errs).length === 0;
@@ -595,10 +593,10 @@ export default function AdminDashboard() {
         unitNumber: nsForm.unitNumber.trim() || undefined,
         nickname: nsForm.nickname.trim() || undefined,
         durationType: nsForm.durationType,
-        hours: nsForm.durationType === "HOURLY" ? nsForm.hours : undefined,
+        days: nsForm.durationType === "DAILY" ? nsForm.days : undefined,
         months: nsForm.durationType === "MONTHLY" ? nsForm.months : undefined,
         spotId: nsForm.spotMode === "manual" ? nsForm.spotId : undefined,
-        invoiceId: nsPaymentRequired ? nsForm.invoiceId.trim() : undefined,
+        stripeId: nsPaymentRequired ? nsForm.stripeId.trim() : undefined,
       });
       setNsOpen(false);
       setNsForm(NS_DEFAULT);
@@ -608,53 +606,6 @@ export default function AdminDashboard() {
       setNsErrors({ _: err instanceof Error ? err.message : "Something went wrong" });
     } finally {
       setNsSubmitting(false);
-    }
-  }
-
-  // ── Session actions ──
-  async function handleSessionAction() {
-    if (!sessionAction) return;
-    setSessionActionLoading(true);
-    setSessionActionError("");
-    try {
-      const payload: Record<string, unknown> = {
-        sessionId: sessionAction.id,
-        action: sessionAction.type,
-      };
-      payload.reason = sessionActionReason;
-      if (sessionAction.type === "close" && sessionActionEndedAt) {
-        payload.endedAt = new Date(sessionActionEndedAt).toISOString();
-      }
-      const res = await fetch("/api/admin/sessions", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const errMsg = body.error ?? `Server error (${res.status})`;
-        setSessionActionError(errMsg);
-        if (sessionAction.type === "cancel") {
-          pushToast(`Cancellation failed: ${errMsg}`, "error");
-        }
-        return;
-      }
-      if (sessionAction.type === "cancel") {
-        pushToast("Session cancelled — Stripe subscription stopped and will no longer bill.", "success");
-      }
-      setSessionAction(null);
-      setSessionActionReason("");
-      setSessionActionEndedAt("");
-      loadSessions();
-      loadData();
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : "Network error — action may not have completed.";
-      setSessionActionError(errMsg);
-      if (sessionAction.type === "cancel") {
-        pushToast(`Cancellation failed: ${errMsg}`, "error");
-      }
-    } finally {
-      setSessionActionLoading(false);
     }
   }
 
@@ -698,6 +649,7 @@ export default function AdminDashboard() {
   ];
 
   return (
+    <ToastProvider>
     <>
       {/* Header */}
       <div style={{ padding: mobile ? "16px 16px 0" : "20px 24px 0", borderBottom: `1px solid ${BORDER}` }}>
@@ -991,10 +943,10 @@ export default function AdminDashboard() {
                               {s.payments.map((p) => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
                                   <span style={{ color: p.type === "OVERSTAY" ? "#DC2626" : FG_MUTED }}>
-                                    {p.type === "CHECKIN" ? "Hourly"
+                                    {p.type === "CHECKIN" ? "Daily"
                                       : p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL" ? monthlyLabel(s.payments, p.id)
                                       : p.type === "EXTENSION" ? "Extension" : "Overstay"}
-                                    {p.hours ? ` (${p.hours}h)` : ""}
+                                    {p.days ? ` (${p.days}d)` : ""}
                                   </span>
                                   {p.refundedAmount > 0 ? (
                                     <span style={{ fontVariantNumeric: "tabular-nums" }}>
@@ -1025,72 +977,12 @@ export default function AdminDashboard() {
                             {/* Admin actions */}
                             {s.status !== "COMPLETED" && s.status !== "CANCELLED" && (
                               <div style={{ gridColumn: mobile ? undefined : "1 / -1", borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 4 }}>
-                                {sessionAction?.id === s.id ? (
-                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                    {sessionAction.type === "cancel" && (
-                                      <>
-                                        <div style={{ width: "100%", background: "#FEF3C7", border: "1px solid #F59E0B", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#92400E" }}>
-                                          <strong>No refund will be issued.</strong> The session ends immediately and any charges already collected (${sumPayments(s.payments).toFixed(2)}) are kept. Issue a refund from the Manage modal before cancelling if needed.
-                                        </div>
-                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
-                                        <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="Required" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-                                      </>
-                                    )}
-                                    {sessionAction.type === "close" && (() => {
-                                      const started = new Date(s.startedAt);
-                                      const minDt = started.toISOString().slice(0, 16);
-                                      const maxDt = new Date().toISOString().slice(0, 16);
-                                      return (
-                                        <>
-                                          <span style={{ fontSize: 12, color: FG_MUTED }}>Driver left on:</span>
-                                          <input
-                                            type="datetime-local"
-                                            value={sessionActionEndedAt}
-                                            onChange={(e) => setSessionActionEndedAt(e.target.value)}
-                                            min={minDt}
-                                            max={maxDt}
-                                            style={{ ...inputStyle, width: mobile ? "100%" : 220 }}
-                                          />
-                                          <span style={{ fontSize: 10, color: FG_DIM, width: "100%" }}>
-                                            Between {started.toLocaleString()} and now
-                                          </span>
-                                          <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
-                                          <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="e.g. Driver called — left last Tuesday" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-                                          <div style={{ width: "100%", fontSize: 11, color: "#92400E", marginTop: 2 }}>
-                                            Overstay payments after this date will be removed.
-                                          </div>
-                                        </>
-                                      );
-                                    })()}
-                                    {sessionActionError && (
-                                      <div style={{ width: "100%", background: "#FEF2F2", border: "1px solid #DC2626", borderRadius: 6, padding: "8px 12px", fontSize: 12, color: "#991B1B", fontWeight: 600 }}>
-                                        ⚠ {sessionActionError}
-                                      </div>
-                                    )}
-                                    <button
-                                      onClick={handleSessionAction}
-                                      disabled={sessionActionLoading}
-                                      style={{
-                                        padding: "6px 14px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#fff",
-                                        background: sessionAction.type === "cancel" ? "#DC2626" : sessionAction.type === "close" ? "#92400E" : "#2D7A4A",
-                                      }}
-                                    >
-                                      {sessionActionLoading ? "..." : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
-                                    </button>
-                                    <button onClick={() => { setSessionAction(null); setSessionActionEndedAt(""); setSessionActionReason(""); setSessionActionError(""); }} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
-                                      Back
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                    <button onClick={() => setManageSession(s)} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${"#2D7A4A"}`, background: "transparent", color: "#2D7A4A", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Manage
-                                    </button>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "cancel" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Cancel Session
-                                    </button>
-                                  </div>
-                                )}
+                                <button
+                                  onClick={() => setManageSession(s)}
+                                  style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #2D7A4A", background: "transparent", color: "#2D7A4A", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                                >
+                                  Manage
+                                </button>
                               </div>
                             )}
                           </div>
@@ -1350,17 +1242,17 @@ export default function AdminDashboard() {
               <SettingsGroup title="QuickBooks Connection">
                 <QBConnectionStatus />
               </SettingsGroup>
-              <SettingsGroup title="Hourly Rates">
-                <SettingsField label="Bobtail ($/hr)" value={settingsForm.hourlyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateBobtail: v })} step="0.01" />
-                <SettingsField label="Truck/Trailer ($/hr)" value={settingsForm.hourlyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateTruck: v })} step="0.01" />
+              <SettingsGroup title="Daily Rates">
+                <SettingsField label="Bobtail ($/day)" value={settingsForm.dailyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, dailyRateBobtail: v })} step="0.01" />
+                <SettingsField label="Truck/Trailer ($/day)" value={settingsForm.dailyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, dailyRateTruck: v })} step="0.01" />
               </SettingsGroup>
               <SettingsGroup title="Monthly Rates">
                 <SettingsField label="Bobtail ($/month)" value={settingsForm.monthlyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, monthlyRateBobtail: v })} step="0.01" />
                 <SettingsField label="Truck/Trailer ($/month)" value={settingsForm.monthlyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, monthlyRateTruck: v })} step="0.01" />
               </SettingsGroup>
               <SettingsGroup title="Overstay Rates (Premium)">
-                <SettingsField label="Bobtail ($/hr)" value={settingsForm.overstayRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateBobtail: v })} step="0.01" />
-                <SettingsField label="Truck/Trailer ($/hr)" value={settingsForm.overstayRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateTruck: v })} step="0.01" />
+                <SettingsField label="Bobtail ($/day)" value={settingsForm.overstayRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateBobtail: v })} step="0.01" />
+                <SettingsField label="Truck/Trailer ($/day)" value={settingsForm.overstayRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateTruck: v })} step="0.01" />
               </SettingsGroup>
               <SettingsGroup title="Notifications">
                 <SettingsField label="Reminder before expiry (min)" value={settingsForm.reminderMinutesBefore} onChange={(v) => setSettingsForm({ ...settingsForm, reminderMinutesBefore: v })} />
@@ -1610,11 +1502,49 @@ export default function AdminDashboard() {
 
               <div style={{ height: 1, background: BORDER }} />
 
+              {/* ── Start ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Start</p>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={nsForm.startImmediately}
+                    onChange={(e) => nsSetField("startImmediately", e.target.checked)}
+                    style={{ width: 15, height: 15, accentColor: ACCENT, cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 13, color: FG }}>Start immediately</span>
+                </label>
+                {!nsForm.startImmediately && (
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Date <span style={{ color: "#EF4444" }}>*</span></label>
+                      <input
+                        type="date"
+                        value={nsForm.startDate}
+                        onChange={(e) => nsSetField("startDate", e.target.value)}
+                        style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Time <span style={{ color: "#EF4444" }}>*</span></label>
+                      <input
+                        type="time"
+                        value={nsForm.startTime}
+                        onChange={(e) => nsSetField("startTime", e.target.value)}
+                        style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ height: 1, background: BORDER }} />
+
               {/* ── Duration ── */}
               <div>
                 <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Duration</p>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  {(["HOURLY", "MONTHLY"] as const).map((t) => (
+                  {(["DAILY", "MONTHLY"] as const).map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -1626,27 +1556,27 @@ export default function AdminDashboard() {
                         color: nsForm.durationType === t ? ACCENT : FG_DIM,
                       }}
                     >
-                      {t === "HOURLY" ? "Hourly (1–72h)" : "Monthly (1–12mo)"}
+                      {t === "DAILY" ? "Daily (1–30d)" : "Monthly (1–12mo)"}
                     </button>
                   ))}
                 </div>
-                {nsForm.durationType === "HOURLY" ? (
+                {nsForm.durationType === "DAILY" ? (
                   <div>
-                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Hours <span style={{ color: "#EF4444" }}>*</span></label>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Days <span style={{ color: "#EF4444" }}>*</span></label>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <button type="button" onClick={() => nsSetField("hours", Math.max(1, nsForm.hours - 1))}
+                      <button type="button" onClick={() => nsSetField("days", Math.max(1, nsForm.days - 1))}
                         style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>−</button>
                       <input
-                        type="number" min={1} max={72}
-                        value={nsForm.hours}
-                        onChange={(e) => nsSetField("hours", Math.min(72, Math.max(1, Number(e.target.value) || 1)))}
+                        type="number" min={1} max={30}
+                        value={nsForm.days}
+                        onChange={(e) => nsSetField("days", Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
                         style={{ ...inputStyle, width: 70, textAlign: "center" }}
                       />
-                      <button type="button" onClick={() => nsSetField("hours", Math.min(72, nsForm.hours + 1))}
+                      <button type="button" onClick={() => nsSetField("days", Math.min(30, nsForm.days + 1))}
                         style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>+</button>
-                      <span style={{ fontSize: 13, color: FG_DIM }}>hours</span>
+                      <span style={{ fontSize: 13, color: FG_DIM }}>days</span>
                     </div>
-                    {nsErrors.hours && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 4 }}>{nsErrors.hours}</p>}
+                    {nsErrors.days && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 4 }}>{nsErrors.days}</p>}
                   </div>
                 ) : (
                   <div>
@@ -1722,51 +1652,41 @@ export default function AdminDashboard() {
 
               <div style={{ height: 1, background: BORDER }} />
 
-              {/* ── QB Invoice ── */}
+              {/* ── Payment Reference ── */}
               <div>
-                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 4 }}>QuickBooks Invoice</p>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Payment Reference</p>
                 {!nsPaymentRequired && (
                   <p style={{ fontSize: 11, color: "#92400E", marginBottom: 12 }}>
-                    Payments are disabled — invoice is optional. A free session will be created.
+                    Payments are disabled — fields are optional. A free session will be created.
                   </p>
                 )}
-                {nsPaymentRequired && (
-                  <p style={{ fontSize: 11, color: FG_DIM, marginBottom: 12 }}>
-                    The invoice must exist and be fully paid in QB before submitting. Verify it here first.
-                  </p>
-                )}
-                <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  <input
-                    type="text"
-                    value={nsForm.invoiceId}
-                    onChange={(e) => nsSetField("invoiceId", e.target.value.trim())}
-                    placeholder="QB invoice ID (e.g. 150)"
-                    style={{ ...inputStyle, flex: 1, ...(nsErrors.invoiceId ? { borderColor: "#EF4444" } : {}) }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleVerifyInvoice}
-                    disabled={!nsForm.invoiceId.trim() || nsInvoice.status === "checking"}
-                    style={{
-                      padding: "0 18px", borderRadius: 8, border: `1px solid ${BORDER}`,
-                      background: "transparent", color: FG, fontSize: 13, fontWeight: 600,
-                      cursor: !nsForm.invoiceId.trim() || nsInvoice.status === "checking" ? "default" : "pointer",
-                      opacity: !nsForm.invoiceId.trim() ? 0.5 : 1,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {nsInvoice.status === "checking" ? "Checking…" : "Verify"}
-                  </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>
+                      Stripe ID{nsPaymentRequired && <span style={{ color: "#EF4444" }}> *</span>}
+                    </label>
+                    <input
+                      type="text"
+                      value={nsForm.stripeId}
+                      onChange={(e) => nsSetField("stripeId", e.target.value.trim())}
+                      placeholder="pi_xxx, in_xxx, ch_xxx…"
+                      style={{ ...inputStyle, width: "100%", boxSizing: "border-box", ...(nsErrors.stripeId ? { borderColor: "#EF4444" } : {}) }}
+                    />
+                    {nsErrors.stripeId && (
+                      <p style={{ fontSize: 11, color: "#EF4444", marginTop: 2 }}>{nsErrors.stripeId}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>QB Receipt #</label>
+                    <input
+                      type="text"
+                      value={nsForm.qbReceiptId}
+                      onChange={(e) => nsSetField("qbReceiptId", e.target.value.trim())}
+                      placeholder="e.g. 4521"
+                      style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                    />
+                  </div>
                 </div>
-                {nsInvoice.status === "ok" && (
-                  <p style={{ fontSize: 12, color: "#16A34A", fontWeight: 600 }}>✓ {nsInvoice.message}</p>
-                )}
-                {nsInvoice.status === "error" && (
-                  <p style={{ fontSize: 12, color: "#EF4444" }}>✕ {nsInvoice.message}</p>
-                )}
-                {nsErrors.invoiceId && nsInvoice.status !== "ok" && (
-                  <p style={{ fontSize: 11, color: "#EF4444", marginTop: 2 }}>{nsErrors.invoiceId}</p>
-                )}
               </div>
 
               {/* ── Submit ── */}
@@ -1845,6 +1765,7 @@ export default function AdminDashboard() {
     </div>
     <style>{`@keyframes slideInRight { from { transform: translateX(32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`}</style>
     </>
+    </ToastProvider>
   );
 }
 
@@ -1942,7 +1863,7 @@ function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTest
   const monthlyIndex = isMonthly ? monthlyPayments.findIndex(p => p.id === payment.id) : -1;
 
   const baseTypeLabel: Record<string, string> = {
-    CHECKIN: "Hourly",
+    CHECKIN: "Daily",
     EXTENSION: "Extension",
     OVERSTAY: "Overstay",
   };
@@ -1954,6 +1875,14 @@ function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTest
   const sessionStatus = payment.session?.status;
   const spotLabel = payment.session?.spot?.label ?? null;
 
+  const truncId = (id: string) => id.length > 10 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+  const stripeLabel = (id: string) => {
+    if (id.startsWith("ch_"))  return "View Charge ↗";
+    if (id.startsWith("re_"))  return "View Refund ↗";
+    if (id.startsWith("in_"))  return "View Invoice ↗";
+    if (id.startsWith("sub_")) return "View Subscription ↗";
+    return "View Payment ↗";
+  };
   const fmtDate = (iso: string) => {
     const d = new Date(iso);
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
@@ -2017,17 +1946,20 @@ function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTest
               </td>
               <td style={{ ...(hasRows ? tdStyle : tdLast), textAlign: "right", fontWeight: 600, color: "#059669" }}>
                 +${payment.amount.toFixed(2)}
-                {payment.hours ? <div style={{ fontSize: 11, fontWeight: 400, color: "#6B7280" }}>{payment.hours}h</div> : null}
+                {payment.days ? <div style={{ fontSize: 11, fontWeight: 400, color: "#6B7280" }}>{payment.days}d</div> : null}
               </td>
               <td style={hasRows ? tdStyle : tdLast}>
                 {typeLabel}
               </td>
               <td style={hasRows ? tdStyle : tdLast}>
                 {payment.stripePaymentIntentId && (
-                  <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
-                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none" }}>
-                    View payment ↗
-                  </a>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: "#6366F1", textDecoration: "none" }}>
+                      {stripeLabel(payment.stripePaymentIntentId)}
+                    </a>
+                    <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>{truncId(payment.stripePaymentIntentId)}</span>
+                  </div>
                 )}
                 {payment.legacyQbReference && !payment.stripePaymentIntentId && (
                   <span style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{payment.legacyQbReference}</span>
@@ -2060,7 +1992,7 @@ function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTest
                   Loading refunds from Stripe…
                 </td>
               </tr>
-            ) : stripeRefunds.map((r, i) => {
+            ) : [...stripeRefunds].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).map((r, i) => {
               const isLast = i === stripeRefunds.length - 1;
               const db = dbRefunds.find(d => d.stripeRefundId === r.id);
               const qbRefundReceiptId = db?.qbRefundReceiptId ?? null;
@@ -2074,23 +2006,32 @@ function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTest
                   </td>
                   <td style={isLast ? tdLast : tdStyle}>
                     Refund
-                    {r.reason && <div style={{ fontSize: 11, color: "#9CA3AF" }}>{r.reason.replace(/_/g, " ")}</div>}
                   </td>
                   <td style={isLast ? tdLast : tdStyle}>
-                    <a href={`${stripeBase}/refunds/${r.id}`} target="_blank" rel="noopener noreferrer"
-                      style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", fontFamily: "monospace" }}>
-                      {r.id.slice(0, 22)}… ↗
-                    </a>
+                    {payment.stripePaymentIntentId ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 11, color: "#6366F1", textDecoration: "none" }}>
+                          {stripeLabel(r.id)}
+                        </a>
+                        <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>{truncId(r.id)}</span>
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
+                    )}
                     {r.status && r.status !== "succeeded" && (
                       <div style={{ fontSize: 11, color: "#F59E0B" }}>{r.status}</div>
                     )}
                   </td>
                   <td style={isLast ? tdLast : tdStyle}>
                     {qbRefundReceiptId ? (
-                      <a href={qbLinks.refundReceipt(qbRefundReceiptId)} target="_blank" rel="noopener noreferrer"
-                        style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
-                        View Receipt ↗
-                      </a>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <a href={qbLinks.refundReceipt(qbRefundReceiptId)} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
+                          View Receipt ↗
+                        </a>
+                        <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>#{qbRefundReceiptId}</span>
+                      </div>
                     ) : (
                       <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
                     )}
@@ -2241,7 +2182,7 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
   const unmatchedQB: typeof qbPayments = [];
 
   const typeLabels: Record<string, string> = {
-    CHECKIN: "Hourly",
+    CHECKIN: "Daily",
     MONTHLY_CHECKIN: "Monthly",
     MONTHLY_RENEWAL: "Monthly",
     EXTENSION: "Extension",
@@ -2510,10 +2451,10 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
                         </td>
                       )}
 
-                      {/* Hours (desktop) */}
+                      {/* Days (desktop) */}
                       {!mobile && (
                         <td style={{ ...cell, textAlign: "right", color: FG_DIM, whiteSpace: "nowrap" }}>
-                          {p.hours ? `${p.hours}h` : "—"}
+                          {p.days ? `${p.days}d` : "—"}
                         </td>
                       )}
 

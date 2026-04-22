@@ -50,7 +50,7 @@ export type ApiPayment = {
   id: string;
   type: PaymentType;
   amount: number;
-  hours: number | null;
+  days: number | null;
   // Stripe identifiers — populated per event; most are null on any given row
   stripeCheckoutSessionId: string | null;
   stripePaymentIntentId: string | null;
@@ -160,8 +160,8 @@ export type ApiAuditEntry = {
 // ---------------------------------------------------------------------------
 
 export type AppSettings = {
-  hourlyRateBobtail: number;
-  hourlyRateTruck: number;
+  dailyRateBobtail: number;
+  dailyRateTruck: number;
   monthlyRateBobtail: number;
   monthlyRateTruck: number;
   overstayRateBobtail: number;
@@ -202,7 +202,7 @@ export type AppSettings = {
 
 export type OverstayInfo = {
   requiresPayment: true;
-  overstayHours: number;
+  overstayDays: number;
   overstayAmount: number;
   overstayRate: number;
   sessionId: string;
@@ -255,7 +255,7 @@ export type LotSpotSession = {
   endedAt: Date | null;
   sessionStatus: SessionStatus;
   reminderSent: boolean;
-  payments: { id: string; type: PaymentType; amount: number; hours: number | null; createdAt: Date }[];
+  payments: { id: string; type: PaymentType; amount: number; days: number | null; createdAt: Date }[];
 };
 
 /** Full spot detail for the SpotDetailPanel (map click → slide-out). */

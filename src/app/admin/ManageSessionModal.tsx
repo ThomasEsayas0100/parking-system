@@ -1,10 +1,8 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { DayPicker } from "react-day-picker";
-import "react-day-picker/style.css";
 import type { AppSettings } from "@/types/domain";
-import { hourlyRate } from "@/lib/rates";
+import { useToast } from "@/app/admin/ToastContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +26,7 @@ type SessionRow = {
     id: string;
     type: string;
     amount: number;
-    hours: number | null;
+    days: number | null;
     createdAt: string;
     stripePaymentIntentId?: string | null;
     stripeSubscriptionId?: string | null;
@@ -44,11 +42,10 @@ type Props = {
   onSuccess: () => void;
 };
 
-type Tab = "adjust" | "refund" | "subscription";
+type View = "menu" | "adjust" | "refund" | "cancel";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SNAP_MINS = 15;
 const ACCENT = "#2D7A4A";
 const DANGER = "#DC2626";
 const BORDER = "#E5E5EA";
@@ -57,68 +54,10 @@ const MUTED = "#636366";
 const CARD_BG = "#FFFFFF";
 const INPUT_BG = "#F2F2F7";
 
-// ─── Time options (every 15 min, 12-hour) ────────────────────────────────────
-
-const TIME_OPTIONS: { value: string; label: string }[] = (() => {
-  const opts = [];
-  for (let h = 0; h < 24; h++) {
-    for (let m = 0; m < 60; m += SNAP_MINS) {
-      const value = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-      const ampm = h < 12 ? "AM" : "PM";
-      const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
-      const label = `${displayH}:${String(m).padStart(2, "0")} ${ampm}`;
-      opts.push({ value, label });
-    }
-  }
-  return opts;
-})();
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-function snapToQuarter(d: Date): Date {
-  return new Date(Math.round(d.getTime() / (SNAP_MINS * 60_000)) * (SNAP_MINS * 60_000));
-}
-
-function toDateParts(d: Date): { date: Date; time: string } {
-  const snapped = snapToQuarter(d);
-  return {
-    date: new Date(snapped.getFullYear(), snapped.getMonth(), snapped.getDate()),
-    time: `${pad(snapped.getHours())}:${pad(snapped.getMinutes())}`,
-  };
-}
-
-function combineDateAndTime(date: Date, time: string): Date {
-  const [h, m] = time.split(":").map(Number);
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), h, m);
-}
-
-function fmtShortDate(d: Date): string {
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
-
-function fmtTime(time: string): string {
-  return TIME_OPTIONS.find((o) => o.value === time)?.label ?? time;
-}
 
 function fmtDateTime(d: Date): string {
   return d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-function fmtDuration(mins: number): string {
-  const total = Math.round(mins);
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
-
-function snapCost(settings: AppSettings | null, vehicleType: "BOBTAIL" | "TRUCK_TRAILER", durationMins: number): number {
-  if (!settings) return 0;
-  const blocks = Math.ceil(Math.max(0, durationMins) / SNAP_MINS);
-  return blocks * (hourlyRate(settings, vehicleType) / 4);
 }
 
 function refundablePayments(payments: SessionRow["payments"]) {
@@ -138,304 +77,159 @@ function hasMonthly(payments: SessionRow["payments"]): boolean {
   return payments.some((p) => p.type === "MONTHLY_CHECKIN");
 }
 
-// ─── DateTimePicker ───────────────────────────────────────────────────────────
+function addMonths(d: Date, n: number): Date {
+  const r = new Date(d);
+  r.setMonth(r.getMonth() + n);
+  return r;
+}
 
-function DateTimePicker({
+// ─── View: Adjust ─────────────────────────────────────────────────────────────
+
+function UnitStepper({
   value,
+  min,
+  max,
   onChange,
-  invalid,
 }: {
-  value: Date;
-  onChange: (d: Date) => void;
-  invalid?: boolean;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (n: number) => void;
 }) {
-  const [calOpen, setCalOpen] = useState(false);
-  const [timeOpen, setTimeOpen] = useState(false);
-  const calRef = useRef<HTMLDivElement>(null);
-  const timeRef = useRef<HTMLDivElement>(null);
-
-  const { date: selectedDate, time: selectedTime } = toDateParts(value);
-
-  // Close dropdowns on outside click
-  useEffect(() => {
-    function onDown(e: MouseEvent) {
-      if (calRef.current && !calRef.current.contains(e.target as Node)) setCalOpen(false);
-      if (timeRef.current && !timeRef.current.contains(e.target as Node)) setTimeOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, []);
-
-  // Scroll selected time into view when list opens
-  const timeListRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!timeOpen || !timeListRef.current) return;
-    const active = timeListRef.current.querySelector("[data-selected='true']") as HTMLElement | null;
-    active?.scrollIntoView({ block: "center" });
-  }, [timeOpen]);
-
-  const chipStyle = (active: boolean): React.CSSProperties => ({
-    display: "flex", alignItems: "center", gap: 5,
-    padding: "5px 10px", borderRadius: 6,
-    border: `1px solid ${invalid ? DANGER : active ? ACCENT : BORDER}`,
-    background: active ? ACCENT + "10" : CARD_BG,
-    color: active ? ACCENT : FG,
-    fontSize: 12, fontWeight: 500,
-    cursor: "pointer", userSelect: "none",
-    whiteSpace: "nowrap",
+  const btnStyle = (disabled: boolean): React.CSSProperties => ({
+    width: 36, height: 36, borderRadius: 8,
+    border: `1px solid ${disabled ? BORDER : ACCENT}`,
+    background: disabled ? INPUT_BG : ACCENT + "10",
+    color: disabled ? MUTED : ACCENT,
+    fontSize: 20, fontWeight: 700, lineHeight: "34px",
+    cursor: disabled ? "not-allowed" : "pointer",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    flexShrink: 0,
   });
-
   return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-      {/* Date chip + calendar popover */}
-      <div ref={calRef} style={{ position: "relative" }}>
-        <div onClick={() => { setCalOpen((v) => !v); setTimeOpen(false); }} style={chipStyle(calOpen)}>
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <rect x="1" y="3" width="14" height="12" rx="1.5" />
-            <path d="M1 7h14M5 1v4M11 1v4" />
-          </svg>
-          {fmtShortDate(selectedDate)}
-        </div>
-        {calOpen && (
-          <div style={{
-            position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 300,
-            background: CARD_BG, border: `1px solid ${BORDER}`,
-            borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-            padding: "4px 4px 8px",
-          }}>
-            <DayPicker
-              mode="single"
-              selected={selectedDate}
-              defaultMonth={selectedDate}
-              onSelect={(d) => {
-                if (!d) return;
-                onChange(combineDateAndTime(d, selectedTime));
-                setCalOpen(false);
-              }}
-              styles={{
-                root: { fontFamily: "var(--font-body)", fontSize: 12, margin: 0 },
-                month_caption: { fontSize: 12, fontWeight: 600, color: FG },
-                nav: {},
-                weekday: { color: MUTED, fontSize: 11, fontWeight: 500 },
-                day: { width: 30, height: 30, borderRadius: 6 },
-              }}
-              modifiersStyles={{
-                selected: { background: ACCENT, color: "#fff", fontWeight: 600 },
-                today: { color: ACCENT, fontWeight: 700 },
-              }}
-            />
-          </div>
-        )}
-      </div>
-
-      {/* Time chip + scrollable list */}
-      <div ref={timeRef} style={{ position: "relative" }}>
-        <div onClick={() => { setTimeOpen((v) => !v); setCalOpen(false); }} style={chipStyle(timeOpen)}>
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <circle cx="8" cy="8" r="6.5" />
-            <path d="M8 5v3.5L10.5 10" strokeLinecap="round" />
-          </svg>
-          {fmtTime(selectedTime)}
-        </div>
-        {timeOpen && (
-          <div
-            ref={timeListRef}
-            style={{
-              position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 300,
-              background: CARD_BG, border: `1px solid ${BORDER}`,
-              borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
-              overflowY: "auto", maxHeight: 220, minWidth: 120,
-              padding: "4px 0",
-            }}
-          >
-            {TIME_OPTIONS.map((opt) => {
-              const isSelected = opt.value === selectedTime;
-              return (
-                <div
-                  key={opt.value}
-                  data-selected={isSelected}
-                  onClick={() => {
-                    onChange(combineDateAndTime(selectedDate, opt.value));
-                    setTimeOpen(false);
-                  }}
-                  style={{
-                    padding: "6px 14px", fontSize: 12, cursor: "pointer",
-                    background: isSelected ? ACCENT : "transparent",
-                    color: isSelected ? "#fff" : FG,
-                    fontWeight: isSelected ? 600 : 400,
-                  }}
-                >
-                  {opt.label}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+      <button style={btnStyle(value <= min)} onClick={() => value > min && onChange(value - 1)}>−</button>
+      <span style={{ fontSize: 28, fontWeight: 700, color: FG, minWidth: 40, textAlign: "center" }}>
+        {value}
+      </span>
+      <button style={btnStyle(value >= max)} onClick={() => value < max && onChange(value + 1)}>+</button>
     </div>
   );
 }
 
-// ─── Shared row ───────────────────────────────────────────────────────────────
-
-function SessionRow_({
-  label,
-  start,
-  end,
-  durationMins,
-  endPicker,
-}: {
-  label: string;
-  start: Date;
-  end?: Date;
-  durationMins?: number;
-  endPicker?: React.ReactNode;
-}) {
-  return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "56px 1fr 1fr 70px",
-      gap: "0 10px",
-      alignItems: "center",
-      padding: "12px 0",
-    }}>
-      <span style={{ fontSize: 10, fontWeight: 600, color: MUTED, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-        {label}
-      </span>
-      <span style={{ fontSize: 12, color: FG }}>{fmtDateTime(start)}</span>
-      {endPicker ?? <span style={{ fontSize: 12, color: FG }}>{end ? fmtDateTime(end) : "—"}</span>}
-      <span style={{ fontSize: 12, color: MUTED, textAlign: "right" }}>
-        {durationMins != null ? fmtDuration(Math.max(0, durationMins)) : "—"}
-      </span>
-    </div>
-  );
-}
-
-// ─── Tab: Adjust & Refund ─────────────────────────────────────────────────────
-
-function AdjustTab({
+function AdjustView({
   session,
-  settings,
   onSubmit,
-  loading,
+  actionState,
 }: {
   session: SessionRow;
   settings: AppSettings | null;
   onSubmit: (effectiveEnd: Date, refundAmount: number) => void;
-  loading: boolean;
+  actionState: "idle" | "pending" | "success" | "error";
 }) {
   const startedAt = new Date(session.startedAt);
-  const originalEnd = new Date(session.expectedEnd);
-  const originalMins = (originalEnd.getTime() - startedAt.getTime()) / 60_000;
-  const snapNow = snapToQuarter(new Date());
+  const isMonthly = hasMonthly(session.payments);
 
-  // If the session's expected end has already passed, default to "now" so the
-  // admin's first option is covering the time already used (extension), not a refund.
-  const isCurrentlyOverdue = snapNow > originalEnd;
-  const defaultEnd = isCurrentlyOverdue
-    ? snapNow
-    : (session.endedAt ? new Date(session.endedAt) : originalEnd);
-  const [newEnd, setNewEnd] = useState<Date>(snapToQuarter(defaultEnd));
+  // ── Monthly unit accounting ───────────────────────────────────────
+  const monthlyPayments = session.payments.filter(
+    (p) => p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL",
+  );
+  const origMonths = monthlyPayments.length;
+  const totalMonthlyPaid = monthlyPayments.reduce(
+    (s, p) => s + p.amount - (p.refundedAmount ?? 0),
+    0,
+  );
+  const perMonthRate = origMonths > 0 ? totalMonthlyPaid / origMonths : 0;
 
-  const newMins = (newEnd.getTime() - startedAt.getTime()) / 60_000;
-  const isExtension = newEnd > originalEnd;   // new end is past the original
-  const isFuture = newEnd > snapNow;           // new end is past right now (not allowed)
-  const paid = totalPaid(session.payments);
-  const monthly = hasMonthly(session.payments);
-  const recomputedCharge = snapCost(settings, session.vehicle.type, newMins);
-  // Extensions never trigger a refund; reductions do.
-  const refund = isExtension ? 0 : Math.max(0, Math.round((paid - recomputedCharge) * 100) / 100);
-  const canSubmit = newEnd > startedAt && !isFuture && !loading;
+  // ── Daily unit accounting ─────────────────────────────────────────
+  const dailyPayments = session.payments.filter(
+    (p) =>
+      (p.type === "CHECKIN" || p.type === "EXTENSION") &&
+      (p.status === "COMPLETED" || p.status === "PARTIALLY_REFUNDED"),
+  );
+  const origDays = dailyPayments.reduce((s, p) => s + (p.days ?? 0), 0);
+  const totalDailyPaid = dailyPayments.reduce(
+    (s, p) => s + p.amount - (p.refundedAmount ?? 0),
+    0,
+  );
+  const perDayRate = origDays > 0 ? totalDailyPaid / origDays : 0;
+
+  const origUnits = isMonthly ? origMonths : origDays;
+  const perUnitRate = isMonthly ? perMonthRate : perDayRate;
+  const unitLabel = isMonthly ? "month" : "day";
+
+  const [units, setUnits] = useState(origUnits);
+
+  const newEnd = isMonthly
+    ? addMonths(startedAt, units)
+    : new Date(startedAt.getTime() + units * 86400000);
+
+  const refund = Math.max(0, Math.round((origUnits - units) * perUnitRate * 100) / 100);
+  const changed = units !== origUnits;
+  const canSubmit = units >= 1 && changed && actionState !== "pending";
+
+  if (origUnits === 0) {
+    return (
+      <p style={{ fontSize: 13, color: MUTED, textAlign: "center", marginTop: 24 }}>
+        No paid periods found for this session.
+      </p>
+    );
+  }
 
   return (
-    <div>
-      {/* Extension banner — shown when the default is to extend to cover time used */}
-      {isCurrentlyOverdue && !isFuture && (
-        <div style={{
-          fontSize: 12, color: "#065F46", background: "#ECFDF5",
-          border: "1px solid #6EE7B7", borderRadius: 6, padding: "10px 14px", marginBottom: 16,
-        }}>
-          <strong>Session expired {fmtDuration((snapNow.getTime() - originalEnd.getTime()) / 60_000)} ago.</strong>
-          {" "}The end time below is set to right now — applying it will cover the extra time at no additional charge.
-          To refund instead, set the end time earlier than the original.
-        </div>
-      )}
-
-      {monthly && (
-        <div style={{
-          fontSize: 11, color: "#92400E", background: "#FEF3C7",
-          border: "1px solid #D97706", borderRadius: 6, padding: "8px 12px", marginBottom: 16,
-        }}>
-          Monthly subscription excluded from refund calculation.
-        </div>
-      )}
-
-      {/* Column headers */}
+    <div style={{ maxWidth: 440 }}>
       <div style={{
-        display: "grid", gridTemplateColumns: "56px 1fr 1fr 70px", gap: "0 10px",
-        paddingBottom: 8, borderBottom: `1px solid ${BORDER}`, marginBottom: 4,
+        background: INPUT_BG, borderRadius: 10, padding: "20px 24px", marginBottom: 24,
       }}>
-        {["", "Start", "End", "Duration"].map((h, i) => (
-          <span key={h} style={{
-            fontSize: 10, fontWeight: 600, color: MUTED,
-            textTransform: "uppercase", letterSpacing: "0.05em",
-            textAlign: i === 3 ? "right" : "left",
-          }}>{h}</span>
-        ))}
+        <div style={{ fontSize: 11, fontWeight: 600, color: MUTED, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 14 }}>
+          Paid {unitLabel}s
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+          <UnitStepper value={units} min={1} max={origUnits} onChange={setUnits} />
+          <div style={{ fontSize: 12, color: MUTED }}>
+            of {origUnits} {unitLabel}{origUnits !== 1 ? "s" : ""} originally booked
+          </div>
+        </div>
       </div>
 
-      <SessionRow_ label="Original" start={startedAt} end={originalEnd} durationMins={originalMins} />
-      <div style={{ borderBottom: `1px solid ${BORDER}`, margin: "2px 0" }} />
-      <SessionRow_
-        label={isExtension ? "Extended" : "Adjusted"}
-        start={startedAt}
-        durationMins={newMins}
-        endPicker={<DateTimePicker value={newEnd} onChange={setNewEnd} invalid={isFuture} />}
-      />
-
-      {isFuture && (
-        <div style={{
-          fontSize: 11, color: "#991B1B", background: "#FEE2E2",
-          border: "1px solid #DC2626", borderRadius: 6, padding: "8px 12px", marginTop: 12,
-        }}>
-          End time cannot be set in the future. To charge the driver for extra time, use <strong>Extend Time</strong> on the session instead.
-        </div>
-      )}
-
-      {!isFuture && (
-        <div style={{
-          background: INPUT_BG, borderRadius: 8, padding: "14px 16px", fontSize: 13, marginTop: 20,
-        }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <span style={{ color: MUTED }}>Original charge (paid)</span>
-            <span style={{ fontWeight: 600, color: FG }}>${paid.toFixed(2)}</span>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+        <div style={{ background: INPUT_BG, borderRadius: 8, padding: "12px 14px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: MUTED, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+            Session start
           </div>
-          {!isExtension && (
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-              <span style={{ color: MUTED }}>Recomputed charge</span>
-              <span style={{ fontWeight: 600, color: FG }}>${recomputedCharge.toFixed(2)}</span>
-            </div>
-          )}
-          <div style={{
-            display: "flex", justifyContent: "space-between",
-            paddingTop: 6, borderTop: `1px solid ${BORDER}`,
-          }}>
-            <span style={{ fontWeight: 600, color: isExtension ? "#065F46" : refund > 0 ? DANGER : MUTED }}>
-              {isExtension ? "No refund — extension only" : refund > 0 ? "Refund" : "No refund"}
-            </span>
-            <span style={{ fontWeight: 700, color: refund > 0 ? DANGER : MUTED }}>
-              {refund > 0 ? `$${refund.toFixed(2)}` : "—"}
-            </span>
-          </div>
+          <div style={{ fontSize: 13, color: FG }}>{fmtDateTime(startedAt)}</div>
         </div>
-      )}
+        <div style={{ background: INPUT_BG, borderRadius: 8, padding: "12px 14px" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: MUTED, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+            New end
+          </div>
+          <div style={{ fontSize: 13, color: changed ? FG : MUTED }}>{fmtDateTime(newEnd)}</div>
+        </div>
+      </div>
 
-      {session.status === "OVERSTAY" && !isCurrentlyOverdue && (
-        <p style={{ fontSize: 11, color: MUTED, marginTop: 10 }}>
-          Looking for overstay payment?{" "}
-          <a href="#payments" style={{ color: ACCENT }}>Go to Payments tab ↗</a>
-        </p>
-      )}
+      <div style={{
+        background: INPUT_BG, borderRadius: 8, padding: "14px 16px", fontSize: 13, marginBottom: 24,
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <span style={{ color: MUTED }}>Rate per {unitLabel}</span>
+          <span style={{ fontWeight: 600, color: FG }}>${perUnitRate.toFixed(2)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <span style={{ color: MUTED }}>Removed {unitLabel}{origUnits - units !== 1 ? "s" : ""}</span>
+          <span style={{ fontWeight: 600, color: FG }}>{origUnits - units}</span>
+        </div>
+        <div style={{
+          display: "flex", justifyContent: "space-between",
+          paddingTop: 8, borderTop: `1px solid ${BORDER}`,
+        }}>
+          <span style={{ fontWeight: 600, color: refund > 0 ? DANGER : MUTED }}>
+            {refund > 0 ? "Refund to driver" : !changed ? "No change" : "No refund"}
+          </span>
+          <span style={{ fontWeight: 700, color: refund > 0 ? DANGER : MUTED }}>
+            {refund > 0 ? `$${refund.toFixed(2)}` : "—"}
+          </span>
+        </div>
+      </div>
 
       <button
         onClick={() => canSubmit && onSubmit(newEnd, refund)}
@@ -445,20 +239,249 @@ function AdjustTab({
           background: canSubmit ? ACCENT : "#C7C7CC",
           color: "#fff", fontSize: 14, fontWeight: 600,
           cursor: canSubmit ? "pointer" : "not-allowed",
-          marginTop: 20,
         }}
       >
-        {loading
-          ? "Saving…"
-          : refund > 0
-            ? `Apply & Refund $${refund.toFixed(2)}`
-            : "Apply New End Time"}
+        {actionState === "pending" ? "⏳ Saving…"
+          : actionState === "success" ? "✅ Saved"
+          : actionState === "error" ? "🔴 Retry"
+          : refund > 0 ? `Apply & Refund $${refund.toFixed(2)}`
+          : "Apply Adjustment"}
       </button>
     </div>
   );
 }
 
-// ─── Tab: Subscription ────────────────────────────────────────────────────────
+// ─── View: Refund ─────────────────────────────────────────────────────────────
+
+function RefundView({
+  session,
+  onSubmit,
+  actionState,
+}: {
+  session: SessionRow;
+  onSubmit: (amount: number, reason?: string) => void;
+  actionState: "idle" | "pending" | "success" | "error";
+}) {
+  const paid = totalPaid(session.payments);
+  const monthly = hasMonthly(session.payments);
+  const [mode, setMode] = useState<"full" | "partial">("full");
+  const [amount, setAmount] = useState("");
+  const [reason, setReason] = useState("");
+
+  const partialParsed = parseFloat(amount);
+  const refundAmount = mode === "full" ? paid : partialParsed;
+  const valid =
+    refundAmount > 0.005 &&
+    (mode === "full" || (!isNaN(partialParsed) && partialParsed <= paid + 0.001));
+
+  return (
+    <div style={{ maxWidth: 480 }}>
+      {monthly && (
+        <div style={{
+          fontSize: 11, color: "#92400E", background: "#FEF3C7",
+          border: "1px solid #D97706", borderRadius: 6, padding: "8px 12px", marginBottom: 16,
+        }}>
+          Monthly subscription payments are excluded from refund. Only one-time charges are refundable here.
+        </div>
+      )}
+
+      {paid <= 0 ? (
+        <p style={{ fontSize: 13, color: MUTED, textAlign: "center", marginTop: 24 }}>No refundable payments.</p>
+      ) : (
+        <>
+          {/* Radio toggle */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 14, color: FG }}>
+              <input
+                type="radio"
+                name="refund-mode"
+                checked={mode === "full"}
+                onChange={() => setMode("full")}
+                style={{ width: 16, height: 16, accentColor: ACCENT, cursor: "pointer" }}
+              />
+              <span>Full refund</span>
+              <span style={{ marginLeft: "auto", fontWeight: 700, color: FG }}>${paid.toFixed(2)}</span>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 14, color: FG }}>
+              <input
+                type="radio"
+                name="refund-mode"
+                checked={mode === "partial"}
+                onChange={() => setMode("partial")}
+                style={{ width: 16, height: 16, accentColor: ACCENT, cursor: "pointer" }}
+              />
+              <span>Partial refund</span>
+            </label>
+          </div>
+
+          {mode === "partial" && (
+            <div style={{ position: "relative", marginBottom: 20 }}>
+              <span style={{
+                position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)",
+                fontSize: 14, color: MUTED,
+              }}>$</span>
+              <input
+                type="number"
+                min="0.01"
+                max={paid}
+                step="0.01"
+                placeholder="0.00"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                autoFocus
+                style={{
+                  width: "100%", padding: "9px 10px 9px 24px", fontSize: 14,
+                  border: `1px solid ${BORDER}`, borderRadius: 6,
+                  background: CARD_BG, color: FG, outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+              <span style={{ fontSize: 11, color: MUTED, display: "block", marginTop: 4 }}>
+                Max: ${paid.toFixed(2)}
+              </span>
+            </div>
+          )}
+
+          {/* Reason */}
+          <div style={{ marginBottom: 24 }}>
+            <label style={{ display: "block", fontSize: 12, color: MUTED, marginBottom: 6 }}>Reason (optional)</label>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="e.g. Driver left early"
+              maxLength={200}
+              style={{
+                width: "100%", padding: "9px 12px", fontSize: 13,
+                border: `1px solid ${BORDER}`, borderRadius: 6,
+                background: CARD_BG, color: FG, outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+          </div>
+
+          <button
+            onClick={() => valid && onSubmit(refundAmount, reason || undefined)}
+            disabled={actionState === "pending" || !valid}
+            style={{
+              width: "100%", padding: "12px 0", borderRadius: 8, border: "none",
+              background: actionState === "pending" || !valid ? "#C7C7CC" : DANGER,
+              color: "#fff", fontSize: 14, fontWeight: 600,
+              cursor: actionState === "pending" || !valid ? "not-allowed" : "pointer",
+            }}
+          >
+            {actionState === "pending" ? "⏳ Refunding…"
+              : actionState === "success" ? "✅ Refunded"
+              : actionState === "error" ? "🔴 Retry"
+              : valid ? `Issue Refund $${refundAmount.toFixed(2)}`
+              : "Enter an amount"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── View: Cancel (hourly) ────────────────────────────────────────────────────
+
+function HourlyCancelView({
+  session,
+  onCancel,
+  onBack,
+  actionState,
+}: {
+  session: SessionRow;
+  onCancel: (refundFirst: boolean, reason: string) => void;
+  onBack: () => void;
+  actionState: "idle" | "pending" | "success" | "error";
+}) {
+  const paid = totalPaid(session.payments);
+  const [refundCustomer, setRefundCustomer] = useState(paid > 0);
+  const [reason, setReason] = useState("");
+
+  return (
+    <div style={{ maxWidth: 480 }}>
+      {/* Warning banner */}
+      <div style={{
+        display: "flex", gap: 10, alignItems: "flex-start",
+        background: "#FEF2F2", border: "1px solid #FCA5A5",
+        borderRadius: 8, padding: "12px 14px", marginBottom: 24,
+      }}>
+        <span style={{ fontSize: 16, lineHeight: 1.4 }}>⚠️</span>
+        <div style={{ fontSize: 13, color: "#7F1D1D", lineHeight: 1.5 }}>
+          <strong>This ends the session immediately.</strong> The spot will be freed and the driver will lose access.
+          {session.status === "ACTIVE" && " The session is currently active."}
+          {session.status === "OVERSTAY" && " The driver is currently in overstay."}
+        </div>
+      </div>
+
+      {/* Refund checkbox */}
+      {paid > 0 && (
+        <label style={{
+          display: "flex", alignItems: "center", gap: 10,
+          fontSize: 14, color: FG, cursor: "pointer", marginBottom: 20,
+        }}>
+          <input
+            type="checkbox"
+            checked={refundCustomer}
+            onChange={(e) => setRefundCustomer(e.target.checked)}
+            style={{ width: 16, height: 16, accentColor: ACCENT, cursor: "pointer" }}
+          />
+          Refund customer (${paid.toFixed(2)})
+        </label>
+      )}
+
+      {/* Reason */}
+      <div style={{ marginBottom: 28 }}>
+        <label style={{ display: "block", fontSize: 12, color: MUTED, marginBottom: 6 }}>Reason (optional)</label>
+        <input
+          type="text"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Parking violation, driver request"
+          maxLength={200}
+          style={{
+            width: "100%", padding: "9px 12px", fontSize: 13,
+            border: `1px solid ${BORDER}`, borderRadius: 6,
+            background: CARD_BG, color: FG, outline: "none",
+            boxSizing: "border-box",
+          }}
+        />
+      </div>
+
+      {/* Buttons */}
+      <div style={{ display: "flex", gap: 10 }}>
+        <button
+          onClick={onBack}
+          style={{
+            flex: 1, padding: "12px 0", borderRadius: 8,
+            border: `1px solid ${BORDER}`, background: "transparent",
+            color: FG, fontSize: 14, fontWeight: 500, cursor: "pointer",
+          }}
+        >
+          Keep Session
+        </button>
+        <button
+          onClick={() => onCancel(refundCustomer && paid > 0, reason)}
+          disabled={actionState === "pending"}
+          style={{
+            flex: 1, padding: "12px 0", borderRadius: 8, border: "none",
+            background: actionState === "pending" ? "#C7C7CC" : DANGER,
+            color: "#fff", fontSize: 14, fontWeight: 600,
+            cursor: actionState === "pending" ? "not-allowed" : "pointer",
+          }}
+        >
+          {actionState === "pending" ? "⏳ Cancelling…"
+            : actionState === "success" ? "✅ Cancelled"
+            : actionState === "error" ? "🔴 Retry"
+            : "Cancel Session"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── View: Cancel (monthly) — subscription management ─────────────────────────
 
 const BILLING_BADGE: Record<string, { color: string; bg: string; label: string } | undefined> = {
   CURRENT:        undefined,
@@ -466,14 +489,14 @@ const BILLING_BADGE: Record<string, { color: string; bg: string; label: string }
   DELINQUENT:     { color: "#7F1D1D", bg: "#FEE2E2", label: "Delinquent" },
 };
 
-function SubscriptionTab({
+function MonthlyCancelView({
   session,
   onCancel,
-  loading,
+  actionState,
 }: {
   session: SessionRow;
   onCancel: (immediately: boolean) => void;
-  loading: boolean;
+  actionState: "idle" | "pending" | "success" | "error";
 }) {
   const [confirmImmediate, setConfirmImmediate] = useState(false);
 
@@ -484,8 +507,7 @@ function SubscriptionTab({
   const isTerminal = session.billingStatus === "DELINQUENT" || session.status === "COMPLETED" || session.status === "CANCELLED";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {/* Billing status */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 480 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: 13, color: MUTED }}>Billing status</span>
         {bs ? (
@@ -499,7 +521,6 @@ function SubscriptionTab({
         )}
       </div>
 
-      {/* Next renewal / access through */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontSize: 13, color: MUTED }}>
           {isTerminal ? "Access ended" : "Access through / next renewal"}
@@ -507,7 +528,6 @@ function SubscriptionTab({
         <span style={{ fontSize: 13, fontWeight: 600, color: FG }}>{fmtDateTime(nextRenewal)}</span>
       </div>
 
-      {/* Stripe deep-link */}
       {subscriptionId && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, color: MUTED }}>Stripe subscription</span>
@@ -522,7 +542,6 @@ function SubscriptionTab({
         </div>
       )}
 
-      {/* Cancel actions — only when subscription is still active */}
       {!isTerminal && subscriptionId && (
         <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 20, marginTop: 4 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: FG, marginBottom: 14 }}>Cancel subscription</div>
@@ -531,10 +550,10 @@ function SubscriptionTab({
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <button
                 onClick={() => onCancel(false)}
-                disabled={loading}
+                disabled={actionState === "pending"}
                 style={{
                   padding: "12px 16px", borderRadius: 8, border: `1px solid ${BORDER}`,
-                  background: "transparent", color: FG, fontSize: 13, cursor: loading ? "not-allowed" : "pointer",
+                  background: "transparent", color: FG, fontSize: 13, cursor: actionState === "pending" ? "not-allowed" : "pointer",
                   textAlign: "left",
                 }}
               >
@@ -545,10 +564,10 @@ function SubscriptionTab({
               </button>
               <button
                 onClick={() => setConfirmImmediate(true)}
-                disabled={loading}
+                disabled={actionState === "pending"}
                 style={{
                   padding: "12px 16px", borderRadius: 8, border: `1px solid ${DANGER}`,
-                  background: "transparent", color: DANGER, fontSize: 13, cursor: loading ? "not-allowed" : "pointer",
+                  background: "transparent", color: DANGER, fontSize: 13, cursor: actionState === "pending" ? "not-allowed" : "pointer",
                   textAlign: "left",
                 }}
               >
@@ -578,14 +597,17 @@ function SubscriptionTab({
                 </button>
                 <button
                   onClick={() => { setConfirmImmediate(false); onCancel(true); }}
-                  disabled={loading}
+                  disabled={actionState === "pending"}
                   style={{
                     flex: 1, padding: "9px 0", borderRadius: 6, border: "none",
                     background: DANGER, color: "#fff", fontSize: 13, fontWeight: 600,
-                    cursor: loading ? "not-allowed" : "pointer",
+                    cursor: actionState === "pending" ? "not-allowed" : "pointer",
                   }}
                 >
-                  {loading ? "Canceling…" : "Yes, cancel now"}
+                  {actionState === "pending" ? "⏳ Canceling…"
+                    : actionState === "success" ? "✅ Cancelled"
+                    : actionState === "error" ? "🔴 Retry"
+                    : "Yes, cancel now"}
                 </button>
               </div>
             </div>
@@ -602,124 +624,28 @@ function SubscriptionTab({
   );
 }
 
-// ─── Tab: Refund by $ ─────────────────────────────────────────────────────────
-
-function RefundTab({
-  session,
-  onSubmit,
-  loading,
-}: {
-  session: SessionRow;
-  onSubmit: (refundAmount: number, voidSession: boolean) => void;
-  loading: boolean;
-}) {
-  const paid = totalPaid(session.payments);
-  const monthly = hasMonthly(session.payments);
-  const [amount, setAmount] = useState("");
-  const [voidSession, setVoidSession] = useState(false);
-  const isActive = session.status === "ACTIVE" || session.status === "OVERSTAY";
-
-  const parsed = parseFloat(amount);
-  const valid = !isNaN(parsed) && parsed > 0.005 && parsed <= paid + 0.001;
-
-  return (
-    <div>
-      {monthly && (
-        <div style={{
-          fontSize: 11, color: "#92400E", background: "#FEF3C7",
-          border: "1px solid #D97706", borderRadius: 6, padding: "8px 12px", marginBottom: 16,
-        }}>
-          Monthly subscription excluded from refund.
-        </div>
-      )}
-
-      {paid <= 0 ? (
-        <p style={{ fontSize: 13, color: MUTED, textAlign: "center", marginTop: 24 }}>No refundable payments.</p>
-      ) : (
-        <>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <span style={{ fontSize: 12, color: MUTED }}>Max refundable</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: FG }}>${paid.toFixed(2)}</span>
-              <button
-                onClick={() => setAmount(paid.toFixed(2))}
-                style={{
-                  fontSize: 11, padding: "3px 8px", borderRadius: 4,
-                  border: `1px solid ${BORDER}`, background: "transparent",
-                  color: MUTED, cursor: "pointer",
-                }}
-              >
-                Full
-              </button>
-            </div>
-          </div>
-
-          <div style={{ position: "relative", marginBottom: 16 }}>
-            <span style={{
-              position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)",
-              fontSize: 14, color: MUTED,
-            }}>$</span>
-            <input
-              type="number"
-              min="0.01"
-              max={paid}
-              step="0.01"
-              placeholder="0.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              autoFocus
-              style={{
-                width: "100%", padding: "9px 10px 9px 24px", fontSize: 14,
-                border: `1px solid ${BORDER}`, borderRadius: 6,
-                background: CARD_BG, color: FG, outline: "none",
-                boxSizing: "border-box",
-              }}
-            />
-          </div>
-
-          {isActive && (
-            <label style={{
-              display: "flex", alignItems: "center", gap: 8,
-              fontSize: 13, color: FG, cursor: "pointer", marginBottom: 16,
-            }}>
-              <input
-                type="checkbox"
-                checked={voidSession}
-                onChange={(e) => setVoidSession(e.target.checked)}
-                style={{ width: 15, height: 15, accentColor: DANGER, cursor: "pointer" }}
-              />
-              Void active session?
-            </label>
-          )}
-
-          <button
-            onClick={() => valid && onSubmit(parsed, voidSession)}
-            disabled={loading || !valid}
-            style={{
-              width: "100%", padding: "12px 0", borderRadius: 8, border: "none",
-              background: loading || !valid ? "#C7C7CC" : DANGER,
-              color: "#fff", fontSize: 14, fontWeight: 600,
-              cursor: loading || !valid ? "not-allowed" : "pointer",
-            }}
-          >
-            {loading ? "Refunding…" : valid ? `Refund $${parsed.toFixed(2)}` : "Enter an amount"}
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 
 export default function ManageSessionModal({ session, settings, onClose, onSuccess }: Props) {
-  const [tab, setTab] = useState<Tab>("adjust");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<View>("menu");
+  const [actionState, setActionState] = useState<"idle" | "pending" | "success" | "error">("idle");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  const { addToast } = useToast();
+  const isMonthly = hasMonthly(session.payments);
+  const paid = totalPaid(session.payments);
+
+  function goBack() {
+    setView("menu");
+    setActionState("idle");
+    setActionError(null);
+  }
 
   async function callAdjust(effectiveEnd?: Date, refundAmount?: number) {
-    setLoading(true);
-    setError(null);
+    setActionState("pending");
+    setActionError(null);
     try {
       const body: Record<string, unknown> = { sessionId: session.id, action: "adjust" };
       if (effectiveEnd) body.effectiveEnd = effectiveEnd.toISOString();
@@ -734,19 +660,103 @@ export default function ManageSessionModal({ session, settings, onClose, onSucce
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || "Request failed");
       }
+      if (!mountedRef.current) return;
+      setActionState("success");
+      addToast({
+        type: "success",
+        message: refundAmount && refundAmount > 0.005
+          ? `Session adjusted · Stripe refund of $${refundAmount.toFixed(2)} issued`
+          : "Session end time adjusted",
+      });
+      await new Promise((r) => setTimeout(r, 600));
       onSuccess();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-      setLoading(false);
+      if (!mountedRef.current) return;
+      const msg = e instanceof Error ? e.message : "Something went wrong";
+      setActionError(msg);
+      setActionState("error");
+      addToast({ type: "error", message: `Adjustment failed · ${msg}` });
     }
   }
 
-  const isMonthly = hasMonthly(session.payments);
+  async function callRefund(amount: number, reason?: string) {
+    setActionState("pending");
+    setActionError(null);
+    try {
+      const body: Record<string, unknown> = { sessionId: session.id, action: "adjust", refundAmount: amount };
+      if (reason) body.reason = reason;
+      const res = await fetch("/api/admin/sessions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Request failed");
+      }
+      if (!mountedRef.current) return;
+      setActionState("success");
+      addToast({ type: "success", message: `Refund of $${amount.toFixed(2)} issued · Stripe processed` });
+      await new Promise((r) => setTimeout(r, 600));
+      onSuccess();
+      onClose();
+    } catch (e) {
+      if (!mountedRef.current) return;
+      const msg = e instanceof Error ? e.message : "Something went wrong";
+      setActionError(msg);
+      setActionState("error");
+      addToast({ type: "error", message: `Refund failed · ${msg}` });
+    }
+  }
+
+  async function callCancel(refundFirst: boolean, reason: string) {
+    setActionState("pending");
+    setActionError(null);
+    try {
+      if (refundFirst && paid > 0) {
+        const res = await fetch("/api/admin/sessions", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: session.id, action: "adjust", refundAmount: paid }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(`Refund failed: ${j.error || "Unknown error"}`);
+        }
+      }
+      const res = await fetch("/api/admin/sessions", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id, action: "cancel", reason: reason || "Admin cancelled" }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Cancel failed");
+      }
+      if (!mountedRef.current) return;
+      setActionState("success");
+      addToast({
+        type: "success",
+        message: refundFirst && paid > 0
+          ? `Session cancelled · Stripe refund of $${paid.toFixed(2)} issued`
+          : "Session cancelled",
+      });
+      await new Promise((r) => setTimeout(r, 600));
+      onSuccess();
+      onClose();
+    } catch (e) {
+      if (!mountedRef.current) return;
+      const msg = e instanceof Error ? e.message : "Something went wrong";
+      setActionError(msg);
+      setActionState("error");
+      addToast({ type: "error", message: `Cancellation failed · ${msg}` });
+    }
+  }
 
   async function callCancelSubscription(immediately: boolean) {
-    setLoading(true);
-    setError(null);
+    setActionState("pending");
+    setActionError(null);
     try {
       const res = await fetch("/api/admin/sessions", {
         method: "PUT",
@@ -757,47 +767,122 @@ export default function ManageSessionModal({ session, settings, onClose, onSucce
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || "Request failed");
       }
+      if (!mountedRef.current) return;
+      setActionState("success");
+      addToast({
+        type: "success",
+        message: immediately
+          ? "Subscription cancelled immediately · Stripe updated"
+          : "Subscription set to cancel at period end · Stripe updated",
+      });
+      await new Promise((r) => setTimeout(r, 600));
       onSuccess();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong");
-      setLoading(false);
+      if (!mountedRef.current) return;
+      const msg = e instanceof Error ? e.message : "Something went wrong";
+      setActionError(msg);
+      setActionState("error");
+      addToast({ type: "error", message: `Cancellation failed · ${msg}` });
     }
   }
 
-  const TABS: { key: Tab; label: string }[] = [
-    { key: "adjust", label: "Adjust & Refund" },
-    { key: "refund", label: "Refund by $" },
-    ...(isMonthly ? [{ key: "subscription" as Tab, label: "Subscription" }] : []),
-  ];
+  const VIEW_TITLE: Record<Exclude<View, "menu">, string> = {
+    adjust: "Adjust Session",
+    refund: "Issue Refund",
+    cancel: isMonthly ? "Cancel Subscription" : "Cancel Session",
+  };
 
+  const overlayStyle: React.CSSProperties = {
+    position: "fixed", inset: 0, zIndex: 200,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    background: "rgba(0,0,0,0.4)",
+  };
+
+  const errorBanner = actionError && (
+    <div style={{
+      fontSize: 11, color: "#991B1B", background: "#FEE2E2",
+      border: "1px solid #DC2626", borderRadius: 6, padding: "8px 12px", marginBottom: 16,
+    }}>
+      {actionError}
+    </div>
+  );
+
+  // ── Menu view ────────────────────────────────────────────────────────────────
+  if (view === "menu") {
+    return (
+      <div style={overlayStyle} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div style={{
+          background: CARD_BG, borderRadius: 12, width: 320,
+          overflow: "hidden", fontFamily: "var(--font-body)",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.18)",
+        }}>
+          {/* Header */}
+          <div style={{
+            display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+            padding: "14px 16px", borderBottom: `1px solid ${BORDER}`,
+          }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: FG }}>Manage Session</div>
+              <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
+                {session.driver.name} · {session.spot.label}
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              style={{ background: "transparent", border: "none", fontSize: 18, color: MUTED, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}
+            >
+              &times;
+            </button>
+          </div>
+
+          {/* Menu items */}
+          <div style={{ padding: "6px 0" }}>
+            <MenuRow icon="✏️" label="Adjust session" onClick={() => setView("adjust")} />
+            {paid > 0 && <MenuRow icon="💸" label="Issue refund" onClick={() => setView("refund")} />}
+            <MenuRow icon="🚫" label="Cancel session" onClick={() => setView("cancel")} danger />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Full-size focused views ───────────────────────────────────────────────────
   return (
-    <div
-      style={{
-        position: "fixed", inset: 0, zIndex: 200,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        background: "rgba(0,0,0,0.4)",
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
+    <div style={overlayStyle} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{
         background: CARD_BG, borderRadius: 12,
-        width: "calc(100vw - 32px)", maxWidth: 960,
-        height: "calc(100vh - 32px)", overflow: "hidden",
+        width: "calc(100vw - 32px)", maxWidth: 720,
+        maxHeight: "calc(100vh - 32px)", overflow: "hidden",
         display: "flex", flexDirection: "column",
         fontFamily: "var(--font-body)",
+        boxShadow: "0 16px 48px rgba(0,0,0,0.18)",
       }}>
         {/* Header */}
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "16px 20px", borderBottom: `1px solid ${BORDER}`, flexShrink: 0,
+          padding: "14px 20px", borderBottom: `1px solid ${BORDER}`, flexShrink: 0,
         }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: FG }}>
-              Manage Session — {session.spot.label}
-            </div>
-            <div style={{ fontSize: 12, color: MUTED, marginTop: 3 }}>
-              {session.driver.name} · {session.vehicle.type === "TRUCK_TRAILER" ? "Truck + Trailer" : "Bobtail"}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              onClick={goBack}
+              style={{
+                background: "transparent", border: "none", fontSize: 12,
+                color: ACCENT, cursor: "pointer", padding: "4px 6px",
+                fontFamily: "var(--font-body)", display: "flex", alignItems: "center", gap: 4,
+                borderRadius: 4,
+              }}
+            >
+              ← Back
+            </button>
+            <div style={{ width: 1, height: 18, background: BORDER }} />
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: FG }}>
+                {VIEW_TITLE[view as Exclude<View, "menu">]} — {session.spot.label}
+              </div>
+              <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
+                {session.driver.name} · {session.vehicle.type === "TRUCK_TRAILER" ? "Truck + Trailer" : "Bobtail"}
+              </div>
             </div>
           </div>
           <button
@@ -808,63 +893,80 @@ export default function ManageSessionModal({ session, settings, onClose, onSucce
           </button>
         </div>
 
-        {/* Tabs */}
-        <div style={{ display: "flex", borderBottom: `1px solid ${BORDER}`, flexShrink: 0 }}>
-          {TABS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => { setTab(t.key); setError(null); }}
-              style={{
-                flex: "1 1 0", padding: "12px 0",
-                fontSize: 12, fontWeight: tab === t.key ? 600 : 400,
-                color: tab === t.key ? ACCENT : MUTED,
-                background: "transparent", border: "none",
-                borderBottom: tab === t.key ? `2px solid ${ACCENT}` : "2px solid transparent",
-                cursor: "pointer", fontFamily: "var(--font-body)",
-              }}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
         {/* Body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
-          {error && (
-            <div style={{
-              fontSize: 11, color: "#991B1B", background: "#FEE2E2",
-              border: "1px solid #DC2626", borderRadius: 6, padding: "8px 12px", marginBottom: 16,
-            }}>
-              {error}
-            </div>
-          )}
+          {errorBanner}
 
-          {tab === "adjust" && (
-            <AdjustTab
+          {view === "adjust" && (
+            <AdjustView
               session={session}
               settings={settings}
               onSubmit={(end, refund) => callAdjust(end, refund)}
-              loading={loading}
+              actionState={actionState}
             />
           )}
 
-          {tab === "refund" && (
-            <RefundTab
+          {view === "refund" && (
+            <RefundView
               session={session}
-              onSubmit={(refund, shouldVoid) => callAdjust(shouldVoid ? new Date() : undefined, refund)}
-              loading={loading}
+              onSubmit={callRefund}
+              actionState={actionState}
             />
           )}
 
-          {tab === "subscription" && (
-            <SubscriptionTab
+          {view === "cancel" && isMonthly && (
+            <MonthlyCancelView
               session={session}
               onCancel={callCancelSubscription}
-              loading={loading}
+              actionState={actionState}
+            />
+          )}
+
+          {view === "cancel" && !isMonthly && (
+            <HourlyCancelView
+              session={session}
+              onCancel={callCancel}
+              onBack={goBack}
+              actionState={actionState}
             />
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+// ─── Menu row item ────────────────────────────────────────────────────────────
+
+function MenuRow({
+  icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: string;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        width: "100%", display: "flex", alignItems: "center", gap: 10,
+        padding: "12px 16px", background: hovered ? (danger ? "#FEF2F2" : INPUT_BG) : "transparent",
+        border: "none", cursor: "pointer", fontFamily: "var(--font-body)",
+        textAlign: "left",
+      }}
+    >
+      <span style={{ fontSize: 15, lineHeight: 1, minWidth: 20, textAlign: "center" }}>{icon}</span>
+      <span style={{ fontSize: 13, fontWeight: 500, color: danger ? DANGER : FG, flex: 1 }}>{label}</span>
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={danger ? DANGER : MUTED} strokeWidth="1.5" strokeLinecap="round">
+        <path d="M6 3l5 5-5 5" />
+      </svg>
+    </button>
   );
 }

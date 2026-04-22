@@ -173,7 +173,7 @@ model Payment {
   session   Session       @relation(fields: [sessionId], references: [id])
   type      PaymentType
   amount    Float
-  hours     Float?
+  days      Float?
   status    PaymentStatus @default(COMPLETED)
 
   // ─── Stripe identifiers ───────────────────────────────────────────────
@@ -244,8 +244,8 @@ model AuditLog {
 
 model Settings {
   id                    String  @id @default("default")
-  hourlyRateBobtail     Float   @default(10.0)
-  hourlyRateTruck       Float   @default(15.0)
+  dailyRateBobtail      Float   @default(30.0)
+  dailyRateTruck        Float   @default(30.0)
   monthlyRateBobtail    Float   @default(250.0)
   monthlyRateTruck      Float   @default(400.0)
   overstayRateBobtail   Float   @default(20.0)

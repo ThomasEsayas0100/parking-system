@@ -11,8 +11,8 @@ import PhoneInput from "@/components/PhoneInput";
 
 type Settings = Pick<
   AppSettings,
-  | "hourlyRateBobtail"
-  | "hourlyRateTruck"
+  | "dailyRateBobtail"
+  | "dailyRateTruck"
   | "monthlyRateBobtail"
   | "monthlyRateTruck"
   | "overstayRateBobtail"
@@ -24,7 +24,7 @@ type Settings = Pick<
   | "gracePeriodMinutes"
 >;
 type Vehicle = ApiVehicle;
-type DurationType = "HOURLY" | "MONTHLY";
+type DurationType = "DAILY" | "MONTHLY";
 
 export default function CheckInPage() {
   return (
@@ -103,9 +103,9 @@ function CheckInContent() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState(isDemo ? "demo@example.com" : "");
   const [phone, setPhone] = useState(isDemo ? "555-0100" : "");
-  const [hours, setHours] = useState(4);
+  const [days, setDays] = useState(1);
   const [months, setMonths] = useState(1);
-  const [durationType, setDurationType] = useState<DurationType>("HOURLY");
+  const [durationType, setDurationType] = useState<DurationType>("DAILY");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -189,8 +189,8 @@ function CheckInContent() {
         .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
       setSettings({
-        hourlyRateBobtail: 12,
-        hourlyRateTruck: 18,
+        dailyRateBobtail: 30,
+        dailyRateTruck: 30,
         monthlyRateBobtail: 250,
         monthlyRateTruck: 400,
         overstayRateBobtail: 20,
@@ -274,7 +274,7 @@ function CheckInContent() {
   // Monthly is truck/trailer only — reset if bobtail is selected while on monthly
   useEffect(() => {
     if (vehicleType === "BOBTAIL" && durationType === "MONTHLY") {
-      setDurationType("HOURLY");
+      setDurationType("DAILY");
     }
   }, [vehicleType, durationType]);
 
@@ -292,10 +292,10 @@ function CheckInContent() {
   const lotCompletelyFull =
     availableBobtail === 0 && availableTruck === 0;
 
-  const hourlyRate = settings
+  const dailyRate = settings
     ? vehicleType === "BOBTAIL"
-      ? settings.hourlyRateBobtail
-      : settings.hourlyRateTruck
+      ? settings.dailyRateBobtail
+      : settings.dailyRateTruck
     : 0;
 
   const monthlyRate = settings
@@ -305,7 +305,7 @@ function CheckInContent() {
     : 0;
 
   const totalAmount =
-    durationType === "MONTHLY" ? monthlyRate * months : hourlyRate * hours;
+    durationType === "MONTHLY" ? monthlyRate * months : dailyRate * days;
 
   /* ---------------------------------------------------------------- */
   /*  Demo submit — no API calls, pick spot from localStorage         */
@@ -344,7 +344,7 @@ function CheckInContent() {
       name: name.trim(),
       vehicle: vehicleLabel,
       type: vehicleType,
-      hours: String(hours),
+      days: String(days),
     });
 
     router.push(`/spot-assigned?${params.toString()}`);
@@ -432,7 +432,7 @@ function CheckInContent() {
             driverId: driver.id,
             vehicleId,
             sessionPurpose: durationType === "MONTHLY" ? "MONTHLY_CHECKIN" : "CHECKIN",
-            hours: durationType === "HOURLY" ? hours : undefined,
+            days: durationType === "DAILY" ? days : undefined,
             months: durationType === "MONTHLY" ? months : undefined,
             termsVersion: settings.termsVersion,
             overstayAuthorized: true,
@@ -458,7 +458,7 @@ function CheckInContent() {
           driverId: driver.id,
           vehicleId,
           durationType,
-          ...(durationType === "HOURLY" ? { hours } : { months }),
+          ...(durationType === "DAILY" ? { days } : { months }),
           termsVersion: settings.termsVersion,
           overstayAuthorized: true,
         }),
@@ -932,9 +932,9 @@ function CheckInContent() {
             </span>
           </div>
 
-          {/* Duration type toggle: Hourly / Monthly (monthly not available for bobtails) */}
+          {/* Duration type toggle: Daily / Monthly (monthly not available for bobtails) */}
           <div className="flex gap-2 mb-4">
-            {(["HOURLY", "MONTHLY"] as DurationType[]).map((dt) => {
+            {(["DAILY", "MONTHLY"] as DurationType[]).map((dt) => {
               if (dt === "MONTHLY" && vehicleType === "BOBTAIL") return null;
               const active = durationType === dt;
               return (
@@ -950,23 +950,23 @@ function CheckInContent() {
                     fontFamily: "var(--font-display)",
                   }}
                 >
-                  {dt === "HOURLY" ? "Hourly" : "Monthly"}
+                  {dt === "DAILY" ? "Daily" : "Monthly"}
                 </button>
               );
             })}
           </div>
 
-          {durationType === "HOURLY" ? (
+          {durationType === "DAILY" ? (
             <div>
-              <Label en="Hours" es="Horas" />
+              <Label en="Days" es="Días" />
               <div className="flex items-center gap-4">
                 <button
                   type="button"
-                  onClick={() => setHours(Math.max(1, hours - 1))}
+                  onClick={() => setDays(Math.max(1, days - 1))}
                   className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
                   style={{
                     borderColor: "var(--border)",
-                    color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                    color: days <= 1 ? "var(--fg-subtle)" : "var(--fg)",
                     background: "var(--input-bg)",
                     fontFamily: "var(--font-display)",
                   }}
@@ -975,19 +975,19 @@ function CheckInContent() {
                 </button>
                 <div className="flex-1 text-center">
                   <span className="text-5xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
-                    {hours}
+                    {days}
                   </span>
                   <span className="text-lg ml-1 font-semibold" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
-                    hr{hours !== 1 ? "s" : ""}
+                    day{days !== 1 ? "s" : ""}
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setHours(Math.min(72, hours + 1))}
+                  onClick={() => setDays(Math.min(30, days + 1))}
                   className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
                   style={{
                     borderColor: "var(--border)",
-                    color: hours >= 72 ? "var(--fg-subtle)" : "var(--fg)",
+                    color: days >= 30 ? "var(--fg-subtle)" : "var(--fg)",
                     background: "var(--input-bg)",
                     fontFamily: "var(--font-display)",
                   }}
@@ -996,20 +996,20 @@ function CheckInContent() {
                 </button>
               </div>
               <div className="flex gap-2 mt-3">
-                {[2, 4, 8, 12, 24].map((h) => (
+                {[1, 3, 7, 14, 30].map((d) => (
                   <button
-                    key={h}
+                    key={d}
                     type="button"
-                    onClick={() => setHours(h)}
+                    onClick={() => setDays(d)}
                     className="flex-1 py-2 rounded-md border text-sm font-semibold transition-all duration-150"
                     style={{
-                      borderColor: hours === h ? "var(--accent)" : "var(--border)",
-                      background: hours === h ? "var(--accent-light)" : "transparent",
-                      color: hours === h ? "var(--accent)" : "var(--fg-muted)",
+                      borderColor: days === d ? "var(--accent)" : "var(--border)",
+                      background: days === d ? "var(--accent-light)" : "transparent",
+                      color: days === d ? "var(--accent)" : "var(--fg-muted)",
                       fontFamily: "var(--font-display)",
                     }}
                   >
-                    {h}h
+                    {d}d
                   </button>
                 ))}
               </div>
@@ -1087,7 +1087,7 @@ function CheckInContent() {
             <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
               {durationType === "MONTHLY"
                 ? `$${monthlyRate.toFixed(2)}/mo`
-                : `$${hourlyRate.toFixed(2)}/hr`}
+                : `$${dailyRate.toFixed(2)}/day`}
             </span>
           </div>
           <div className="flex justify-between items-baseline mb-1">
@@ -1097,7 +1097,7 @@ function CheckInContent() {
             <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
               {durationType === "MONTHLY"
                 ? `${months} mo${months !== 1 ? "s" : ""}`
-                : `${hours} hr${hours !== 1 ? "s" : ""}`}
+                : `${days} day${days !== 1 ? "s" : ""}`}
             </span>
           </div>
           <div
@@ -1183,9 +1183,9 @@ function CheckInContent() {
               <span className="text-sm" style={{ color: "var(--fg)" }}>
                 I authorize automatic charging of my payment method for overstay fees at the posted rate (
                 <strong>
-                  ${vehicleType === "BOBTAIL" ? settings.overstayRateBobtail : settings.overstayRateTruck}/hr
+                  ${vehicleType === "BOBTAIL" ? settings.overstayRateBobtail : settings.overstayRateTruck}/day
                 </strong>
-                {" "}after a {settings.gracePeriodMinutes}-minute grace period), billed per hour or portion thereof.
+                {" "}after a {settings.gracePeriodMinutes}-minute grace period), billed per day or portion thereof.
               </span>
             </label>
           </section>

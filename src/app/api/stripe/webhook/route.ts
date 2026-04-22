@@ -9,7 +9,7 @@ import {
   QBAuthError,
 } from "@/lib/quickbooks";
 import { assignSpot } from "@/lib/spots";
-import { addHours, addMonths } from "@/lib/rates";
+import { addDays, addMonths, ceilDays } from "@/lib/rates";
 import { log as audit } from "@/lib/audit";
 
 /**
@@ -127,8 +127,8 @@ type CheckoutMetadata = {
   vehicleId?: string;
   sessionId?: string;
   sessionPurpose?: SessionPurpose;
-  durationType?: "HOURLY" | "MONTHLY";
-  hours?: string;
+  durationType?: "DAILY" | "MONTHLY";
+  days?: string;
   months?: string;
   termsVersion?: string;
   overstayAuthorized?: string;
@@ -269,11 +269,11 @@ async function handleCheckin(args: {
   amount: number;
 }) {
   const { metadata, checkoutSessionId, paymentIntentId, chargeId, amount } = args;
-  if (!metadata.driverId || !metadata.vehicleId || !metadata.hours || !metadata.termsVersion) {
+  if (!metadata.driverId || !metadata.vehicleId || !metadata.days || !metadata.termsVersion) {
     throw new Error("CHECKIN metadata incomplete");
   }
-  const hours = parseInt(metadata.hours, 10);
-  if (!Number.isFinite(hours) || hours <= 0) throw new Error("CHECKIN invalid hours");
+  const days = parseInt(metadata.days, 10);
+  if (!Number.isFinite(days) || days <= 0) throw new Error("CHECKIN invalid days");
 
   const vehicle = await prisma.vehicle.findUnique({ where: { id: metadata.vehicleId } });
   if (!vehicle) throw new Error(`CHECKIN vehicle ${metadata.vehicleId} not found`);
@@ -289,7 +289,7 @@ async function handleCheckin(args: {
         sessionId: existingActive.id,
         type: "CHECKIN",
         amount,
-        hours,
+        days,
         stripeCheckoutSessionId: checkoutSessionId,
         stripePaymentIntentId: paymentIntentId,
         stripeChargeId: chargeId,
@@ -299,7 +299,7 @@ async function handleCheckin(args: {
   }
 
   const now = new Date();
-  const expectedEnd = addHours(now, hours);
+  const expectedEnd = addDays(now, days);
 
   // Atomic: FOR UPDATE SKIP LOCKED in assignSpot locks the spot row; session.create
   // claims it — both inside the same transaction so no concurrent check-in can race.
@@ -318,7 +318,7 @@ async function handleCheckin(args: {
           create: {
             type: "CHECKIN",
             amount,
-            hours,
+            days,
             stripeCheckoutSessionId: checkoutSessionId,
             stripePaymentIntentId: paymentIntentId,
             stripeChargeId: chargeId,
@@ -345,7 +345,7 @@ async function handleCheckin(args: {
     driverId: session.driverId,
     vehicleId: session.vehicleId,
     spotId: session.spotId,
-    details: `Checked in for ${hours}h, paid $${amount.toFixed(2)}, spot: ${spotLabel}, plate: ${vehicle.licensePlate ?? "–"}, terms:v${metadata.termsVersion}`,
+    details: `Checked in for ${days}d, paid $${amount.toFixed(2)}, spot: ${spotLabel}, plate: ${vehicle.licensePlate ?? "–"}, terms:v${metadata.termsVersion}`,
   });
 }
 
@@ -456,16 +456,16 @@ async function handleExtension(args: {
   amount: number;
 }) {
   const { metadata, checkoutSessionId, paymentIntentId, chargeId, amount } = args;
-  if (!metadata.sessionId || !metadata.hours) {
+  if (!metadata.sessionId || !metadata.days) {
     throw new Error("EXTENSION metadata incomplete");
   }
-  const hours = parseInt(metadata.hours, 10);
-  if (!Number.isFinite(hours) || hours <= 0) throw new Error("EXTENSION invalid hours");
+  const days = parseInt(metadata.days, 10);
+  if (!Number.isFinite(days) || days <= 0) throw new Error("EXTENSION invalid days");
 
   const session = await prisma.session.findUnique({ where: { id: metadata.sessionId } });
   if (!session) throw new Error(`EXTENSION session ${metadata.sessionId} not found`);
 
-  const newExpectedEnd = new Date(session.expectedEnd.getTime() + hours * 60 * 60 * 1000);
+  const newExpectedEnd = addDays(session.expectedEnd, days);
   const newStatus = session.status === "OVERSTAY" ? "ACTIVE" : session.status;
 
   await prisma.$transaction([
@@ -482,7 +482,7 @@ async function handleExtension(args: {
         sessionId: session.id,
         type: "EXTENSION",
         amount,
-        hours,
+        days,
         stripeCheckoutSessionId: checkoutSessionId,
         stripePaymentIntentId: paymentIntentId,
         stripeChargeId: chargeId,
@@ -494,7 +494,7 @@ async function handleExtension(args: {
     action: "EXTEND",
     sessionId: session.id,
     driverId: session.driverId,
-    details: `Extended ${hours}h, paid $${amount.toFixed(2)}, new expiry: ${newExpectedEnd.toISOString()}`,
+    details: `Extended ${days}d, paid $${amount.toFixed(2)}, new expiry: ${newExpectedEnd.toISOString()}`,
   });
 }
 
@@ -515,7 +515,7 @@ async function handleOverstay(args: {
   if (!session) throw new Error(`OVERSTAY session ${metadata.sessionId} not found`);
 
   const now = new Date();
-  const hoursOverstay = Math.ceil((now.getTime() - session.expectedEnd.getTime()) / (60 * 60 * 1000));
+  const daysOverstay = ceilDays(session.expectedEnd, now);
 
   await prisma.$transaction([
     prisma.session.update({
@@ -527,7 +527,7 @@ async function handleOverstay(args: {
         sessionId: session.id,
         type: "OVERSTAY",
         amount,
-        hours: hoursOverstay > 0 ? hoursOverstay : null,
+        days: daysOverstay > 0 ? daysOverstay : null,
         stripeCheckoutSessionId: checkoutSessionId,
         stripePaymentIntentId: paymentIntentId,
         stripeChargeId: chargeId,
@@ -540,7 +540,7 @@ async function handleOverstay(args: {
     sessionId: session.id,
     driverId: session.driverId,
     vehicleId: session.vehicleId,
-    details: `Overstay ${hoursOverstay}h, paid $${amount.toFixed(2)}, plate: ${session.vehicle.licensePlate}`,
+    details: `Overstay ${daysOverstay}d, paid $${amount.toFixed(2)}, plate: ${session.vehicle.licensePlate}`,
   });
   await audit({
     action: "CHECKOUT",
@@ -1009,13 +1009,13 @@ function vehicleTypeLabel(type: string | undefined): string {
   return type === "BOBTAIL" ? "Bobtail" : "Truck/trailer";
 }
 
-function refundDescription(payment: { type: string; hours: number | null; session: { vehicle: { type: string; licensePlate: string | null } } }): string {
+function refundDescription(payment: { type: string; days: number | null; session: { vehicle: { type: string; licensePlate: string | null } } }): string {
   const vt = vehicleTypeLabel(payment.session.vehicle.type);
   const plate = plateSuffix(payment.session.vehicle.licensePlate ?? undefined);
   const typeMap: Record<string, string> = {
-    CHECKIN: `check-in, ${payment.hours ?? "?"}h`,
-    EXTENSION: `extension, ${payment.hours ?? "?"}h`,
-    OVERSTAY: `overstay, ${payment.hours ?? "?"}h`,
+    CHECKIN: `check-in, ${payment.days ?? "?"}d`,
+    EXTENSION: `extension, ${payment.days ?? "?"}d`,
+    OVERSTAY: `overstay, ${payment.days ?? "?"}d`,
     MONTHLY_CHECKIN: "monthly",
     MONTHLY_RENEWAL: "monthly renewal",
   };
@@ -1032,12 +1032,12 @@ function salesReceiptDescription(purpose: SessionPurpose, metadata: CheckoutMeta
   const plate = plateSuffix(metadata.licensePlate);
   switch (purpose) {
     case "CHECKIN":
-      return `${vt} parking — check-in, ${metadata.hours ?? "?"}h${plate}`;
+      return `${vt} parking — check-in, ${metadata.days ?? "?"}d${plate}`;
     case "MONTHLY_CHECKIN":
       return `${vt} parking — monthly, month 1 of ${metadata.months ?? "?"}${plate}`;
     case "EXTENSION":
-      return `${vt} parking — extension, ${metadata.hours ?? "?"}h${plate}`;
+      return `${vt} parking — extension, ${metadata.days ?? "?"}d${plate}`;
     case "OVERSTAY":
-      return `${vt} parking — overstay, ${metadata.hours ?? "?"}h${plate}`;
+      return `${vt} parking — overstay, ${metadata.days ?? "?"}d${plate}`;
   }
 }

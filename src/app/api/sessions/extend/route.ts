@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { log as audit } from "@/lib/audit";
-import { hourlyRate, addHours } from "@/lib/rates";
+import { dailyRate, addDays } from "@/lib/rates";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { SessionExtendSchema } from "@/lib/schemas";
 
@@ -17,7 +17,7 @@ import { SessionExtendSchema } from "@/lib/schemas";
 export const POST = handler(
   { body: SessionExtendSchema },
   async ({ body }) => {
-    const { sessionId, driverId, hours } = body;
+    const { sessionId, driverId, days } = body;
 
     const session = await prisma.session.findUnique({
       where: { id: sessionId },
@@ -42,9 +42,9 @@ export const POST = handler(
       throw conflict("Payment is required — use /api/payments/checkout to create a Stripe Checkout session for the extension");
     }
 
-    const rate = hourlyRate(settings, session.vehicle.type);
-    const amount = rate * hours;
-    const newEnd = addHours(session.expectedEnd, hours);
+    const rate = dailyRate(settings, session.vehicle.type);
+    const amount = rate * days;
+    const newEnd = addDays(session.expectedEnd, days);
 
     const [updated] = await prisma.$transaction([
       prisma.session.update({
@@ -57,7 +57,7 @@ export const POST = handler(
           sessionId,
           type: "EXTENSION",
           amount,
-          hours,
+          days,
           legacyQbReference: `free_${randomUUID()}`,
         },
       }),
@@ -69,7 +69,7 @@ export const POST = handler(
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `Extended ${hours}h (payment disabled), new expiry: ${newEnd.toISOString()}, plate: ${session.vehicle.licensePlate}`,
+      details: `Extended ${days}d (payment disabled), new expiry: ${newEnd.toISOString()}, plate: ${session.vehicle.licensePlate}`,
     });
 
     return json({ session: updated });

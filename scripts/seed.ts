@@ -134,7 +134,7 @@ async function seed() {
       type: "CHECKIN",
       legacyQbReference: "seed_" + Date.now(),
       amount: 120.0,
-      hours: 8,
+      days: 1,
     },
   });
 

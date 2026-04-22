@@ -8,7 +8,7 @@ import {
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { CheckoutCreateSchema } from "@/lib/schemas";
 import { getSettings } from "@/lib/settings";
-import { hourlyRate, monthlyRate, overstayRate, ceilHours } from "@/lib/rates";
+import { dailyRate, monthlyRate, overstayRate, ceilDays } from "@/lib/rates";
 
 /**
  * POST /api/payments/checkout — create a Stripe Checkout session.
@@ -39,7 +39,7 @@ export const POST = handler(
 
     const {
       driverId, sessionPurpose, vehicleId, sessionId,
-      hours, months, termsVersion, overstayAuthorized,
+      days, months, termsVersion, overstayAuthorized,
     } = body;
 
     // Per-purpose validation — catch misuse early so we don't create a
@@ -50,8 +50,8 @@ export const POST = handler(
     if ((sessionPurpose === "EXTENSION" || sessionPurpose === "OVERSTAY") && !sessionId) {
       return json({ error: "sessionId is required for extension/overstay" }, { status: 400 });
     }
-    if ((sessionPurpose === "CHECKIN" || sessionPurpose === "EXTENSION") && !hours) {
-      return json({ error: "hours is required for CHECKIN/EXTENSION" }, { status: 400 });
+    if ((sessionPurpose === "CHECKIN" || sessionPurpose === "EXTENSION") && !days) {
+      return json({ error: "days is required for CHECKIN/EXTENSION" }, { status: 400 });
     }
     if (sessionPurpose === "MONTHLY_CHECKIN" && !months) {
       return json({ error: "months is required for MONTHLY_CHECKIN" }, { status: 400 });
@@ -66,7 +66,7 @@ export const POST = handler(
     // webhook to build standardized QB receipt descriptions).
     let licensePlate: string | undefined;
     let vehicleType: "BOBTAIL" | "TRUCK_TRAILER" | undefined;
-    let overstayHours = 0;
+    let overstayDays = 0;
 
     if (sessionId) {
       const session = await prisma.session.findUnique({
@@ -89,8 +89,8 @@ export const POST = handler(
       vehicleType = session.vehicle.type as "BOBTAIL" | "TRUCK_TRAILER";
 
       if (sessionPurpose === "OVERSTAY") {
-        overstayHours = ceilHours(session.expectedEnd, new Date());
-        if (overstayHours <= 0) {
+        overstayDays = ceilDays(session.expectedEnd, new Date());
+        if (overstayDays <= 0) {
           return json({ error: "Session is not yet in overstay" }, { status: 400 });
         }
       }
@@ -123,20 +123,20 @@ export const POST = handler(
 
     switch (sessionPurpose) {
       case "CHECKIN":
-        amount = hourlyRate(settings, vehicleType) * hours!;
-        description = `${vLabel} parking — ${hours}h${plateStr}`;
+        amount = dailyRate(settings, vehicleType) * days!;
+        description = `${vLabel} parking — ${days}d${plateStr}`;
         break;
       case "MONTHLY_CHECKIN":
         amount = monthlyRate(settings, vehicleType) * months!;
         description = `${vLabel} parking — ${months} month${months! > 1 ? "s" : ""}${plateStr}`;
         break;
       case "EXTENSION":
-        amount = hourlyRate(settings, vehicleType) * hours!;
-        description = `${hours}h extension — ${vLabel}${plateStr}`;
+        amount = dailyRate(settings, vehicleType) * days!;
+        description = `${days}d extension — ${vLabel}${plateStr}`;
         break;
       case "OVERSTAY":
-        amount = overstayRate(settings, vehicleType) * overstayHours;
-        description = `Overstay fee — ${overstayHours}h${plateStr}`;
+        amount = overstayRate(settings, vehicleType) * overstayDays;
+        description = `Overstay fee — ${overstayDays}d${plateStr}`;
         break;
     }
 
@@ -147,7 +147,7 @@ export const POST = handler(
       ...(vehicleId ? { vehicleId } : {}),
       ...(sessionId ? { sessionId } : {}),
       sessionPurpose,
-      ...(hours !== undefined ? { hours: String(hours) } : {}),
+      ...(days !== undefined ? { days: String(days) } : {}),
       ...(months !== undefined ? { months: String(months) } : {}),
       ...(termsVersion ? { termsVersion } : {}),
       ...(overstayAuthorized !== undefined ? { overstayAuthorized: String(overstayAuthorized) } : {}),

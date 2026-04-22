@@ -18,7 +18,7 @@ type ReconcilePaymentRow = {
   type: string;
   status: string;
   amount: number;
-  hours: number | null;
+  days: number | null;
   createdAt: string;
   stripeChargeId: string | null;
   stripePaymentIntentId: string | null;
@@ -31,7 +31,7 @@ export type ReconcileSessionRow = {
   id: string;
   health: ReconcileHealth;
   issues: string[];
-  sessionType: "MONTHLY" | "HOURLY";
+  sessionType: "MONTHLY" | "DAILY";
   driver: { id: string; name: string };
   vehicle: { licensePlate: string | null; type: string } | null;
   spot: { label: string } | null;
@@ -77,7 +77,7 @@ export const GET = handler({}, async ({ req }) => {
           id: true,
           type: true,
           amount: true,
-          hours: true,
+          days: true,
           createdAt: true,
           status: true,
           stripeChargeId: true,
@@ -195,7 +195,7 @@ export const GET = handler({}, async ({ req }) => {
       id: session.id,
       health,
       issues: Array.from(new Set(issues)), // deduplicate
-      sessionType: isMonthly ? "MONTHLY" : "HOURLY",
+      sessionType: isMonthly ? "MONTHLY" : "DAILY",
       driver: session.driver,
       vehicle: session.vehicle
         ? { licensePlate: session.vehicle.licensePlate, type: session.vehicle.type }
@@ -208,7 +208,7 @@ export const GET = handler({}, async ({ req }) => {
         type: p.type,
         status: p.status,
         amount: p.amount,
-        hours: p.hours,
+        days: p.days,
         createdAt: p.createdAt.toISOString(),
         stripeChargeId: p.stripeChargeId,
         stripePaymentIntentId: p.stripePaymentIntentId,

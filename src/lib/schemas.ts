@@ -68,8 +68,8 @@ export const SessionCreateSchema = z
   .object({
     driverId: idSchema,
     vehicleId: idSchema,
-    durationType: z.enum(["HOURLY", "MONTHLY"]).default("HOURLY"),
-    hours: z.number().int().min(1).max(72).optional(),
+    durationType: z.enum(["DAILY", "MONTHLY"]).default("DAILY"),
+    days: z.number().int().min(1).max(30).optional(),
     months: z.number().int().min(1).max(12).optional(),
     paymentId: z.string().min(1).max(200).optional(),
     // Clickwrap consent — required for new sessions
@@ -80,16 +80,16 @@ export const SessionCreateSchema = z
   })
   .refine(
     (d) =>
-      (d.durationType === "HOURLY" && d.hours != null) ||
+      (d.durationType === "DAILY" && d.days != null) ||
       (d.durationType === "MONTHLY" && d.months != null),
-    { message: "hours required for HOURLY, months required for MONTHLY" },
+    { message: "days required for DAILY, months required for MONTHLY" },
   );
 export type SessionCreateInput = z.infer<typeof SessionCreateSchema>;
 
 export const SessionExtendSchema = z.object({
   sessionId: idSchema,
   driverId: idSchema,
-  hours: z.number().int().min(1).max(72),
+  days: z.number().int().min(1).max(30),
   paymentId: z.string().min(1).max(200),
 });
 
@@ -119,7 +119,7 @@ export const CheckoutCreateSchema = z.object({
   sessionId: idSchema.optional(),
   // Amount and description are computed server-side from settings rates —
   // never accepted from the client to prevent price tampering.
-  hours: z.number().int().min(1).max(720).optional(),
+  days: z.number().int().min(1).max(365).optional(),
   months: z.number().int().min(1).max(12).optional(),
   termsVersion: z.string().min(1).max(50).optional(),
   overstayAuthorized: z.boolean().optional(),
@@ -143,8 +143,8 @@ export type AdminRefundInput = z.infer<typeof AdminRefundSchema>;
 // Settings
 // ---------------------------------------------------------------------------
 export const SettingsUpdateSchema = z.object({
-  hourlyRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
-  hourlyRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  dailyRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  dailyRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   overstayRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   overstayRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   gracePeriodMinutes: z.number().int().min(0).max(1440).optional(),

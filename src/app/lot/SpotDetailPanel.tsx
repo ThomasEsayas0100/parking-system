@@ -268,7 +268,7 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
                     <div>
                       <div style={{ fontSize: 12, color: "#1C1C1E", fontWeight: 500 }}>
                         {p.type === "CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
-                        {p.hours ? ` (${p.hours}h)` : ""}
+                        {p.days ? ` (${p.days}d)` : ""}
                       </div>
                       <div style={{ fontSize: 10, color: "#8E8E93", marginTop: 1 }}>
                         {formatDateTime(p.createdAt)}

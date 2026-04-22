@@ -34,8 +34,8 @@ function ExtendContent() {
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [driverId, setDriverId] = useState<string | null>(null);
-  const [hours, setHours] = useState(1);
-  const [hourlyRate, setHourlyRate] = useState(0);
+  const [days, setDays] = useState(1);
+  const [dailyRate, setDailyRate] = useState(0);
   const [currentEnd, setCurrentEnd] = useState<Date | null>(null);
   const [spotLabel, setSpotLabel] = useState("");
   const [driverName, setDriverName] = useState("");
@@ -66,7 +66,7 @@ function ExtendContent() {
           payments?: { type: string }[];
         } | null;
       }>(`/api/sessions?driverId=${saved.id}`),
-      apiFetch<{ settings: { hourlyRateBobtail: number; hourlyRateTruck: number } }>(
+      apiFetch<{ settings: { dailyRateBobtail: number; dailyRateTruck: number } }>(
         "/api/settings"
       ),
     ])
@@ -87,9 +87,9 @@ function ExtendContent() {
           setDriverName(sessionData.session.driver?.name ?? "");
           const rate =
             sessionData.session.vehicle?.type === "BOBTAIL"
-              ? settingsData.settings.hourlyRateBobtail
-              : settingsData.settings.hourlyRateTruck;
-          setHourlyRate(rate);
+              ? settingsData.settings.dailyRateBobtail
+              : settingsData.settings.dailyRateTruck;
+          setDailyRate(rate);
         } else {
           setLoadError("No active session found.");
         }
@@ -101,9 +101,9 @@ function ExtendContent() {
       });
   }, [router]);
 
-  const totalAmount = hourlyRate * hours;
+  const totalAmount = dailyRate * days;
   const newEnd = currentEnd
-    ? new Date(currentEnd.getTime() + hours * 60 * 60 * 1000)
+    ? new Date(currentEnd.getTime() + days * 24 * 60 * 60 * 1000)
     : null;
 
   async function handleExtend(e: React.FormEvent) {
@@ -123,7 +123,7 @@ function ExtendContent() {
           driverId,
           sessionId,
           sessionPurpose: "EXTENSION",
-          hours,
+          days,
         }),
       });
       const checkoutData = await checkoutRes.json();
@@ -342,7 +342,7 @@ function ExtendContent() {
               textAlign: "center",
             }}
           >
-            Additional Hours · <span style={{ fontWeight: 400 }}>Horas adicionales</span>
+            Additional Days · <span style={{ fontWeight: 400 }}>Días adicionales</span>
           </p>
           <div
             style={{
@@ -354,19 +354,19 @@ function ExtendContent() {
           >
             <button
               type="button"
-              onClick={() => setHours((h) => Math.max(1, h - 1))}
-              disabled={hours <= 1}
-              aria-label="Decrease hours"
+              onClick={() => setDays((d) => Math.max(1, d - 1))}
+              disabled={days <= 1}
+              aria-label="Decrease days"
               style={{
                 width: 54,
                 height: 54,
                 borderRadius: "50%",
                 border: "2px solid var(--border)",
-                background: hours <= 1 ? "var(--border)" : "var(--input-bg)",
-                color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                background: days <= 1 ? "var(--border)" : "var(--input-bg)",
+                color: days <= 1 ? "var(--fg-subtle)" : "var(--fg)",
                 fontSize: 28,
                 fontWeight: 700,
-                cursor: hours <= 1 ? "default" : "pointer",
+                cursor: days <= 1 ? "default" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -388,28 +388,28 @@ function ExtendContent() {
                   display: "block",
                 }}
               >
-                {hours}
+                {days}
               </span>
               <p style={{ fontSize: 13, color: "var(--fg-subtle)", marginTop: 4, fontWeight: 500 }}>
-                {hours === 1 ? "hour" : "hours"}
+                {days === 1 ? "day" : "days"}
               </p>
             </div>
 
             <button
               type="button"
-              onClick={() => setHours((h) => Math.min(72, h + 1))}
-              disabled={hours >= 72}
-              aria-label="Increase hours"
+              onClick={() => setDays((d) => Math.min(30, d + 1))}
+              disabled={days >= 30}
+              aria-label="Increase days"
               style={{
                 width: 54,
                 height: 54,
                 borderRadius: "50%",
                 border: "none",
-                background: hours >= 72 ? "var(--border)" : "var(--accent)",
-                color: hours >= 72 ? "var(--fg-subtle)" : "#fff",
+                background: days >= 30 ? "var(--border)" : "var(--accent)",
+                color: days >= 30 ? "var(--fg-subtle)" : "#fff",
                 fontSize: 28,
                 fontWeight: 700,
-                cursor: hours >= 72 ? "default" : "pointer",
+                cursor: days >= 30 ? "default" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",

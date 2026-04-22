@@ -5,11 +5,11 @@
  * so they aren't duplicated across API routes and frontend pages.
  */
 
-const MS_PER_HOUR = 60 * 60 * 1000;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** Add `hours` to a base Date and return the new Date. */
-export function addHours(base: Date, hours: number): Date {
-  return new Date(base.getTime() + hours * MS_PER_HOUR);
+/** Add `days` to a base Date and return the new Date. */
+export function addDays(base: Date, days: number): Date {
+  return new Date(base.getTime() + days * MS_PER_DAY);
 }
 
 /** Milliseconds between two dates, floored at 0. */
@@ -17,14 +17,14 @@ export function msBetween(start: Date, end: Date): number {
   return Math.max(0, end.getTime() - start.getTime());
 }
 
-/** Whole hours (rounded up) between two dates. */
-export function ceilHours(start: Date, end: Date): number {
-  return Math.ceil(msBetween(start, end) / MS_PER_HOUR);
+/** Whole days (rounded up) between two dates. */
+export function ceilDays(start: Date, end: Date): number {
+  return Math.ceil(msBetween(start, end) / MS_PER_DAY);
 }
 
 type RateSettings = {
-  hourlyRateBobtail: number;
-  hourlyRateTruck: number;
+  dailyRateBobtail: number;
+  dailyRateTruck: number;
   monthlyRateBobtail: number;
   monthlyRateTruck: number;
   overstayRateBobtail: number;
@@ -33,11 +33,11 @@ type RateSettings = {
 
 type VehicleType = "BOBTAIL" | "TRUCK_TRAILER";
 
-/** Look up the standard hourly rate for a vehicle type. */
-export function hourlyRate(settings: RateSettings, vehicleType: VehicleType): number {
+/** Look up the standard daily rate for a vehicle type. */
+export function dailyRate(settings: RateSettings, vehicleType: VehicleType): number {
   return vehicleType === "BOBTAIL"
-    ? settings.hourlyRateBobtail
-    : settings.hourlyRateTruck;
+    ? settings.dailyRateBobtail
+    : settings.dailyRateTruck;
 }
 
 /** Look up the monthly rate for a vehicle type. */
@@ -47,7 +47,7 @@ export function monthlyRate(settings: RateSettings, vehicleType: VehicleType): n
     : settings.monthlyRateTruck;
 }
 
-/** Look up the overstay (premium) hourly rate for a vehicle type. */
+/** Look up the overstay (premium) daily rate for a vehicle type. */
 export function overstayRate(settings: RateSettings, vehicleType: VehicleType): number {
   return vehicleType === "BOBTAIL"
     ? settings.overstayRateBobtail
