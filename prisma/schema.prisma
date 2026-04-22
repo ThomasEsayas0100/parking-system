@@ -190,7 +190,8 @@ model Payment {
   // ─── QuickBooks accounting mirror IDs ────────────────────────────────
   // Populated after the webhook successfully writes to QB. Used for
   // deep-linking to specific transactions in the QB dashboard.
-  qbSalesReceiptId  String? // QB Sales Receipt Id (written on payment_intent.succeeded)
+  qbSalesReceiptId     String? // QB Sales Receipt Id (written on payment_intent.succeeded)
+  qbSalesReceiptAmount Float?  // amount written to QB; compared to Stripe charge in reconcile
 
   refundedAmount Float    @default(0)
   refundedAt     DateTime?
@@ -216,8 +217,9 @@ model PaymentRefund {
   payment           Payment  @relation(fields: [paymentId], references: [id])
   amount            Float
   stripeRefundId    String   @unique
-  qbRefundReceiptId String?
-  createdAt         DateTime @default(now())
+  qbRefundReceiptId    String?
+  qbRefundReceiptAmount Float?  // amount written to QB; compared to Stripe refund in reconcile
+  createdAt            DateTime @default(now())
 
   @@index([paymentId])
 }

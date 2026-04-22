@@ -54,6 +54,10 @@ function worstHealth(a: ReconcileHealth, b: ReconcileHealth): ReconcileHealth {
   return "ok";
 }
 
+function fmt(amount: number) {
+  return `$${amount.toFixed(2)}`;
+}
+
 export const GET = handler({}, async ({ req }) => {
   await requireAdmin();
 
@@ -84,12 +88,14 @@ export const GET = handler({}, async ({ req }) => {
           stripePaymentIntentId: true,
           stripeSubscriptionId: true,
           qbSalesReceiptId: true,
+          qbSalesReceiptAmount: true,
           refunds: {
             select: {
               id: true,
               amount: true,
               stripeRefundId: true,
               qbRefundReceiptId: true,
+              qbRefundReceiptAmount: true,
               createdAt: true,
             },
           },
@@ -103,28 +109,63 @@ export const GET = handler({}, async ({ req }) => {
   const stripeOk = stripeConfigured();
   const stripe = stripeOk ? getStripe() : null;
 
+  // ── Collect unique charge/refund IDs for amount-mismatch checks ──────────
+  const allChargeIds = new Set<string>();
+  const allRefundIds = new Set<string>();
+  for (const s of sessions) {
+    for (const p of s.payments) {
+      if (p.stripeChargeId) allChargeIds.add(p.stripeChargeId);
+      for (const r of p.refunds) {
+        if (r.stripeRefundId) allRefundIds.add(r.stripeRefundId);
+      }
+    }
+  }
+
+  // Stripe amounts are in cents; we store dollars. Build lookup maps.
+  const chargeAmountMap = new Map<string, number>(); // chargeId → dollars
+  const refundAmountMap = new Map<string, number>();  // refundId → dollars
+
   const invoiceCountMap = new Map<string, number>();
+
   if (stripe) {
     const monthlySessionsWithSub = sessions.filter(
       (s) => s.payments.some((p) => p.stripeSubscriptionId),
     );
-    await Promise.all(
-      monthlySessionsWithSub.map(async (s) => {
+
+    await Promise.all([
+      // Invoice count fetches (existing)
+      ...monthlySessionsWithSub.map(async (s) => {
         const subId = s.payments.find((p) => p.stripeSubscriptionId)?.stripeSubscriptionId;
         if (!subId) return;
         try {
-          // Stripe invoices list auto-paginates up to the limit; 100 covers all reasonable cases.
           const invoices = await stripe.invoices.list({ subscription: subId, limit: 100 });
-          // Count only invoices that have actually been paid (not draft/open/void).
-          const paidCount = invoices.data.filter(
-            (inv) => inv.status === "paid",
-          ).length;
+          const paidCount = invoices.data.filter((inv) => inv.status === "paid").length;
           invoiceCountMap.set(s.id, paidCount);
         } catch {
           // If Stripe call fails, omit the check gracefully.
         }
       }),
-    );
+
+      // Charge amount fetches (new)
+      ...[...allChargeIds].map(async (chargeId) => {
+        try {
+          const charge = await stripe.charges.retrieve(chargeId);
+          chargeAmountMap.set(chargeId, charge.amount / 100);
+        } catch {
+          // Stripe call failed — skip amount checks for this charge.
+        }
+      }),
+
+      // Refund amount fetches (new)
+      ...[...allRefundIds].map(async (refundId) => {
+        try {
+          const refund = await stripe.refunds.retrieve(refundId);
+          refundAmountMap.set(refundId, refund.amount / 100);
+        } catch {
+          // Stripe call failed — skip amount checks for this refund.
+        }
+      }),
+    ]);
   }
 
   const rows: ReconcileSessionRow[] = [];
@@ -153,10 +194,42 @@ export const GET = handler({}, async ({ req }) => {
         health = worstHealth(health, "warning");
       }
 
+      // Amount-mismatch checks (only when we have live Stripe data)
+      if (p.stripeChargeId && chargeAmountMap.has(p.stripeChargeId)) {
+        const stripeAmt = chargeAmountMap.get(p.stripeChargeId)!;
+
+        // Check 2a: DB payment amount vs Stripe charge amount
+        if (Math.abs(p.amount - stripeAmt) > 0.01) {
+          issues.push(
+            `DB amount (${fmt(p.amount)}) differs from Stripe charge (${fmt(stripeAmt)}) — possible webhook bug`,
+          );
+          health = worstHealth(health, "critical");
+        }
+
+        // Check 2b: QB Sales Receipt amount vs Stripe charge amount
+        if (p.qbSalesReceiptAmount != null && Math.abs(p.qbSalesReceiptAmount - stripeAmt) > 0.01) {
+          issues.push(
+            `QB Sales Receipt amount (${fmt(p.qbSalesReceiptAmount)}) differs from Stripe charge (${fmt(stripeAmt)})`,
+          );
+          health = worstHealth(health, "warning");
+        }
+      }
+
       for (const r of p.refunds) {
         if (!r.qbRefundReceiptId) {
           issues.push("QB Refund Receipt missing");
           health = worstHealth(health, "warning");
+        }
+
+        // Check 2c: QB Refund Receipt amount vs Stripe refund amount
+        if (r.stripeRefundId && refundAmountMap.has(r.stripeRefundId) && r.qbRefundReceiptAmount != null) {
+          const stripeRefundAmt = refundAmountMap.get(r.stripeRefundId)!;
+          if (Math.abs(r.qbRefundReceiptAmount - stripeRefundAmt) > 0.01) {
+            issues.push(
+              `QB Refund Receipt amount (${fmt(r.qbRefundReceiptAmount)}) differs from Stripe refund (${fmt(stripeRefundAmt)})`,
+            );
+            health = worstHealth(health, "warning");
+          }
         }
       }
 

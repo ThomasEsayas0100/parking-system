@@ -911,10 +911,10 @@ async function writeSalesReceiptSafe(args: {
       stripeChargeId: args.stripeChargeId,
     });
 
-    // Store the QB receipt ID so the admin can deep-link to it.
+    // Store the QB receipt ID and amount so the admin can deep-link and reconcile.
     await prisma.payment.updateMany({
       where: { stripeChargeId: args.stripeChargeId },
-      data: { qbSalesReceiptId: receipt.Id },
+      data: { qbSalesReceiptId: receipt.Id, qbSalesReceiptAmount: args.amount },
     });
 
     await audit({
@@ -976,10 +976,10 @@ async function writeRefundReceiptSafe(args: {
       linkedSalesReceiptId: args.qbSalesReceiptId,
     });
 
-    // Store the QB receipt ID on the PaymentRefund row for deep-linking.
+    // Store the QB receipt ID and amount on the PaymentRefund row for deep-linking and reconcile.
     await prisma.paymentRefund.updateMany({
       where: { stripeRefundId: args.stripeRefundId },
-      data: { qbRefundReceiptId: receipt.Id },
+      data: { qbRefundReceiptId: receipt.Id, qbRefundReceiptAmount: args.amount },
     });
 
     const salesRef = args.qbSalesReceiptId ? ` for Sales Receipt ${args.qbSalesReceiptId}` : "";

@@ -130,7 +130,7 @@ export const POST = handler({}, async ({ params }) => {
       stripeChargeId: chargeId,
     });
 
-    await prisma.payment.update({ where: { id }, data: { qbSalesReceiptId: receipt.Id } });
+    await prisma.payment.update({ where: { id }, data: { qbSalesReceiptId: receipt.Id, qbSalesReceiptAmount: payment.amount } });
 
     await audit({
       action: "SALES_RECEIPT_WRITTEN",
