@@ -19,6 +19,8 @@ export const GET = handler({}, async () => {
       // Boolean flags for UI
       qbConnected: !!(qbAccessToken && safe.qbRealmId),
       qbTokenExpiringSoon,
+      stripeConfigured: !!(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET),
+      stripeTestMode: (process.env.STRIPE_SECRET_KEY ?? "").startsWith("sk_test_"),
     },
   });
 });

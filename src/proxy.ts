@@ -13,8 +13,12 @@ const ISSUER = "parking-system";
 const ALGORITHM = "HS256";
 
 // Pull the secret directly from process.env here; we can't import the env
-// validation module because it runs server-only code.
-const secret = new TextEncoder().encode(process.env.AUTH_SECRET || "");
+// validation module because it runs server-only code (Edge runtime constraint).
+const _authSecret = process.env.AUTH_SECRET;
+if (!_authSecret) {
+  throw new Error("AUTH_SECRET env var is required");
+}
+const secret = new TextEncoder().encode(_authSecret);
 
 async function isAdmin(request: NextRequest): Promise<boolean> {
   const token = request.cookies.get(AUTH_COOKIE)?.value;

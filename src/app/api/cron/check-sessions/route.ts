@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSettings } from "@/lib/settings";
 import { sendSMS, sendEmail } from "@/lib/notifications";
 import { log as audit } from "@/lib/audit";
-import { ceilHours } from "@/lib/rates";
+import { ceilDays } from "@/lib/rates";
 
 // This endpoint should be called periodically (e.g., every 5 minutes via Vercel Cron or external cron)
 export async function GET() {
@@ -60,6 +60,11 @@ export async function GET() {
     where: {
       status: "ACTIVE",
       expectedEnd: { lte: graceThreshold },
+      // Skip sessions whose Stripe subscription is in the dunning retry window.
+      // invoice.payment_succeeded will reset billingStatus to CURRENT on success;
+      // customer.subscription.deleted sets DELINQUENT (which is NOT skipped here
+      // because expectedEnd is already clamped to now at that point).
+      billingStatus: { not: "PAYMENT_FAILED" },
     },
     include: { driver: true, spot: true },
   });
@@ -96,8 +101,8 @@ export async function GET() {
 
   if (unalertedOverstays.length > 0 && settings.managerEmail) {
     const lines = unalertedOverstays.map((s) => {
-      const overHours = ceilHours(new Date(s.expectedEnd), now);
-      return `- Spot ${s.spot.label}: ${s.driver.name} (${s.driver.phone}) — ${overHours}h overstay`;
+      const overDays = ceilDays(new Date(s.expectedEnd), now);
+      return `- Spot ${s.spot.label}: ${s.driver.name} (${s.driver.phone}) — ${overDays}d overstay`;
     });
 
     const body = `The following vehicles have overstayed:\n\n${lines.join("\n")}`;

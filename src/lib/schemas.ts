@@ -4,10 +4,16 @@ import { z } from "zod";
 // Primitive schemas
 // ---------------------------------------------------------------------------
 export const VehicleTypeSchema = z.enum(["BOBTAIL", "TRUCK_TRAILER"]);
-export const SessionStatusSchema = z.enum(["ACTIVE", "COMPLETED", "OVERSTAY"]);
-export const PaymentTypeSchema = z.enum(["CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"]);
+export const SessionStatusSchema = z.enum(["ACTIVE", "COMPLETED", "OVERSTAY", "CANCELLED"]);
+export const PaymentTypeSchema = z.enum([
+  "CHECKIN",
+  "MONTHLY_CHECKIN",
+  "MONTHLY_RENEWAL",
+  "EXTENSION",
+  "OVERSTAY",
+]);
 export const PaymentStatusSchema = z.enum([
-  "PENDING", "COMPLETED", "PARTIALLY_REFUNDED", "REFUNDED", "VOIDED", "DISPUTED",
+  "PENDING", "COMPLETED", "PARTIALLY_REFUNDED", "REFUNDED", "CANCELLED", "DISPUTED",
 ]);
 export const AllowListLabelSchema = z.enum(["EMPLOYEE", "FAMILY", "VENDOR", "CONTRACTOR"]);
 
@@ -62,8 +68,8 @@ export const SessionCreateSchema = z
   .object({
     driverId: idSchema,
     vehicleId: idSchema,
-    durationType: z.enum(["HOURLY", "MONTHLY"]).default("HOURLY"),
-    hours: z.number().int().min(1).max(72).optional(),
+    durationType: z.enum(["DAILY", "MONTHLY"]).default("DAILY"),
+    days: z.number().int().min(1).max(30).optional(),
     months: z.number().int().min(1).max(12).optional(),
     paymentId: z.string().min(1).max(200).optional(),
     // Clickwrap consent — required for new sessions
@@ -74,16 +80,16 @@ export const SessionCreateSchema = z
   })
   .refine(
     (d) =>
-      (d.durationType === "HOURLY" && d.hours != null) ||
+      (d.durationType === "DAILY" && d.days != null) ||
       (d.durationType === "MONTHLY" && d.months != null),
-    { message: "hours required for HOURLY, months required for MONTHLY" },
+    { message: "days required for DAILY, months required for MONTHLY" },
   );
 export type SessionCreateInput = z.infer<typeof SessionCreateSchema>;
 
 export const SessionExtendSchema = z.object({
   sessionId: idSchema,
   driverId: idSchema,
-  hours: z.number().int().min(1).max(72),
+  days: z.number().int().min(1).max(30),
   paymentId: z.string().min(1).max(200),
 });
 
@@ -94,20 +100,51 @@ export const SessionExitSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Payment
+// Payment — Stripe Checkout
 // ---------------------------------------------------------------------------
-export const PaymentIntentCreateSchema = z.object({
-  amount: z.number().min(0.5).max(10000),
-  description: z.string().max(500).optional(),
+
+/**
+ * Body for POST /api/payments/checkout — creates a Stripe Checkout session
+ * in either payment mode (one-time) or subscription mode (monthly). Echoes
+ * the metadata back on the webhook so the handler knows how to wire the
+ * resulting Payment row to a Session.
+ */
+export const CheckoutCreateSchema = z.object({
+  driverId: idSchema,
+  sessionPurpose: z.enum(["CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"]),
+  // Required for CHECKIN / MONTHLY_CHECKIN — identifies the vehicle that
+  // will hold the spot.
+  vehicleId: idSchema.optional(),
+  // Required for EXTENSION / OVERSTAY — identifies the existing session.
+  sessionId: idSchema.optional(),
+  // Amount and description are computed server-side from settings rates —
+  // never accepted from the client to prevent price tampering.
+  days: z.number().int().min(1).max(365).optional(),
+  months: z.number().int().min(1).max(12).optional(),
+  termsVersion: z.string().min(1).max(50).optional(),
+  overstayAuthorized: z.boolean().optional(),
 });
-export type PaymentIntentCreateInput = z.infer<typeof PaymentIntentCreateSchema>;
+export type CheckoutCreateInput = z.infer<typeof CheckoutCreateSchema>;
+
+/**
+ * Body for POST /api/admin/refund — triggers a Stripe refund. The webhook
+ * (charge.refunded) updates the Payment row and writes the QB Refund Receipt;
+ * this route doesn't mutate the DB itself.
+ */
+export const AdminRefundSchema = z.object({
+  paymentId: idSchema,
+  // Dollars. Omit for full refund.
+  amount: z.number().min(0.01).max(10000).optional(),
+  reason: z.enum(["duplicate", "fraudulent", "requested_by_customer"]).optional(),
+});
+export type AdminRefundInput = z.infer<typeof AdminRefundSchema>;
 
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 export const SettingsUpdateSchema = z.object({
-  hourlyRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
-  hourlyRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  dailyRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
+  dailyRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   overstayRateBobtail: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   overstayRateTruck: z.number().min(0.01, "Rate must be at least $0.01").max(1000).optional(),
   gracePeriodMinutes: z.number().int().min(0).max(1440).optional(),
@@ -138,6 +175,10 @@ export const AuditActionSchema = z.enum([
   "SUSPICIOUS_ENTRY",
   "GATE_DENIED",
   "ALLOWLIST_ENTRY",
+  "STRIPE_WEBHOOK_RECEIVED", "STRIPE_WEBHOOK_REPLAYED",
+  "SALES_RECEIPT_WRITTEN", "SALES_RECEIPT_FAILED",
+  "REFUND_ISSUED", "PAYMENT_DISPUTED",
+  "SUBSCRIPTION_CREATED", "SUBSCRIPTION_CANCELED",
 ]);
 
 export const AuditQuerySchema = z.object({

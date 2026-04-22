@@ -1,18 +1,15 @@
 /**
- * QuickBooks Online integration.
+ * QuickBooks Online integration — accounting output only.
  *
- * Two payment paths:
+ * After the Stripe rewrite, QB is no longer a payment processor. This module
+ * keeps OAuth + customer lookup + two write functions:
+ *   - writeSalesReceipt() — called from the Stripe webhook after every
+ *     successful charge (one-time or subscription renewal).
+ *   - writeRefundReceipt() — called from the Stripe webhook after every
+ *     refund is captured.
  *
- * 1. HOSTED CHECKOUT (preferred for driver UX):
- *    - Server creates a QB invoice with line items
- *    - Gets the invoiceLink (hosted checkout URL)
- *    - Driver is redirected to QB's hosted page (Apple Pay, PayPal, Venmo, cards)
- *    - After payment, driver is redirected back to our confirmation page
- *    - Server polls invoice status to confirm payment
- *
- * 2. DIRECT CHARGE (card-only, for API-level integration):
- *    - Client tokenizes card via QB Payments API
- *    - Server creates charge with token
+ * Payment state of record lives in our `Payment` table, driven by Stripe
+ * webhooks. We never read payment state back from QB.
  *
  * QB API base URLs:
  *   Sandbox:    https://sandbox-quickbooks.api.intuit.com
@@ -24,8 +21,8 @@ const PROD_BASE = "https://quickbooks.api.intuit.com";
 
 /**
  * Thrown when QB is unreachable or tokens can't be acquired/refreshed.
- * Callers should catch this and map to a 503 so the driver sees a
- * "temporarily unavailable" message instead of a generic 500.
+ * Callers should catch this and audit SALES_RECEIPT_FAILED so the admin
+ * knows to reconcile manually.
  */
 export class QBAuthError extends Error {
   constructor(message: string) {
@@ -38,22 +35,18 @@ const isProd = process.env.NODE_ENV === "production";
 const API_BASE = isProd ? PROD_BASE : SANDBOX_BASE;
 
 /**
- * Validate that QB credentials match the current environment.
- * Prevents sandbox credentials in production (charges succeed in sandbox
- * but no real money moves — catastrophic for the business).
+ * Fail loud if sandbox credentials are used in production. Catastrophic
+ * miss-config: Sales Receipts would be written to a sandbox company file
+ * and dad's books would silently drift from reality.
  */
 function validateEnvironment(realmId: string): void {
-  if (!isProd) return; // No validation in dev/test — sandbox is expected
+  if (!isProd) return;
 
-  // QB sandbox realm IDs are typically numeric and short (e.g. "123456789")
-  // Production realm IDs are also numeric but we check the client ID instead:
-  // Sandbox client IDs from Intuit start with "ABEI" prefix
   const clientId = process.env.QB_CLIENT_ID ?? "";
   if (clientId.startsWith("ABEI")) {
     throw new Error(
       "CRITICAL: QuickBooks sandbox credentials detected in production! " +
-      "Update QB_CLIENT_ID and QB_CLIENT_SECRET to production keys. " +
-      "No real payments will be processed until this is fixed."
+      "Update QB_CLIENT_ID and QB_CLIENT_SECRET to production keys.",
     );
   }
 
@@ -67,20 +60,27 @@ function validateEnvironment(realmId: string): void {
 // ---------------------------------------------------------------------------
 import { prisma } from "./prisma";
 
+// In-flight refresh lock: if two concurrent QB calls both detect an expired
+// token, only one refresh runs. The second awaits the same promise so the
+// refresh token is never exchanged twice (which causes Intuit "invalid_grant").
+let _refreshPromise: Promise<{ accessToken: string; realmId: string }> | null = null;
+
 async function getTokens(): Promise<{ accessToken: string; realmId: string }> {
   const settings = await prisma.settings.findUnique({ where: { id: "default" } });
   if (!settings?.qbAccessToken || !settings?.qbRealmId) {
     throw new QBAuthError("QuickBooks not connected. Go to Admin → Settings to connect.");
   }
 
-  // Fail loud if sandbox credentials are used in production
   validateEnvironment(settings.qbRealmId);
 
-  // Check if token needs refresh (expires every hour, refresh 5 min early)
   if (settings.qbTokenExpiresAt && settings.qbRefreshToken) {
     const fiveMinFromNow = new Date(Date.now() + 5 * 60 * 1000);
     if (settings.qbTokenExpiresAt < fiveMinFromNow) {
-      return refreshAccessToken(settings.qbRefreshToken, settings.qbRealmId);
+      if (!_refreshPromise) {
+        _refreshPromise = refreshAccessToken(settings.qbRefreshToken, settings.qbRealmId)
+          .finally(() => { _refreshPromise = null; });
+      }
+      return _refreshPromise;
     }
   }
 
@@ -115,10 +115,9 @@ async function refreshAccessToken(
   const data = await res.json() as {
     access_token: string;
     refresh_token: string;
-    expires_in: number; // seconds
+    expires_in: number;
   };
 
-  // Store new tokens in DB
   await prisma.settings.update({
     where: { id: "default" },
     data: {
@@ -162,20 +161,20 @@ async function qbFetch<T = unknown>(path: string, opts?: RequestInit): Promise<T
 }
 
 // ---------------------------------------------------------------------------
-// Customer management (QB requires a customer for invoices)
+// Customer lookup (used by Sales Receipt + Refund Receipt writes)
 // ---------------------------------------------------------------------------
 type QBCustomer = { Id: string; DisplayName: string };
 
 /**
- * Find or create a QB customer by phone number.
- * Maps our driver to a QB customer record.
+ * Find or create a QB customer by phone number. Cached on Driver.qbCustomerId
+ * the first time we write a receipt for them, so subsequent receipts skip
+ * this round-trip.
  */
 export async function findOrCreateCustomer(opts: {
   name: string;
   phone: string;
   email?: string;
 }): Promise<QBCustomer> {
-  // Search by DisplayName — QB doesn't support querying on nested objects like PrimaryPhone
   const digits = opts.phone.replace(/\D/g, "");
   const displayName = `${opts.name} (${digits})`;
   const searchRes = await qbFetch<{ QueryResponse: { Customer?: QBCustomer[] } }>(
@@ -186,13 +185,12 @@ export async function findOrCreateCustomer(opts: {
     return searchRes.QueryResponse.Customer[0];
   }
 
-  // Create new customer
   const createRes = await qbFetch<{ Customer: QBCustomer }>(
     "/customer",
     {
       method: "POST",
       body: JSON.stringify({
-        DisplayName: `${opts.name} (${digits})`,
+        DisplayName: displayName,
         PrimaryPhone: { FreeFormNumber: digits },
         PrimaryEmailAddr: opts.email ? { Address: opts.email } : undefined,
       }),
@@ -203,316 +201,258 @@ export async function findOrCreateCustomer(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Invoice-based hosted checkout
+// Service item lookup — required by Sales Receipt + Refund Receipt lines
 // ---------------------------------------------------------------------------
-type QBInvoice = {
-  Id: string;
-  TotalAmt: number;
-  Balance: number;
-  InvoiceLink?: string;
-  EmailStatus: string;
-  /** QB marks voided invoices with this metadata */
-  PrivateNote?: string;
-  MetaData?: { LastUpdatedTime: string };
-};
+
+let cachedServiceItemId: string | null = null;
+let cachedDepositAccountId: string | undefined = undefined;
 
 /**
- * Create a QB invoice and get the hosted checkout URL.
- *
- * The invoiceLink is a hosted page where the customer can pay via
- * Apple Pay, PayPal, Venmo, credit/debit card, or ACH.
+ * Returns the QB Account ID to use as DepositToAccountRef on Sales Receipts
+ * and Refund Receipts. Tries Bank accounts first, then falls back to
+ * Undeposited Funds (Other Current Asset) which QB sandbox always has.
+ * Throws if nothing is found so the caller gets a clear error instead of a
+ * silent "required parameter missing" rejection from QB.
  */
-export async function createInvoiceCheckout(opts: {
-  customerId: string;
-  amount: number;
-  description: string;
-  driverEmail?: string;
-}): Promise<{ invoiceId: string; checkoutUrl: string }> {
-  const invoiceRes = await qbFetch<{ Invoice: QBInvoice }>(
-    "/invoice?include=invoiceLink",
+async function getDepositAccountId(): Promise<string> {
+  if (cachedDepositAccountId !== undefined) return cachedDepositAccountId;
+
+  // Try bank accounts (real company setup).
+  const bankRes = await qbFetch<{ QueryResponse: { Account?: Array<{ Id: string; Name: string }> } }>(
+    `/query?query=${encodeURIComponent("SELECT Id, Name FROM Account WHERE AccountType = 'Bank' MAXRESULTS 1")}`,
+  );
+  const bankId = bankRes.QueryResponse.Account?.[0]?.Id;
+  if (bankId) { cachedDepositAccountId = bankId; return bankId; }
+
+  // Fall back to Undeposited Funds / Other Current Asset (QB sandbox default).
+  const ufRes = await qbFetch<{ QueryResponse: { Account?: Array<{ Id: string; Name: string }> } }>(
+    `/query?query=${encodeURIComponent("SELECT Id, Name FROM Account WHERE AccountType = 'Other Current Asset' MAXRESULTS 5")}`,
+  );
+  const ufAccount = ufRes.QueryResponse.Account?.find(
+    (a) => a.Name.toLowerCase().includes("undeposited") || a.Name.toLowerCase().includes("funds"),
+  ) ?? ufRes.QueryResponse.Account?.[0];
+  if (ufAccount) {
+    console.warn(
+      `[QuickBooks] No Bank account found — using "${ufAccount.Name}" as the deposit account for receipts.\n` +
+      `  To fix: in QuickBooks, go to Chart of Accounts and add a Bank account (e.g. "Checking").\n` +
+      `  Then disconnect and reconnect QuickBooks in the admin Settings tab so the new account is picked up.`
+    );
+    cachedDepositAccountId = ufAccount.Id;
+    return ufAccount.Id;
+  }
+
+  throw new Error(
+    "No Bank or Undeposited Funds account found in QuickBooks. Create a bank account before writing receipts.",
+  );
+}
+
+/**
+ * Returns the QB Item ID to attach to receipt lines. Queries QB for any
+ * existing Service-type item (uses the first one found), and creates a
+ * "Parking Services" item backed by the first income account if none exist.
+ *
+ * Result is cached in memory for the process lifetime to avoid a round-trip
+ * on every receipt write.
+ */
+async function getServiceItemId(): Promise<string> {
+  if (cachedServiceItemId) return cachedServiceItemId;
+
+  const itemRes = await qbFetch<{ QueryResponse: { Item?: Array<{ Id: string }> } }>(
+    `/query?query=${encodeURIComponent("SELECT Id FROM Item WHERE Type = 'Service' MAXRESULTS 1")}`,
+  );
+  if (itemRes.QueryResponse.Item?.length) {
+    cachedServiceItemId = itemRes.QueryResponse.Item[0].Id;
+    return cachedServiceItemId;
+  }
+
+  // No service items — create one. Needs an income account reference.
+  const acctRes = await qbFetch<{ QueryResponse: { Account?: Array<{ Id: string }> } }>(
+    `/query?query=${encodeURIComponent("SELECT Id FROM Account WHERE AccountType = 'Income' MAXRESULTS 1")}`,
+  );
+  const incomeAccountId = acctRes.QueryResponse.Account?.[0]?.Id;
+  if (!incomeAccountId) {
+    throw new Error("No income account found in QB — create one before connecting QuickBooks.");
+  }
+
+  const createRes = await qbFetch<{ Item: { Id: string } }>(
+    "/item",
     {
       method: "POST",
       body: JSON.stringify({
-        CustomerRef: { value: opts.customerId },
-        Line: [
-          {
-            Amount: opts.amount,
-            DetailType: "SalesItemLineDetail",
-            Description: opts.description,
-            SalesItemLineDetail: {
-              UnitPrice: opts.amount,
-              Qty: 1,
-            },
-          },
-        ],
-        // Explicitly suppress tax — our amount IS the total; no tax line.
-        // Without this, QB may silently apply a state tax rate and cause
-        // reconciliation drift between Payment.amount and QB TotalAmt.
-        GlobalTaxCalculation: "NotApplicable",
-        AllowOnlineACHPayment: true,
-        AllowOnlineCreditCardPayment: true,
-        CustomerMemo: { value: opts.description },
-        BillEmail: opts.driverEmail ? { Address: opts.driverEmail } : undefined,
+        Name: "Parking Services",
+        Type: "Service",
+        IncomeAccountRef: { value: incomeAccountId },
       }),
     },
   );
 
-  const invoice = invoiceRes.Invoice;
-  console.log("[QB] Invoice created:", invoice.Id, "InvoiceLink:", invoice.InvoiceLink);
-
-  if (!invoice.InvoiceLink) {
-    throw new Error("Invoice created but no checkout link returned. Ensure QB Payments is enabled on this company.");
-  }
-
-  return {
-    invoiceId: invoice.Id,
-    checkoutUrl: invoice.InvoiceLink,
-  };
+  cachedServiceItemId = createRes.Item.Id;
+  return cachedServiceItemId;
 }
+
+// ---------------------------------------------------------------------------
+// Sales Receipt write — called from Stripe webhook on successful charge
+// ---------------------------------------------------------------------------
+
+type QBSalesReceipt = { Id: string; DocNumber: string; TotalAmt: number };
 
 /**
- * Check if an invoice has been paid.
+ * Write a Sales Receipt to QB. Idempotent by Stripe event ID — the event ID
+ * PrivateNote format (canonical): `charge:${stripeChargeId} ref:${stripeEventId}`
+ * The charge ID is always first and is the deduplication key — we query QB for
+ * an existing receipt with that charge ID before creating a new one. This catches
+ * duplicates regardless of which caller path (webhook vs admin sync) wrote the
+ * original.
+ *
+ * Returns the QB Sales Receipt (existing or new) so callers can store its ID.
  */
-export type InvoiceStatus = {
-  paid: boolean;
-  voided: boolean;
-  partial: boolean;
-  balance: number;
-  totalAmount: number;
-  amountPaid: number;
-};
+export async function writeSalesReceipt(args: {
+  customerId: string;
+  amount: number;
+  description: string;
+  stripeEventId: string;
+  stripeChargeId: string;
+}): Promise<QBSalesReceipt> {
+  // Pre-check: query QB for any receipt already tagged with this charge ID.
+  // The LIKE query matches both the new `charge:xxx ref:yyy` format and the
+  // legacy `stripe:xxx charge:xxx` format written by earlier code.
+  const searchRes = await qbFetch<{ QueryResponse: { SalesReceipt?: QBSalesReceipt[] } }>(
+    `/query?query=${encodeURIComponent(`SELECT * FROM SalesReceipt WHERE PrivateNote LIKE '%charge:${args.stripeChargeId}%' MAXRESULTS 1`)}`,
+  ).catch(() => null);
+  const existing = searchRes?.QueryResponse?.SalesReceipt?.[0];
+  if (existing) return existing;
 
-export async function getInvoiceStatus(invoiceId: string): Promise<InvoiceStatus> {
-  let invoice: QBInvoice;
-  try {
-    const res = await qbFetch<{ Invoice: QBInvoice }>(`/invoice/${invoiceId}`);
-    invoice = res.Invoice;
-  } catch (err) {
-    // Invoice not found or deleted — treat as voided
-    if (err instanceof Error && err.message.includes("404")) {
-      return { paid: false, voided: true, partial: false, balance: 0, totalAmount: 0, amountPaid: 0 };
-    }
-    throw err;
-  }
+  // Canonical PrivateNote: charge ID first so it's the sortable/searchable key.
+  const privateNote = `charge:${args.stripeChargeId} ref:${args.stripeEventId}`;
 
-  console.log("[QB] Invoice raw response:", JSON.stringify({
-    Id: invoice.Id,
-    TotalAmt: invoice.TotalAmt,
-    Balance: invoice.Balance,
-    EmailStatus: invoice.EmailStatus,
-    PrivateNote: invoice.PrivateNote,
-    MetaData: invoice.MetaData,
-  }));
+  const [itemId, depositAccountId] = await Promise.all([getServiceItemId(), getDepositAccountId()]);
 
-  const totalAmount = invoice.TotalAmt ?? 0;
-  const balance = invoice.Balance ?? 0;
-  const amountPaid = totalAmount - balance;
-
-  // QB doesn't have a "voided" field on the API — a voided invoice has
-  // Balance === 0 AND TotalAmt === 0 (amounts zeroed out on void)
-  const voided = totalAmount === 0 && balance === 0;
-
-  return {
-    paid: !voided && balance === 0,
-    voided,
-    partial: !voided && amountPaid > 0 && balance > 0,
-    balance,
-    totalAmount,
-    amountPaid,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Direct charges (card-only, kept for API-level use)
-// ---------------------------------------------------------------------------
-const PAYMENTS_SANDBOX = "https://sandbox.api.intuit.com";
-const PAYMENTS_PROD = "https://api.intuit.com";
-const PAYMENTS_BASE = isProd ? PAYMENTS_PROD : PAYMENTS_SANDBOX;
-
-async function paymentsFetch<T = unknown>(path: string, opts?: RequestInit): Promise<T> {
-  const { accessToken } = await getTokens();
-  const url = `${PAYMENTS_BASE}${path}`;
-  const res = await fetch(url, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${accessToken}`,
-      "Accept": "application/json",
-      ...(opts?.headers ?? {}),
+  const createRes = await qbFetch<{ SalesReceipt: QBSalesReceipt }>(
+    "/salesreceipt",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        CustomerRef: { value: args.customerId },
+        DepositToAccountRef: { value: depositAccountId },
+        Line: [
+          {
+            Amount: args.amount,
+            DetailType: "SalesItemLineDetail",
+            Description: args.description,
+            SalesItemLineDetail: {
+              ItemRef: { value: itemId },
+              UnitPrice: args.amount,
+              Qty: 1,
+            },
+          },
+        ],
+        PrivateNote: privateNote,
+      }),
     },
-  });
-  if (!res.ok) {
-    let message = `QB Payments error (${res.status})`;
-    try { const b = await res.json(); if (b.errors?.[0]?.message) message = b.errors[0].message; } catch {}
-    throw new Error(message);
-  }
-  return res.json() as Promise<T>;
-}
+  );
 
-type ChargeResponse = { id: string; status: string; amount: string; currency: string };
-
-export function getTokenizeUrl(): string {
-  return `${PAYMENTS_BASE}/quickbooks/v4/payments/tokens`;
-}
-
-export async function createCharge(opts: {
-  token: string;
-  amount: number;
-  currency?: string;
-  description?: string;
-}): Promise<ChargeResponse> {
-  return paymentsFetch<ChargeResponse>("/quickbooks/v4/payments/charges", {
-    method: "POST",
-    headers: { "Request-Id": `charge_${Date.now()}_${Math.random().toString(36).slice(2)}` },
-    body: JSON.stringify({
-      amount: opts.amount.toFixed(2),
-      currency: opts.currency ?? "USD",
-      token: opts.token,
-      context: { ecommerce: true },
-      description: opts.description,
-    }),
-  });
-}
-
-export async function getCharge(chargeId: string): Promise<ChargeResponse> {
-  return paymentsFetch<ChargeResponse>(`/quickbooks/v4/payments/charges/${chargeId}`);
-}
-
-export type ChargeRefund = { id: string; amount: number; created: string };
-
-/**
- * Fetch a charge and any refunds issued against it in a single function.
- * Used by the QB reconciliation endpoint to detect voided/refunded charges.
- */
-export async function getChargeWithRefunds(chargeId: string): Promise<{
-  status: string;
-  amount: number;
-  refunds: ChargeRefund[];
-}> {
-  const [chargeResult, refundsResult] = await Promise.allSettled([
-    paymentsFetch<ChargeResponse>(`/quickbooks/v4/payments/charges/${chargeId}`),
-    paymentsFetch<{ refunds?: Array<{ id: string; amount: string; created: string }> }>(
-      `/quickbooks/v4/payments/charges/${chargeId}/refunds`,
-    ),
-  ]);
-
-  const charge = chargeResult.status === "fulfilled" ? chargeResult.value : null;
-  const rawRefunds =
-    refundsResult.status === "fulfilled" ? (refundsResult.value.refunds ?? []) : [];
-
-  return {
-    status: charge?.status ?? "UNKNOWN",
-    amount: charge ? parseFloat(charge.amount) : 0,
-    refunds: rawRefunds.map((r) => ({
-      id: r.id,
-      amount: parseFloat(r.amount),
-      created: r.created,
-    })),
-  };
-}
-
-export async function refundCharge(chargeId: string, amount: number, description?: string) {
-  return paymentsFetch(`/quickbooks/v4/payments/charges/${chargeId}/refunds`, {
-    method: "POST",
-    headers: { "Request-Id": `refund_${Date.now()}_${Math.random().toString(36).slice(2)}` },
-    body: JSON.stringify({ amount: amount.toFixed(2), description }),
-  });
+  return createRes.SalesReceipt;
 }
 
 // ---------------------------------------------------------------------------
-// QB Reports — for reconciliation with internal records
+// Refund Receipt write — called from Stripe webhook on charge.refunded
 // ---------------------------------------------------------------------------
-export type QBPaymentRecord = {
-  id: string;
-  date: string;
+
+type QBRefundReceipt = { Id: string; DocNumber: string; TotalAmt: number };
+
+export async function writeRefundReceipt(args: {
+  customerId: string;
   amount: number;
-  customerName: string;
-  memo: string;
-  method: string; // "Credit Card", "ACH", etc.
+  description: string;
+  stripeEventId: string;
+  stripeRefundId: string;
+  stripeChargeId?: string;
+  linkedSalesReceiptId?: string;
+}): Promise<QBRefundReceipt> {
+  // Pre-check: return existing RefundReceipt if this refund ID was already written.
+  const searchRes = await qbFetch<{ QueryResponse: { RefundReceipt?: QBRefundReceipt[] } }>(
+    `/query?query=${encodeURIComponent(`SELECT * FROM RefundReceipt WHERE PrivateNote LIKE '%refund:${args.stripeRefundId}%' MAXRESULTS 1`)}`,
+  ).catch(() => null);
+  const existing = searchRes?.QueryResponse?.RefundReceipt?.[0];
+  if (existing) return existing;
+
+  // Canonical PrivateNote: refund ID first (dedup key), then charge ID, then event ref.
+  const chargeRef = args.stripeChargeId ? ` charge:${args.stripeChargeId}` : "";
+  const salesRef = args.linkedSalesReceiptId ? ` salesreceipt:${args.linkedSalesReceiptId}` : "";
+  const privateNote = `refund:${args.stripeRefundId}${chargeRef} ref:${args.stripeEventId}${salesRef}`;
+
+  const [itemId, depositAccountId] = await Promise.all([getServiceItemId(), getDepositAccountId()]);
+
+  const createRes = await qbFetch<{ RefundReceipt: QBRefundReceipt }>(
+    "/refundreceipt",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        CustomerRef: { value: args.customerId },
+        // DepositToAccountRef here means the bank account FROM which the
+        // refund is paid. Must match the original SalesReceipt's account so
+        // QB bank reconciliation can match both sides.
+        DepositToAccountRef: { value: depositAccountId },
+        Line: [
+          {
+            Amount: args.amount,
+            DetailType: "SalesItemLineDetail",
+            Description: args.linkedSalesReceiptId
+              ? `${args.description} (Sales Receipt #${args.linkedSalesReceiptId})`
+              : args.description,
+            SalesItemLineDetail: {
+              ItemRef: { value: itemId },
+              UnitPrice: args.amount,
+              Qty: 1,
+            },
+          },
+        ],
+        PrivateNote: privateNote,
+      }),
+    },
+  );
+
+  return createRes.RefundReceipt;
+}
+
+// ---------------------------------------------------------------------------
+// List recent Sales Receipts — used by the Charges & Receipts reconcile tab
+// ---------------------------------------------------------------------------
+
+export type QBSalesReceiptListItem = {
+  Id: string;
+  DocNumber: string;
+  TxnDate: string;           // "YYYY-MM-DD"
+  TotalAmt: number;
+  CustomerRef: { value: string; name?: string } | null;
+  PrivateNote: string | null; // contains "charge:ch_xxx ref:evt_xxx" for our receipts
 };
 
-/**
- * Fetch recent payments from QuickBooks for reconciliation.
- * Uses the Payment entity query, not reports — gives individual transactions.
- */
-export async function getQBPayments(opts?: {
-  from?: string; // ISO date
-  to?: string;
-  limit?: number;
-}): Promise<QBPaymentRecord[]> {
-  const conditions = ["TotalAmt > '0'"];
-  if (opts?.from) conditions.push(`TxnDate >= '${opts.from.slice(0, 10)}'`);
-  if (opts?.to) conditions.push(`TxnDate <= '${opts.to.slice(0, 10)}'`);
-
-  const query = `SELECT * FROM Payment WHERE ${conditions.join(" AND ")} ORDERBY TxnDate DESC MAXRESULTS ${opts?.limit ?? 100}`;
-
+export async function listRecentSalesReceipts(sinceDaysAgo: number): Promise<QBSalesReceiptListItem[]> {
+  const since = new Date(Date.now() - sinceDaysAgo * 24 * 60 * 60 * 1000);
+  const dateStr = since.toISOString().split("T")[0];
+  const query = `SELECT * FROM SalesReceipt WHERE TxnDate >= '${dateStr}' ORDERBY TxnDate DESC MAXRESULTS 200`;
   const res = await qbFetch<{
-    QueryResponse: {
-      Payment?: Array<{
-        Id: string;
-        TxnDate: string;
-        TotalAmt: number;
-        CustomerRef: { name: string };
-        PrivateNote?: string;
-        PaymentMethodRef?: { name: string };
-        Line?: Array<{ LinkedTxn?: Array<{ TxnId: string; TxnType: string }> }>;
-      }>;
-    };
+    QueryResponse: { SalesReceipt?: QBSalesReceiptListItem[] };
   }>(`/query?query=${encodeURIComponent(query)}`);
-
-  const payments = res.QueryResponse.Payment ?? [];
-  return payments.map((p) => ({
-    id: p.Id,
-    date: p.TxnDate,
-    amount: p.TotalAmt,
-    customerName: p.CustomerRef?.name ?? "Unknown",
-    memo: p.PrivateNote ?? "",
-    method: p.PaymentMethodRef?.name ?? "Unknown",
-  }));
+  return res.QueryResponse.SalesReceipt ?? [];
 }
 
-/**
- * Fetch profit/loss summary from QB Reports API.
- */
-export type QBProfitLoss = {
-  totalIncome: number;
-  totalExpenses: number;
-  netIncome: number;
-  period: { from: string; to: string };
+export type QBRefundReceiptListItem = {
+  Id: string;
+  DocNumber: string;
+  TxnDate: string;
+  TotalAmt: number;
+  CustomerRef: { value: string; name?: string } | null;
+  PrivateNote: string | null; // contains "refund:re_xxx charge:ch_xxx ref:evt_xxx"
 };
 
-export async function getProfitAndLoss(from: string, to: string): Promise<QBProfitLoss> {
+export async function listRecentRefundReceipts(sinceDaysAgo: number): Promise<QBRefundReceiptListItem[]> {
+  const since = new Date(Date.now() - sinceDaysAgo * 24 * 60 * 60 * 1000);
+  const dateStr = since.toISOString().split("T")[0];
+  const query = `SELECT * FROM RefundReceipt WHERE TxnDate >= '${dateStr}' ORDERBY TxnDate DESC MAXRESULTS 200`;
   const res = await qbFetch<{
-    Header: { StartPeriod: string; EndPeriod: string };
-    Rows: {
-      Row: Array<{
-        Summary?: { ColData: Array<{ value: string }> };
-        group?: string;
-        type?: string;
-      }>;
-    };
-  }>(`/reports/ProfitAndLoss?start_date=${from}&end_date=${to}&minorversion=65`);
-
-  let totalIncome = 0;
-  let totalExpenses = 0;
-  let netIncome = 0;
-
-  for (const row of res.Rows?.Row ?? []) {
-    if (row.Summary) {
-      const val = parseFloat(row.Summary.ColData?.[1]?.value ?? "0");
-      if (row.group === "Income") totalIncome = val;
-      else if (row.group === "Expenses") totalExpenses = val;
-      else if (row.type === "Section" && row.group === "NetIncome") netIncome = val;
-    }
-  }
-
-  // NetIncome might be in a different structure — fall back to calculation
-  if (netIncome === 0) netIncome = totalIncome - totalExpenses;
-
-  return {
-    totalIncome,
-    totalExpenses,
-    netIncome,
-    period: { from: res.Header.StartPeriod, to: res.Header.EndPeriod },
-  };
+    QueryResponse: { RefundReceipt?: QBRefundReceiptListItem[] };
+  }>(`/query?query=${encodeURIComponent(query)}`);
+  return res.QueryResponse.RefundReceipt ?? [];
 }

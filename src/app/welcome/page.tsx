@@ -101,7 +101,7 @@ function WelcomeContent() {
         deviceId: getDeviceId(),
         direction: "ENTRANCE",
       });
-      router.push(`/confirmation?gateOpened=true`);
+      router.push(`/confirmation?gateOpened=true&sessionId=${session.id}`);
     } catch {
       setGateError("Gate could not be opened. Please try again.");
       setGateLoading(null);

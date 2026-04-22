@@ -1,56 +1,185 @@
-import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { findOrCreateCustomer, createInvoiceCheckout } from "@/lib/quickbooks";
-import { handler, json } from "@/lib/api-handler";
-import { RATE_LIMITS } from "@/lib/rate-limit";
+import {
+  getOrCreateStripeCustomer,
+  createPaymentCheckoutSession,
+  createSubscriptionCheckoutSession,
+  stripeConfigured,
+} from "@/lib/stripe";
+import { handler, json, notFound, conflict } from "@/lib/api-handler";
+import { CheckoutCreateSchema } from "@/lib/schemas";
+import { getSettings } from "@/lib/settings";
+import { dailyRate, monthlyRate, overstayRate, ceilDays } from "@/lib/rates";
 
 /**
- * POST: Create a QB invoice and return the hosted checkout URL.
+ * POST /api/payments/checkout — create a Stripe Checkout session.
  *
- * The client redirects the driver to this URL. After payment,
- * the driver returns to our confirmation page. The server polls
- * the invoice to verify payment before creating the session.
+ * One route handles all four purposes. Dispatch is by `sessionPurpose`:
+ *
+ *   CHECKIN / EXTENSION / OVERSTAY → payment mode (one-time PaymentIntent).
+ *   MONTHLY_CHECKIN → subscription mode (recurring monthly invoice).
+ *
+ * Amount and description are computed server-side from current settings rates.
+ * The client never sends a dollar figure — that prevents price tampering.
+ *
+ * The returned `checkoutUrl` is a Stripe-hosted page the client redirects
+ * to. On success, Stripe redirects back to `/payment-complete?cs={id}`.
+ * The webhook (triggered independently) writes the Payment + Session rows
+ * before the client's redirect polling catches up; see the Stripe webhook
+ * handler for the atomic creation path.
+ *
+ * We never create Payment or Session rows here — this route only produces
+ * a Stripe URL. Our DB becomes consistent via webhook.
  */
-const CheckoutSchema = z.object({
-  driverName: z.string().min(1),
-  driverPhone: z.string().min(4),
-  driverEmail: z.string().email().optional(),
-  amount: z.number().min(0.01),
-  description: z.string().min(1),
-});
-
 export const POST = handler(
-  { body: CheckoutSchema, rateLimit: RATE_LIMITS.auth },
-  async ({ body }) => {
-    const { driverName, driverPhone, driverEmail, amount, description } = body;
-    // Normalize phone to digits-only once — DB stores digits-only, QB uses
-    // the same format in the display name. Without this, updateMany could
-    // silently match 0 rows and we'd create duplicate QB customers.
-    const phone = driverPhone.replace(/\D/g, "");
+  { body: CheckoutCreateSchema },
+  async ({ body, req }) => {
+    if (!stripeConfigured()) {
+      throw conflict("Stripe is not configured. Set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.");
+    }
 
-    const customer = await findOrCreateCustomer({
-      name: driverName,
-      phone,
-      email: driverEmail,
-    });
+    const {
+      driverId, sessionPurpose, vehicleId, sessionId,
+      days, months, termsVersion, overstayAuthorized,
+    } = body;
 
-    // Store QB customer ID on the driver for future cross-referencing
-    await prisma.driver.updateMany({
-      where: { phone },
-      data: { qbCustomerId: customer.Id },
-    });
+    // Per-purpose validation — catch misuse early so we don't create a
+    // Checkout session that the webhook can't process.
+    if ((sessionPurpose === "CHECKIN" || sessionPurpose === "MONTHLY_CHECKIN") && !vehicleId) {
+      return json({ error: "vehicleId is required for check-in purposes" }, { status: 400 });
+    }
+    if ((sessionPurpose === "EXTENSION" || sessionPurpose === "OVERSTAY") && !sessionId) {
+      return json({ error: "sessionId is required for extension/overstay" }, { status: 400 });
+    }
+    if ((sessionPurpose === "CHECKIN" || sessionPurpose === "EXTENSION") && !days) {
+      return json({ error: "days is required for CHECKIN/EXTENSION" }, { status: 400 });
+    }
+    if (sessionPurpose === "MONTHLY_CHECKIN" && !months) {
+      return json({ error: "months is required for MONTHLY_CHECKIN" }, { status: 400 });
+    }
 
-    const { invoiceId, checkoutUrl } = await createInvoiceCheckout({
-      customerId: customer.Id,
-      amount,
-      description,
-      driverEmail,
-    });
+    const driver = await prisma.driver.findUnique({ where: { id: driverId } });
+    if (!driver) throw notFound("Driver not found");
 
-    return json({
-      invoiceId,
-      checkoutUrl,
-      customerId: customer.Id,
-    });
+    // Verify the referenced session exists + belongs to this driver for
+    // EXTENSION/OVERSTAY flows. Fetch vehicle through the session so the
+    // plate + type can be embedded in Stripe checkout metadata (used by the
+    // webhook to build standardized QB receipt descriptions).
+    let licensePlate: string | undefined;
+    let vehicleType: "BOBTAIL" | "TRUCK_TRAILER" | undefined;
+    let overstayDays = 0;
+
+    if (sessionId) {
+      const session = await prisma.session.findUnique({
+        where: { id: sessionId },
+        include: { vehicle: true },
+      });
+      if (!session || session.driverId !== driverId) {
+        throw notFound("Session not found");
+      }
+      if (sessionPurpose === "EXTENSION") {
+        const isMonthly = await prisma.payment.findFirst({ where: { sessionId, type: "MONTHLY_CHECKIN" } });
+        if (isMonthly) {
+          return json(
+            { error: "Monthly subscriptions renew automatically — extensions are not available." },
+            { status: 400 },
+          );
+        }
+      }
+      licensePlate = session.vehicle.licensePlate ?? undefined;
+      vehicleType = session.vehicle.type as "BOBTAIL" | "TRUCK_TRAILER";
+
+      if (sessionPurpose === "OVERSTAY") {
+        overstayDays = ceilDays(session.expectedEnd, new Date());
+        if (overstayDays <= 0) {
+          return json({ error: "Session is not yet in overstay" }, { status: 400 });
+        }
+      }
+    }
+
+    if (vehicleId) {
+      const vehicle = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
+      if (!vehicle || vehicle.driverId !== driverId) {
+        throw notFound("Vehicle not found");
+      }
+      licensePlate = vehicle.licensePlate ?? undefined;
+      vehicleType = vehicle.type as "BOBTAIL" | "TRUCK_TRAILER";
+    }
+
+    if (sessionPurpose === "MONTHLY_CHECKIN" && vehicleType === "BOBTAIL") {
+      return json({ error: "Monthly parking is not available for bobtail vehicles." }, { status: 400 });
+    }
+
+    if (!vehicleType) {
+      return json({ error: "Vehicle type could not be determined" }, { status: 400 });
+    }
+
+    // Compute amount + description server-side from current settings rates.
+    const settings = await getSettings();
+    const plateStr = licensePlate ? ` — plate ${licensePlate}` : "";
+    const vLabel = vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/trailer";
+
+    let amount: number;
+    let description: string;
+
+    switch (sessionPurpose) {
+      case "CHECKIN":
+        amount = dailyRate(settings, vehicleType) * days!;
+        description = `${vLabel} parking — ${days}d${plateStr}`;
+        break;
+      case "MONTHLY_CHECKIN":
+        amount = monthlyRate(settings, vehicleType) * months!;
+        description = `${vLabel} parking — ${months} month${months! > 1 ? "s" : ""}${plateStr}`;
+        break;
+      case "EXTENSION":
+        amount = dailyRate(settings, vehicleType) * days!;
+        description = `${days}d extension — ${vLabel}${plateStr}`;
+        break;
+      case "OVERSTAY":
+        amount = overstayRate(settings, vehicleType) * overstayDays;
+        description = `Overstay fee — ${overstayDays}d${plateStr}`;
+        break;
+    }
+
+    const customerId = await getOrCreateStripeCustomer(driver);
+
+    const metadata = {
+      driverId,
+      ...(vehicleId ? { vehicleId } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      sessionPurpose,
+      ...(days !== undefined ? { days: String(days) } : {}),
+      ...(months !== undefined ? { months: String(months) } : {}),
+      ...(termsVersion ? { termsVersion } : {}),
+      ...(overstayAuthorized !== undefined ? { overstayAuthorized: String(overstayAuthorized) } : {}),
+      ...(licensePlate ? { licensePlate } : {}),
+      ...(vehicleType ? { vehicleType } : {}),
+    };
+
+    // Resolve success/cancel URLs against the incoming request origin so
+    // localhost and deployed URLs both work without env-var coordination.
+    const origin = new URL(req.url).origin;
+    const successUrl = `${origin}/payment-complete?cs={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${origin}/checkin`;
+
+    const result = sessionPurpose === "MONTHLY_CHECKIN"
+      ? await createSubscriptionCheckoutSession({
+          monthlyAmount: amount,
+          productName: description,
+          customerId,
+          months: months!,
+          successUrl,
+          cancelUrl,
+          metadata,
+        })
+      : await createPaymentCheckoutSession({
+          amount,
+          description,
+          customerId,
+          successUrl,
+          cancelUrl,
+          metadata,
+        });
+
+    return json(result);
   },
 );

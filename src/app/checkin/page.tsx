@@ -11,8 +11,8 @@ import PhoneInput from "@/components/PhoneInput";
 
 type Settings = Pick<
   AppSettings,
-  | "hourlyRateBobtail"
-  | "hourlyRateTruck"
+  | "dailyRateBobtail"
+  | "dailyRateTruck"
   | "monthlyRateBobtail"
   | "monthlyRateTruck"
   | "overstayRateBobtail"
@@ -24,7 +24,7 @@ type Settings = Pick<
   | "gracePeriodMinutes"
 >;
 type Vehicle = ApiVehicle;
-type DurationType = "HOURLY" | "MONTHLY";
+type DurationType = "DAILY" | "MONTHLY";
 
 export default function CheckInPage() {
   return (
@@ -103,9 +103,9 @@ function CheckInContent() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState(isDemo ? "demo@example.com" : "");
   const [phone, setPhone] = useState(isDemo ? "555-0100" : "");
-  const [hours, setHours] = useState(4);
+  const [days, setDays] = useState(1);
   const [months, setMonths] = useState(1);
-  const [durationType, setDurationType] = useState<DurationType>("HOURLY");
+  const [durationType, setDurationType] = useState<DurationType>("DAILY");
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -176,8 +176,9 @@ function CheckInContent() {
   }, [existingDriverId, isDemo, isLocked, router, searchParams]);
 
   useEffect(() => {
-    // Starting a fresh check-in → drop any abandoned pending_session
-    // from a prior attempt so it can't be reused later.
+    // Legacy sessionStorage key from the QB hosted-checkout flow —
+    // cleared on every /checkin mount so stale data can't leak across
+    // retries. No longer written in the new Stripe flow.
     try {
       sessionStorage.removeItem("pending_session");
     } catch {}
@@ -188,8 +189,8 @@ function CheckInContent() {
         .catch(() => setError("Could not load rates. Please refresh the page."));
     } else {
       setSettings({
-        hourlyRateBobtail: 12,
-        hourlyRateTruck: 18,
+        dailyRateBobtail: 30,
+        dailyRateTruck: 30,
         monthlyRateBobtail: 250,
         monthlyRateTruck: 400,
         overstayRateBobtail: 20,
@@ -270,6 +271,13 @@ function CheckInContent() {
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
   const vehicleType = selectedVehicle?.type || newVehicleType;
 
+  // Monthly is truck/trailer only — reset if bobtail is selected while on monthly
+  useEffect(() => {
+    if (vehicleType === "BOBTAIL" && durationType === "MONTHLY") {
+      setDurationType("DAILY");
+    }
+  }, [vehicleType, durationType]);
+
   // Effective spot availability for the selected vehicle type
   // Bobtails can use truck spots if overflow is enabled
   const overflowEnabled = settings?.bobtailOverflow ?? true;
@@ -284,10 +292,10 @@ function CheckInContent() {
   const lotCompletelyFull =
     availableBobtail === 0 && availableTruck === 0;
 
-  const hourlyRate = settings
+  const dailyRate = settings
     ? vehicleType === "BOBTAIL"
-      ? settings.hourlyRateBobtail
-      : settings.hourlyRateTruck
+      ? settings.dailyRateBobtail
+      : settings.dailyRateTruck
     : 0;
 
   const monthlyRate = settings
@@ -297,7 +305,7 @@ function CheckInContent() {
     : 0;
 
   const totalAmount =
-    durationType === "MONTHLY" ? monthlyRate * months : hourlyRate * hours;
+    durationType === "MONTHLY" ? monthlyRate * months : dailyRate * days;
 
   /* ---------------------------------------------------------------- */
   /*  Demo submit — no API calls, pick spot from localStorage         */
@@ -336,7 +344,7 @@ function CheckInContent() {
       name: name.trim(),
       vehicle: vehicleLabel,
       type: vehicleType,
-      hours: String(hours),
+      days: String(days),
     });
 
     router.push(`/spot-assigned?${params.toString()}`);
@@ -412,21 +420,22 @@ function CheckInContent() {
       }
 
       if (settings.paymentRequired) {
-        // Create QB invoice and redirect to hosted checkout
-        const durationLabel = durationType === "MONTHLY"
-          ? `${months} month${months > 1 ? "s" : ""}`
-          : `${hours} hour${hours !== 1 ? "s" : ""}`;
-        const description = `Parking: ${vehicleType === "BOBTAIL" ? "Bobtail" : "Truck/Trailer"} for ${durationLabel}`;
-
+        // Redirect to Stripe Checkout. The webhook (handleCheckoutSessionCompleted)
+        // creates the Session + Payment atomically before the driver's browser
+        // lands on /payment-complete, so no sessionStorage handoff is needed —
+        // /payment-complete reads the server-side Payment row by the
+        // checkout_session_id in the URL.
         const checkoutRes = await fetch("/api/payments/checkout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            driverName: name,
-            driverPhone: phone,
-            driverEmail: email || undefined,
-            amount: totalAmount,
-            description,
+            driverId: driver.id,
+            vehicleId,
+            sessionPurpose: durationType === "MONTHLY" ? "MONTHLY_CHECKIN" : "CHECKIN",
+            days: durationType === "DAILY" ? days : undefined,
+            months: durationType === "MONTHLY" ? months : undefined,
+            termsVersion: settings.termsVersion,
+            overstayAuthorized: true,
           }),
         });
         const checkoutData = await checkoutRes.json();
@@ -437,31 +446,7 @@ function CheckInContent() {
           return;
         }
 
-        // Save pending session info so the callback page can create the session after payment.
-        // Include createdAt so payment-complete can reject stale data (>30 min old)
-        // left behind from abandoned sessions.
-        sessionStorage.setItem("pending_session", JSON.stringify({
-          driverId: driver.id,
-          vehicleId,
-          durationType,
-          hours: durationType === "HOURLY" ? hours : undefined,
-          months: durationType === "MONTHLY" ? months : undefined,
-          invoiceId: checkoutData.invoiceId,
-          termsVersion: settings.termsVersion,
-          overstayAuthorized: true,
-          createdAt: Date.now(),
-        }));
-
-        // Redirect to QB hosted checkout — driver pays there (Apple Pay, PayPal, etc.)
-        // In QB sandbox the InvoiceLink goes to developer.intuit.com (no real checkout page).
-        // Skip straight to /payment-complete so the driver uses the "I've paid" button.
-        const isSandboxLink = checkoutData.checkoutUrl.includes("developer.intuit.com");
-        console.log("[Checkout] checkoutUrl:", checkoutData.checkoutUrl, "sandbox:", isSandboxLink);
-        if (isSandboxLink) {
-          window.location.href = "/payment-complete";
-        } else {
-          window.location.href = checkoutData.checkoutUrl;
-        }
+        window.location.href = checkoutData.checkoutUrl;
         return;
       }
 
@@ -473,7 +458,7 @@ function CheckInContent() {
           driverId: driver.id,
           vehicleId,
           durationType,
-          ...(durationType === "HOURLY" ? { hours } : { months }),
+          ...(durationType === "DAILY" ? { days } : { months }),
           termsVersion: settings.termsVersion,
           overstayAuthorized: true,
         }),
@@ -947,9 +932,10 @@ function CheckInContent() {
             </span>
           </div>
 
-          {/* Duration type toggle: Hourly / Monthly */}
+          {/* Duration type toggle: Daily / Monthly (monthly not available for bobtails) */}
           <div className="flex gap-2 mb-4">
-            {(["HOURLY", "MONTHLY"] as DurationType[]).map((dt) => {
+            {(["DAILY", "MONTHLY"] as DurationType[]).map((dt) => {
+              if (dt === "MONTHLY" && vehicleType === "BOBTAIL") return null;
               const active = durationType === dt;
               return (
                 <button
@@ -964,23 +950,23 @@ function CheckInContent() {
                     fontFamily: "var(--font-display)",
                   }}
                 >
-                  {dt === "HOURLY" ? "Hourly" : "Monthly"}
+                  {dt === "DAILY" ? "Daily" : "Monthly"}
                 </button>
               );
             })}
           </div>
 
-          {durationType === "HOURLY" ? (
+          {durationType === "DAILY" ? (
             <div>
-              <Label en="Hours" es="Horas" />
+              <Label en="Days" es="Días" />
               <div className="flex items-center gap-4">
                 <button
                   type="button"
-                  onClick={() => setHours(Math.max(1, hours - 1))}
+                  onClick={() => setDays(Math.max(1, days - 1))}
                   className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
                   style={{
                     borderColor: "var(--border)",
-                    color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                    color: days <= 1 ? "var(--fg-subtle)" : "var(--fg)",
                     background: "var(--input-bg)",
                     fontFamily: "var(--font-display)",
                   }}
@@ -989,19 +975,19 @@ function CheckInContent() {
                 </button>
                 <div className="flex-1 text-center">
                   <span className="text-5xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
-                    {hours}
+                    {days}
                   </span>
                   <span className="text-lg ml-1 font-semibold" style={{ color: "var(--fg-muted)", fontFamily: "var(--font-display)" }}>
-                    hr{hours !== 1 ? "s" : ""}
+                    day{days !== 1 ? "s" : ""}
                   </span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setHours(Math.min(72, hours + 1))}
+                  onClick={() => setDays(Math.min(30, days + 1))}
                   className="w-14 h-14 rounded-lg border-2 flex items-center justify-center text-2xl font-bold transition-colors duration-150 select-none"
                   style={{
                     borderColor: "var(--border)",
-                    color: hours >= 72 ? "var(--fg-subtle)" : "var(--fg)",
+                    color: days >= 30 ? "var(--fg-subtle)" : "var(--fg)",
                     background: "var(--input-bg)",
                     fontFamily: "var(--font-display)",
                   }}
@@ -1010,20 +996,20 @@ function CheckInContent() {
                 </button>
               </div>
               <div className="flex gap-2 mt-3">
-                {[2, 4, 8, 12, 24].map((h) => (
+                {[1, 3, 7, 14, 30].map((d) => (
                   <button
-                    key={h}
+                    key={d}
                     type="button"
-                    onClick={() => setHours(h)}
+                    onClick={() => setDays(d)}
                     className="flex-1 py-2 rounded-md border text-sm font-semibold transition-all duration-150"
                     style={{
-                      borderColor: hours === h ? "var(--accent)" : "var(--border)",
-                      background: hours === h ? "var(--accent-light)" : "transparent",
-                      color: hours === h ? "var(--accent)" : "var(--fg-muted)",
+                      borderColor: days === d ? "var(--accent)" : "var(--border)",
+                      background: days === d ? "var(--accent-light)" : "transparent",
+                      color: days === d ? "var(--accent)" : "var(--fg-muted)",
                       fontFamily: "var(--font-display)",
                     }}
                   >
-                    {h}h
+                    {d}d
                   </button>
                 ))}
               </div>
@@ -1101,7 +1087,7 @@ function CheckInContent() {
             <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
               {durationType === "MONTHLY"
                 ? `$${monthlyRate.toFixed(2)}/mo`
-                : `$${hourlyRate.toFixed(2)}/hr`}
+                : `$${dailyRate.toFixed(2)}/day`}
             </span>
           </div>
           <div className="flex justify-between items-baseline mb-1">
@@ -1111,7 +1097,7 @@ function CheckInContent() {
             <span className="text-sm font-semibold" style={{ fontFamily: "var(--font-display)" }}>
               {durationType === "MONTHLY"
                 ? `${months} mo${months !== 1 ? "s" : ""}`
-                : `${hours} hr${hours !== 1 ? "s" : ""}`}
+                : `${days} day${days !== 1 ? "s" : ""}`}
             </span>
           </div>
           <div
@@ -1130,7 +1116,8 @@ function CheckInContent() {
               </span>
             ) : (
               <span className="text-3xl font-extrabold" style={{ fontFamily: "var(--font-display)", color: "var(--fg)" }}>
-                ${totalAmount.toFixed(2)}
+                ${durationType === "MONTHLY" ? monthlyRate.toFixed(2) : totalAmount.toFixed(2)}
+                {durationType === "MONTHLY" && <span className="text-base font-normal" style={{ color: "var(--fg-dim)" }}>/mo</span>}
               </span>
             )}
           </div>
@@ -1196,9 +1183,9 @@ function CheckInContent() {
               <span className="text-sm" style={{ color: "var(--fg)" }}>
                 I authorize automatic charging of my payment method for overstay fees at the posted rate (
                 <strong>
-                  ${vehicleType === "BOBTAIL" ? settings.overstayRateBobtail : settings.overstayRateTruck}/hr
+                  ${vehicleType === "BOBTAIL" ? settings.overstayRateBobtail : settings.overstayRateTruck}/day
                 </strong>
-                {" "}after a {settings.gracePeriodMinutes}-minute grace period), billed per hour or portion thereof.
+                {" "}after a {settings.gracePeriodMinutes}-minute grace period), billed per day or portion thereof.
               </span>
             </label>
           </section>
@@ -1251,6 +1238,8 @@ function CheckInContent() {
                 "Accept Terms to Continue"
               ) : isDemo ? (
                 "Find My Spot →"
+              ) : durationType === "MONTHLY" ? (
+                <>Subscribe ${monthlyRate.toFixed(2)}/mo &amp; Check In</>
               ) : (
                 <>Pay ${totalAmount.toFixed(2)} &amp; Check In</>
               )}
@@ -1261,7 +1250,9 @@ function CheckInContent() {
         <p className="text-center text-xs pb-6" style={{ color: "var(--fg-subtle)" }}>
           {isDemo
             ? "A spot will be assigned on the lot map / Se asignará un lugar en el mapa"
-            : `Pagar $${totalAmount.toFixed(2)} y registrar entrada`}
+            : durationType === "MONTHLY"
+              ? `Suscribirse $${monthlyRate.toFixed(2)}/mes · renueva automáticamente`
+              : `Pagar $${totalAmount.toFixed(2)} y registrar entrada`}
         </p>
       </form>
     </div>

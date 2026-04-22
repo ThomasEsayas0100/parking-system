@@ -43,7 +43,7 @@ function LoginForm() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "#1C1C1E",
+        background: "#F2F2F7",
         fontFamily: "var(--font-body)",
         padding: 20,
       }}
@@ -53,8 +53,8 @@ function LoginForm() {
         style={{
           width: "100%",
           maxWidth: 360,
-          background: "#2C2C2E",
-          border: "1px solid #3A3A3C",
+          background: "#FFFFFF",
+          border: "1px solid #E5E5EA",
           borderRadius: 8,
           padding: 24,
           display: "flex",
@@ -68,19 +68,19 @@ function LoginForm() {
               margin: 0,
               fontSize: 18,
               fontWeight: 600,
-              color: "#F5F5F7",
+              color: "#1C1C1E",
               letterSpacing: "-0.01em",
             }}
           >
             Manager Sign In
           </h1>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#98989D" }}>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#636366" }}>
             Enter the admin password to continue.
           </p>
         </div>
 
         <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <span style={{ fontSize: 11, fontWeight: 500, color: "#98989D" }}>
+          <span style={{ fontSize: 11, fontWeight: 500, color: "#636366" }}>
             Password
           </span>
           <input
@@ -92,10 +92,10 @@ function LoginForm() {
               padding: "8px 10px",
               fontSize: 13,
               fontFamily: "var(--font-body)",
-              background: "#1C1C1E",
-              border: "1px solid #3A3A3C",
+              background: "#FFFFFF",
+              border: "1px solid #C7C7CC",
               borderRadius: 6,
-              color: "#F5F5F7",
+              color: "#1C1C1E",
               outline: "none",
             }}
           />
@@ -105,10 +105,10 @@ function LoginForm() {
           <div
             style={{
               fontSize: 11,
-              color: "#F59E0B",
+              color: "#92400E",
               padding: "6px 10px",
-              background: "#2A1F0A",
-              border: "1px solid #F59E0B",
+              background: "#FEF3C7",
+              border: "1px solid #D97706",
               borderRadius: 4,
             }}
           >
@@ -120,9 +120,9 @@ function LoginForm() {
           <div
             style={{
               fontSize: 11,
-              color: "#DC2626",
+              color: "#991B1B",
               padding: "6px 10px",
-              background: "#2C1810",
+              background: "#FEE2E2",
               border: "1px solid #DC2626",
               borderRadius: 4,
             }}
@@ -140,7 +140,7 @@ function LoginForm() {
             fontWeight: 600,
             border: "none",
             borderRadius: 6,
-            background: loading || !password ? "#3A3A3C" : "#0A84FF",
+            background: loading || !password ? "#C7C7CC" : "#2D7A4A",
             color: "#fff",
             cursor: loading || !password ? "not-allowed" : "pointer",
             fontFamily: "var(--font-body)",

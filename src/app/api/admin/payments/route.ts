@@ -6,7 +6,7 @@ import { handler, json } from "@/lib/api-handler";
 const PaymentsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
-  type: z.enum(["CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"]).optional(),
+  type: z.enum(["CHECKIN", "MONTHLY_CHECKIN", "MONTHLY_RENEWAL", "EXTENSION", "OVERSTAY"]).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
   q: z.string().optional(),
@@ -30,39 +30,54 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
       { session: { driver: { name: { contains: q, mode: "insensitive" } } } },
       { session: { driver: { phone: { contains: q.replace(/\D/g, "") } } } },
       { session: { vehicle: { licensePlate: { contains: q, mode: "insensitive" } } } },
-      { externalPaymentId: { contains: q } },
+      { stripePaymentIntentId: { contains: q } },
+      { stripeChargeId: { contains: q } },
+      { stripeSubscriptionId: { contains: q } },
+      { legacyQbReference: { contains: q } },
     ];
   }
 
-  const [payments, total, totals] = await Promise.all([
+  const [payments, total, missingSalesReceipts, missingRefundReceipts, totals] = await Promise.all([
     prisma.payment.findMany({
       where,
       include: {
         session: {
           include: {
-            driver: { select: { name: true, phone: true, qbCustomerId: true } },
+            driver: { select: { name: true, phone: true, qbCustomerId: true, stripeCustomerId: true } },
             vehicle: { select: { licensePlate: true, type: true } },
             spot: { select: { label: true } },
           },
         },
+        refunds: { orderBy: { createdAt: "asc" } },
       },
       orderBy: { createdAt: "desc" },
       take: limit,
       skip: offset,
     }),
     prisma.payment.count({ where }),
+    // Divergence: Stripe charges without QB Sales Receipt
+    prisma.payment.count({
+      where: {
+        stripeChargeId: { not: null },
+        qbSalesReceiptId: null,
+      },
+    }),
+    // Divergence: Stripe refunds without QB Refund Receipt
+    prisma.paymentRefund.count({
+      where: { qbRefundReceiptId: null },
+    }),
     // Aggregate totals by type
     prisma.payment.groupBy({
       by: ["type"],
       where: {
         ...(from || to ? { createdAt: { ...(from ? { gte: new Date(from) } : {}), ...(to ? { lte: new Date(to) } : {}) } } : {}),
       },
-      _sum: { amount: true },
+      _sum: { amount: true, refundedAmount: true },
       _count: true,
     }),
   ]);
 
-  // Compute summary
+  // Compute summary — net of refunds
   const summary = {
     totalRevenue: 0,
     checkinRevenue: 0,
@@ -72,13 +87,13 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
     transactionCount: 0,
   };
   for (const t of totals) {
-    const amt = t._sum.amount ?? 0;
-    summary.totalRevenue += amt;
+    const net = (t._sum.amount ?? 0) - (t._sum.refundedAmount ?? 0);
+    summary.totalRevenue += net;
     summary.transactionCount += t._count;
-    if (t.type === "CHECKIN") summary.checkinRevenue = amt;
-    if (t.type === "MONTHLY_CHECKIN") summary.monthlyRevenue = amt;
-    if (t.type === "EXTENSION") summary.extensionRevenue = amt;
-    if (t.type === "OVERSTAY") summary.overstayRevenue = amt;
+    if (t.type === "CHECKIN") summary.checkinRevenue = net;
+    if (t.type === "MONTHLY_CHECKIN") summary.monthlyRevenue = net;
+    if (t.type === "EXTENSION") summary.extensionRevenue = net;
+    if (t.type === "OVERSTAY") summary.overstayRevenue = net;
   }
 
   // Daily revenue for chart (last 30 days)
@@ -86,14 +101,14 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
   const dailyRaw = await prisma.payment.groupBy({
     by: ["createdAt"],
     where: { createdAt: { gte: thirtyDaysAgo } },
-    _sum: { amount: true },
+    _sum: { amount: true, refundedAmount: true },
   });
 
   // Aggregate by date string (the groupBy returns exact timestamps)
   const dailyMap: Record<string, number> = {};
   for (const row of dailyRaw) {
     const day = new Date(row.createdAt).toISOString().slice(0, 10);
-    dailyMap[day] = (dailyMap[day] ?? 0) + (row._sum.amount ?? 0);
+    dailyMap[day] = (dailyMap[day] ?? 0) + (row._sum.amount ?? 0) - (row._sum.refundedAmount ?? 0);
   }
 
   // Fill in missing days with 0
@@ -111,5 +126,6 @@ export const GET = handler({ query: PaymentsQuery }, async ({ query }) => {
     hasMore: offset + payments.length < total,
     summary,
     dailyRevenue,
+    divergentCount: missingSalesReceipts + missingRefundReceipts,
   });
 });

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireAdmin } from "@/lib/auth";
 
 /**
  * GET: OAuth callback from QuickBooks.
@@ -8,6 +9,7 @@ import { prisma } from "@/lib/prisma";
  * We exchange the code for access + refresh tokens and store them in Settings.
  */
 export async function GET(request: NextRequest) {
+  await requireAdmin();
   const { searchParams } = request.nextUrl;
   const code = searchParams.get("code");
   const realmId = searchParams.get("realmId");

@@ -6,27 +6,32 @@ import { log as audit } from "@/lib/audit";
 import { handler, json, notFound, conflict } from "@/lib/api-handler";
 import { assignSpot } from "@/lib/spots";
 import { getSettings } from "@/lib/settings";
-import { hourlyRate, monthlyRate, addHours, addMonths } from "@/lib/rates";
-import { verifyAndClaimInvoice } from "@/lib/payments";
+import { dailyRate, monthlyRate, addDays, addMonths } from "@/lib/rates";
+import { getStripe, refundPaymentIntent, stripeConfigured } from "@/lib/stripe";
 
 // ---------------------------------------------------------------------------
 // PUT: edit a session (extend time, change status)
 // ---------------------------------------------------------------------------
 const SessionEditBody = z.object({
   sessionId: z.string().min(1),
-  action: z.enum(["extend", "cancel", "close"]),
-  // For extend: how many hours to add
-  hours: z.number().int().min(1).max(720).optional(),
+  action: z.enum(["extend", "cancel", "close", "adjust", "cancel-subscription"]),
+  // For extend: how many days to add
+  days: z.number().int().min(1).max(365).optional(),
   // For cancel/close: reason required
   reason: z.string().min(1).max(500).optional(),
   // For close: backdate the session end to this time
   endedAt: z.string().optional(),
+  // For adjust: new effective end time (ISO string) and refund amount in dollars
+  effectiveEnd: z.string().optional(),
+  refundAmount: z.number().min(0).max(100_000).optional(),
+  // For cancel-subscription: immediately=true cancels now, false=cancel at period end
+  cancelImmediately: z.boolean().optional(),
 });
 
 export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
   await requireAdmin();
 
-  const { sessionId, action, hours, reason, endedAt } = body;
+  const { sessionId, action, days, reason, endedAt } = body;
 
   const session = await prisma.session.findUnique({
     where: { id: sessionId },
@@ -36,15 +41,15 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
   if (!session) throw notFound("Session not found");
 
   if (action === "extend") {
-    if (!hours) {
-      return json({ error: "Hours required for extension" }, { status: 400 });
+    if (!days) {
+      return json({ error: "Days required for extension" }, { status: 400 });
     }
 
     if (!["ACTIVE", "OVERSTAY"].includes(session.status)) {
       return json({ error: "Can only extend active or overstay sessions" }, { status: 400 });
     }
 
-    const newEnd = new Date(session.expectedEnd.getTime() + hours * 60 * 60 * 1000);
+    const newEnd = addDays(session.expectedEnd, days);
 
     // If session was OVERSTAY, extending it brings it back to ACTIVE
     const newStatus = session.status === "OVERSTAY" ? "ACTIVE" : session.status;
@@ -60,7 +65,7 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       driverId: session.driverId,
       vehicleId: session.vehicleId,
       spotId: session.spotId,
-      details: `ADMIN extended ${hours}h, new expiry: ${newEnd.toISOString()}, driver: ${session.driver.name}`,
+      details: `ADMIN extended ${days}d, new expiry: ${newEnd.toISOString()}, driver: ${session.driver.name}`,
     });
 
     return json({ session: updated });
@@ -71,22 +76,45 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Reason required for cancellation" }, { status: 400 });
     }
 
-    if (session.status === "COMPLETED") {
-      return json({ error: "Session already completed" }, { status: 400 });
+    if (["COMPLETED", "CANCELLED"].includes(session.status)) {
+      return json({ error: "Session already ended" }, { status: 400 });
     }
 
-    // Void all pending/completed payments — cancelled sessions should not
-    // count toward revenue. QB-side charges are the manager's responsibility;
-    // we only update our own records here so dashboards stay accurate.
-    await prisma.payment.updateMany({
-      where: { sessionId, status: { notIn: ["VOIDED", "REFUNDED"] } },
-      data: { status: "VOIDED" },
-    });
+    // Cancel the Stripe subscription BEFORE updating the DB.
+    // If Stripe rejects the cancellation, we return an error and leave the session
+    // untouched — the admin must not believe a cancellation succeeded while the
+    // payment processor is still billing the driver.
+    if (stripeConfigured()) {
+      const monthlyPayment = await prisma.payment.findFirst({
+        where: { sessionId, stripeSubscriptionId: { not: null } },
+        select: { stripeSubscriptionId: true },
+      });
+      if (monthlyPayment?.stripeSubscriptionId) {
+        try {
+          await getStripe().subscriptions.cancel(monthlyPayment.stripeSubscriptionId);
+        } catch (e: unknown) {
+          // Stripe considers the subscription gone: treat as already cancelled (safe to proceed).
+          const alreadyGone =
+            e instanceof Error &&
+            (e.message.toLowerCase().includes("already been canceled") ||
+              e.message.toLowerCase().includes("no such subscription") ||
+              (e as { code?: string }).code === "resource_missing");
+          if (!alreadyGone) {
+            const msg = e instanceof Error ? e.message : "Unknown Stripe error";
+            throw conflict(
+              `Stripe subscription cancellation failed: ${msg}. ` +
+              `The session has NOT been cancelled — resolve this in Stripe before retrying.`
+            );
+          }
+        }
+      }
+    }
 
-    // Complete the session — spot is implicitly freed (no session referencing it = free)
+    // Payments keep their financial status (COMPLETED, REFUNDED, etc.).
+    // The admin should issue refunds via the Manage Session modal before cancelling.
     await prisma.session.update({
       where: { id: sessionId },
-      data: { status: "COMPLETED", endedAt: new Date() },
+      data: { status: "CANCELLED", endedAt: new Date() },
     });
 
     await audit({
@@ -106,8 +134,8 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
       return json({ error: "Reason required" }, { status: 400 });
     }
 
-    if (session.status === "COMPLETED") {
-      return json({ error: "Session already completed" }, { status: 400 });
+    if (["COMPLETED", "CANCELLED"].includes(session.status)) {
+      return json({ error: "Session already ended" }, { status: 400 });
     }
 
     // Parse the backdated end time, default to now
@@ -146,6 +174,123 @@ export const PUT = handler({ body: SessionEditBody }, async ({ body }) => {
     return json({ success: true, action: "closed", endedAt: closedAt.toISOString(), paymentsRemoved: deletedPayments.count });
   }
 
+  if (action === "adjust") {
+    const { effectiveEnd, refundAmount } = body;
+
+    // --- 1. REFUNDS FIRST (atomicity: if refund throws, session is unchanged) ---
+    const refundsIssued: string[] = [];
+    if (refundAmount && refundAmount > 0.005) {
+      if (!stripeConfigured()) {
+        return json({ error: "Stripe is not configured — cannot issue refunds" }, { status: 409 });
+      }
+      const refundable = await prisma.payment.findMany({
+        where: {
+          sessionId,
+          type: { in: ["CHECKIN", "EXTENSION"] },
+          status: { in: ["COMPLETED", "PARTIALLY_REFUNDED"] },
+          stripePaymentIntentId: { not: null },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      let remaining = Math.round(refundAmount * 100) / 100;
+      for (const p of refundable) {
+        if (remaining < 0.01) break;
+        const maxRefundable = Math.round((p.amount - p.refundedAmount) * 100) / 100;
+        if (maxRefundable < 0.01) continue;
+        const toRefund = Math.min(remaining, maxRefundable);
+        await refundPaymentIntent({
+          paymentIntentId: p.stripePaymentIntentId!,
+          amount: toRefund,
+          reason: "requested_by_customer",
+        });
+        refundsIssued.push(`${toRefund.toFixed(2)}`);
+        remaining = Math.round((remaining - toRefund) * 100) / 100;
+      }
+    }
+
+    // --- 2. SESSION UPDATE (only after all refunds succeed) ---
+    let newStatus = session.status;
+    let newEnd = session.expectedEnd;
+    let newEndedAt = session.endedAt;
+    let deletedOverstay = 0;
+    if (effectiveEnd) {
+      newEnd = new Date(effectiveEnd);
+      if (newEnd < session.startedAt) {
+        return json({ error: "End time cannot be before session start" }, { status: 400 });
+      }
+      // Only complete the session if the new end is in the past.
+      // If it's still in the future, keep the session active with the updated expectedEnd.
+      if (newEnd <= new Date()) {
+        newStatus = "COMPLETED";
+        newEndedAt = newEnd;
+        // Parity with close action: remove overstay payments charged after the effective end.
+        const result = await prisma.payment.deleteMany({
+          where: { sessionId, type: "OVERSTAY", createdAt: { gt: newEnd } },
+        });
+        deletedOverstay = result.count;
+      } else {
+        newStatus = session.status === "OVERSTAY" ? "ACTIVE" : session.status;
+      }
+    }
+
+    await prisma.session.update({
+      where: { id: sessionId },
+      data: {
+        expectedEnd: newEnd,
+        endedAt: newEndedAt,
+        status: newStatus,
+      },
+    });
+
+    // --- 3. AUDIT ---
+    const refundSummary = refundsIssued.length > 0
+      ? ` Refunds issued: $${refundsIssued.join(" + $")}.`
+      : "";
+    const overstayNote = deletedOverstay > 0 ? ` Removed ${deletedOverstay} overstay payment(s).` : "";
+    const reasonNote = body.reason ? ` Reason: ${body.reason}.` : "";
+    await audit({
+      action: "SPOT_FREED",
+      sessionId,
+      driverId: session.driverId,
+      vehicleId: session.vehicleId,
+      spotId: session.spotId,
+      details: `ADMIN adjusted session. New end: ${newEnd.toISOString()}.${refundSummary}${overstayNote}${reasonNote} Driver: ${session.driver.name}, Spot: ${session.spot.label}.`,
+    });
+
+    return json({ success: true, action: "adjusted", refundsIssued });
+  }
+
+  if (action === "cancel-subscription") {
+    if (!stripeConfigured()) {
+      return json({ error: "Stripe not configured" }, { status: 400 });
+    }
+    const monthlyPayment = await prisma.payment.findFirst({
+      where: { sessionId, stripeSubscriptionId: { not: null } },
+      select: { stripeSubscriptionId: true },
+    });
+    const subscriptionId = monthlyPayment?.stripeSubscriptionId;
+    if (!subscriptionId) {
+      return json({ error: "No active subscription found for this session" }, { status: 400 });
+    }
+    const stripe = getStripe();
+    const immediately = body.cancelImmediately ?? false;
+    if (immediately) {
+      await stripe.subscriptions.cancel(subscriptionId);
+      // customer.subscription.deleted webhook will clamp expectedEnd + set DELINQUENT
+    } else {
+      await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+      // Access continues through expectedEnd; no webhook fires until the period ends
+    }
+    await audit({
+      action: "SUBSCRIPTION_CANCELED",
+      sessionId,
+      driverId: session.driverId,
+      details: `Admin canceled subscription ${subscriptionId} ${immediately ? "immediately" : "at period end"}.`,
+    });
+    return json({ success: true, subscriptionId, immediately });
+  }
+
   return json({ error: "Unknown action" }, { status: 400 });
 });
 
@@ -164,8 +309,8 @@ const AdminSessionCreateSchema = z.object({
   unitNumber: z.string().trim().max(50).optional(),
   nickname: z.string().trim().max(80).optional(),
   // Duration
-  durationType: z.enum(["HOURLY", "MONTHLY"]),
-  hours: z.number().int().min(1).max(72).optional(),
+  durationType: z.enum(["DAILY", "MONTHLY"]),
+  days: z.number().int().min(1).max(30).optional(),
   months: z.number().int().min(1).max(12).optional(),
   // Spot (omit for auto-assign)
   spotId: z.string().min(1).max(200).optional(),
@@ -175,8 +320,8 @@ const AdminSessionCreateSchema = z.object({
   (d) => d.licensePlate || d.unitNumber,
   { message: "Provide license plate or unit number", path: ["licensePlate"] }
 ).refine(
-  (d) => (d.durationType === "HOURLY" ? d.hours != null : d.months != null),
-  { message: "Provide hours (HOURLY) or months (MONTHLY)", path: ["hours"] }
+  (d) => (d.durationType === "DAILY" ? d.days != null : d.months != null),
+  { message: "Provide days (DAILY) or months (MONTHLY)", path: ["days"] }
 );
 
 export const POST = handler(
@@ -187,7 +332,7 @@ export const POST = handler(
     const {
       name, phone, email, vehicleType,
       licensePlate, unitNumber, nickname,
-      durationType, hours, months,
+      durationType, days, months,
       spotId, invoiceId,
     } = body;
 
@@ -246,20 +391,14 @@ export const POST = handler(
       throw conflict("This vehicle already has an active session");
     }
 
-    // ── Verify QB invoice ────────────────────────────────────────────────────
-    // When payments are required, invoiceId is mandatory and must be verified.
-    // When payments are disabled, use a synthetic ID to avoid collisions
-    // if the setting is later flipped back on.
-    let externalPaymentId: string;
-    if (settings.paymentRequired) {
-      if (!invoiceId) {
-        throw conflict("Invoice ID is required when payments are enabled");
-      }
-      await verifyAndClaimInvoice(invoiceId);
-      externalPaymentId = invoiceId;
-    } else {
-      externalPaymentId = `free_admin_${randomUUID()}`;
-    }
+    // ── Admin-created Payment reference ──────────────────────────────────────
+    // Manual admin creations don't run through Stripe Checkout. If the admin
+    // collected payment off-platform (cash, wire), they can pass an external
+    // reference; otherwise we stamp a free-mode marker. New Stripe-processed
+    // check-ins go through /api/payments/checkout, not this route.
+    const legacyReference = settings.paymentRequired && invoiceId
+      ? invoiceId
+      : `free_admin_${randomUUID()}`;
 
     // ── Assign spot ──────────────────────────────────────────────────────────
     let spot;
@@ -292,11 +431,11 @@ export const POST = handler(
       paymentType = "MONTHLY_CHECKIN";
       durationLabel = `${mths} month${mths > 1 ? "s" : ""}`;
     } else {
-      const hrs = hours!;
-      expectedEnd = addHours(now, hrs);
-      amount = hourlyRate(settings, vehicleType) * hrs;
+      const d = days!;
+      expectedEnd = addDays(now, d);
+      amount = dailyRate(settings, vehicleType) * d;
       paymentType = "CHECKIN";
-      durationLabel = `${hrs}h`;
+      durationLabel = `${d}d`;
     }
 
     // ── Create session ───────────────────────────────────────────────────────
@@ -315,7 +454,7 @@ export const POST = handler(
           create: {
             id: randomUUID(),
             type: paymentType,
-            externalPaymentId,
+            legacyQbReference: legacyReference,
             amount: settings.paymentRequired ? amount : 0,
             status: "COMPLETED",
           },
@@ -330,7 +469,7 @@ export const POST = handler(
       driverId: driver.id,
       vehicleId: vehicle.id,
       spotId: spot.id,
-      details: `ADMIN created session for ${name} — ${durationLabel}, $${(settings.paymentRequired ? amount : 0).toFixed(2)}, spot ${spot.label}, payment ${externalPaymentId}`,
+      details: `ADMIN created session for ${name} — ${durationLabel}, $${(settings.paymentRequired ? amount : 0).toFixed(2)}, spot ${spot.label}, ref ${legacyReference}`,
     });
 
     return json({ session }, { status: 201 });

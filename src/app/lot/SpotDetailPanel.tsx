@@ -47,7 +47,7 @@ function Row({ label, value, color }: { label: string; value: string; color?: st
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0" }}>
       <span style={{ color: "#636366", fontSize: 11, fontWeight: 500 }}>{label}</span>
-      <span style={{ color: color ?? "#E5E5EA", fontSize: 12, fontWeight: 500, textAlign: "right", maxWidth: "60%" }}>
+      <span style={{ color: color ?? "#1C1C1E", fontSize: 12, fontWeight: 500, textAlign: "right", maxWidth: "60%" }}>
         {value}
       </span>
     </div>
@@ -60,7 +60,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <div style={{
         fontSize: 10,
         fontWeight: 600,
-        color: "#48484A",
+        color: "#8E8E93",
         textTransform: "uppercase",
         letterSpacing: "0.06em",
         marginBottom: 6,
@@ -93,8 +93,8 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
         maxHeight: "60vh",
         transform: open ? "translateY(0)" : "translateY(100%)",
         transition: `transform ${T}`,
-        background: "#1C1C1E",
-        borderTop: "1px solid #2C2C2E",
+        background: "#FFFFFF",
+        borderTop: "1px solid #E5E5EA",
         borderRadius: "16px 16px 0 0",
         zIndex: 50,
         display: "flex",
@@ -110,8 +110,8 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
         width: 320,
         transform: open ? "translateX(0)" : "translateX(100%)",
         transition: `transform ${T}`,
-        background: "#1C1C1E",
-        borderLeft: "1px solid #2C2C2E",
+        background: "#FFFFFF",
+        borderLeft: "1px solid #E5E5EA",
         zIndex: 50,
         display: "flex",
         flexDirection: "column" as const,
@@ -127,14 +127,14 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
         alignItems: "center",
         justifyContent: "space-between",
         padding: "14px 16px",
-        borderBottom: "1px solid #2C2C2E",
+        borderBottom: "1px solid #E5E5EA",
         flexShrink: 0,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{
             fontSize: 18,
             fontWeight: 700,
-            color: "#F5F5F7",
+            color: "#1C1C1E",
             letterSpacing: "-0.02em",
           }}>
             {detail?.spotLabel ?? "—"}
@@ -194,7 +194,7 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
               width: 40,
               height: 40,
               borderRadius: 20,
-              background: "#12261C",
+              background: "#DCFCE7",
               border: "1px solid #2D7A4A",
               display: "flex",
               alignItems: "center",
@@ -227,7 +227,7 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
                 <Row label="Plate" value={detail.session.vehicle.licensePlate} />
               )}
               {detail.session.vehicle.nickname && (
-                <Row label="Nickname" value={detail.session.vehicle.nickname} color="#98989D" />
+                <Row label="Nickname" value={detail.session.vehicle.nickname} color="#6B7280" />
               )}
             </Section>
 
@@ -247,7 +247,7 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
                 color={detail.session.expectedEnd < new Date() ? "#DC2626" : "#2D7A4A"}
               />
               {detail.session.reminderSent && (
-                <Row label="Reminder" value="Sent" color="#CA8A04" />
+                <Row label="Reminder" value="Sent" color="#B45309" />
               )}
             </Section>
 
@@ -262,22 +262,22 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
                       justifyContent: "space-between",
                       alignItems: "center",
                       padding: "6px 0",
-                      borderBottom: i < detail.session!.payments.length - 1 ? "1px solid #2C2C2E" : "none",
+                      borderBottom: i < detail.session!.payments.length - 1 ? "1px solid #E5E5EA" : "none",
                     }}
                   >
                     <div>
-                      <div style={{ fontSize: 12, color: "#E5E5EA", fontWeight: 500 }}>
+                      <div style={{ fontSize: 12, color: "#1C1C1E", fontWeight: 500 }}>
                         {p.type === "CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
-                        {p.hours ? ` (${p.hours}h)` : ""}
+                        {p.days ? ` (${p.days}d)` : ""}
                       </div>
-                      <div style={{ fontSize: 10, color: "#48484A", marginTop: 1 }}>
+                      <div style={{ fontSize: 10, color: "#8E8E93", marginTop: 1 }}>
                         {formatDateTime(p.createdAt)}
                       </div>
                     </div>
                     <span style={{
                       fontSize: 13,
                       fontWeight: 600,
-                      color: p.type === "OVERSTAY" ? "#DC2626" : "#E5E5EA",
+                      color: p.type === "OVERSTAY" ? "#DC2626" : "#1C1C1E",
                       fontVariantNumeric: "tabular-nums",
                     }}>
                       ${p.amount.toFixed(2)}
@@ -291,13 +291,13 @@ export default function SpotDetailPanel({ detail, onClose, open, mobile }: Props
                   alignItems: "center",
                   padding: "8px 0 0",
                   marginTop: 4,
-                  borderTop: "1px solid #3A3A3C",
+                  borderTop: "1px solid #E5E5EA",
                 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: "#636366" }}>Total</span>
                   <span style={{
                     fontSize: 14,
                     fontWeight: 700,
-                    color: "#F5F5F7",
+                    color: "#1C1C1E",
                     fontVariantNumeric: "tabular-nums",
                   }}>
                     ${detail.session.payments.reduce((s, p) => s + p.amount, 0).toFixed(2)}

@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import type { SavedDriver, ApiDriver, ApiPayment, OverstayInfo } from "@/types/domain";
@@ -17,7 +17,7 @@ type ExitSession = {
   startedAt: string;
   spot: { label: string };
   vehicle: { licensePlate: string; type: string };
-  payments: Pick<ApiPayment, "amount" | "hours" | "type">[];
+  payments: Pick<ApiPayment, "amount" | "days" | "type">[];
 };
 
 type State =
@@ -54,8 +54,13 @@ function LoadingShell() {
 /* ─── main content ───────────────────────────────────────── */
 function ExitContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Set by /payment-complete after a successful overstay settlement — the
+  // webhook has already marked the session COMPLETED and written the
+  // Payment row; we just need to show the confirmation state.
+  const paidRedirect = searchParams.get("paid") === "1";
 
-  const [state, setState] = useState<State>("init");
+  const [state, setState] = useState<State>(paidRedirect ? "exited" : "init");
   const [driver, setDriver] = useState<ApiDriver | null>(null);
   const [session, setSession] = useState<ExitSession | null>(null);
   const [overstayInfo, setOverstayInfo] = useState<OverstayInfo | null>(null);
@@ -139,6 +144,10 @@ function ExitContent() {
 
   /* on mount: check localStorage */
   useEffect(() => {
+    // Paid-overstay redirect from /payment-complete — show the exited screen
+    // and skip identity resolution since the session is already closed.
+    if (paidRedirect) return;
+
     const saved = loadDriver();
     if (!saved) {
       setState("ask_type");
@@ -161,7 +170,7 @@ function ExitContent() {
         clearDriver();
         setState("ask_type");
       });
-  }, [resolveDriverAndSession]);
+  }, [resolveDriverAndSession, paidRedirect]);
 
   /* ── phone lookup (existing user flow) ── */
   async function handlePhoneLookup(e: React.FormEvent) {
@@ -214,42 +223,33 @@ function ExitContent() {
 
   /* ── overstay payment ── */
   async function handlePayOverstay() {
-    if (!overstayInfo) return;
+    if (!overstayInfo || !driver) return;
     setActionLoading(true);
     setError("");
     try {
-      const payData = await apiPost<{ paymentIntentId: string }>(
-        "/api/payments/create-intent",
-        {
-          amount: overstayInfo.overstayAmount,
-          description: `Overstay: ${overstayInfo.overstayHours}h`,
-        }
-      );
-
-      const exitData = await apiPost<{ success?: boolean; error?: string }>(
-        "/api/sessions/exit",
-        {
+      // Redirect to Stripe Checkout. On return to /payment-complete the
+      // webhook has already marked the session COMPLETED + written the
+      // Payment row; /payment-complete redirects back here with ?paid=1
+      // so the user sees the "exited" state.
+      const checkoutRes = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driverId: driver.id,
           sessionId: overstayInfo.sessionId,
-          driverId: driver?.id,
-          overstayPaymentId: payData.paymentIntentId,
-        }
-      );
-
-      if (exitData.success) {
-        // Trigger gate after successful overstay payment
-        await apiPost("/api/gate", {
-          driverId: driver?.id,
-          sessionId: overstayInfo.sessionId,
-          deviceId: getDeviceId(),
-          direction: "EXIT",
-        }).catch(() => {}); // gate trigger is best-effort
-        setState("exited");
-      } else {
-        setError(exitData.error || "Exit failed. Please try again.");
+          sessionPurpose: "OVERSTAY",
+          days: overstayInfo.overstayDays,
+        }),
+      });
+      const checkoutData = await checkoutRes.json();
+      if (!checkoutRes.ok || !checkoutData.checkoutUrl) {
+        setError(checkoutData.error || "Could not start payment. Please try again.");
+        setActionLoading(false);
+        return;
       }
+      window.location.href = checkoutData.checkoutUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Payment failed. Please try again.");
-    } finally {
       setActionLoading(false);
     }
   }
@@ -439,7 +439,7 @@ function ActiveSessionView({
           <div style={styles.cardRow}>
             <span style={styles.cardKey}>Paid</span>
             <span style={styles.cardVal}>
-              ${checkinPayment.amount.toFixed(2)} · {checkinPayment.hours}h
+              ${checkinPayment.amount.toFixed(2)} · {checkinPayment.days}d
             </span>
           </div>
         )}
@@ -508,11 +508,11 @@ function OverstayView({
             <div style={{ ...styles.cardDivider }} />
             <div style={styles.cardRow}>
               <span style={styles.cardKey}>Duration</span>
-              <span style={styles.cardVal}>{overstayInfo.overstayHours}h</span>
+              <span style={styles.cardVal}>{overstayInfo.overstayDays}d</span>
             </div>
             <div style={styles.cardRow}>
               <span style={styles.cardKey}>Rate</span>
-              <span style={styles.cardVal}>${overstayInfo.overstayRate}/hr</span>
+              <span style={styles.cardVal}>${overstayInfo.overstayRate}/day</span>
             </div>
             <div style={{ ...styles.cardRow, marginTop: 8 }}>
               <span style={{ ...styles.cardKey, fontWeight: 600 }}>

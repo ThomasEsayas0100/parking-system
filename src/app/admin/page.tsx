@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 
 import type { ApiSpotWithSessions, ApiAuditEntry, AppSettings, SpotLayout, LotSpotStatus, LotSpotDetail, ApiPaymentWithSession } from "@/types/domain";
 import { apiFetch, apiPost } from "@/lib/fetch";
@@ -10,6 +10,9 @@ import LotMapViewer, { countStatuses } from "@/components/lot/LotMapViewer";
 import { useEditorReducer } from "@/components/lot/editor/useEditorReducer";
 import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 import PhoneInput, { digitsOnly } from "@/components/PhoneInput";
+import ManageSessionModal from "@/app/admin/ManageSessionModal";
+import ReconcileView from "@/app/admin/ReconcileView";
+import { ToastProvider } from "@/app/admin/ToastContext";
 
 type Spot = ApiSpotWithSessions;
 type AuditEntry = ApiAuditEntry;
@@ -23,11 +26,12 @@ type SessionRow = {
   startedAt: string;
   endedAt: string | null;
   expectedEnd: string;
-  status: "ACTIVE" | "COMPLETED" | "OVERSTAY";
+  status: "ACTIVE" | "COMPLETED" | "OVERSTAY" | "CANCELLED";
+  billingStatus: "CURRENT" | "PAYMENT_FAILED" | "DELINQUENT";
   driver: { id: string; name: string; email: string; phone: string };
   vehicle: { id: string; unitNumber: string | null; licensePlate: string | null; type: "BOBTAIL" | "TRUCK_TRAILER"; nickname: string | null };
   spot: { id: string; label: string; type: "BOBTAIL" | "TRUCK_TRAILER" };
-  payments: { id: string; type: string; amount: number; hours: number | null; createdAt: string }[];
+  payments: { id: string; type: string; amount: number; days: number | null; createdAt: string; stripePaymentIntentId?: string | null; stripeSubscriptionId?: string | null; refundedAmount: number; status?: string; refunds?: { id: string; amount: number; stripeRefundId: string; qbRefundReceiptId: string | null; createdAt: string }[] }[];
 };
 
 type SessionsResponse = {
@@ -38,7 +42,7 @@ type SessionsResponse = {
   hasMore: boolean;
 };
 
-type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY";
+type StatusFilter = "" | "ACTIVE" | "COMPLETED" | "OVERSTAY" | "CANCELLED";
 
 // ---------------------------------------------------------------------------
 // Log tab config
@@ -58,24 +62,31 @@ const LOG_CATEGORIES: { key: LogFilter; label: string; actions: string[] }[] = [
 ];
 
 const ACTION_BADGE: Record<string, { color: string; bg: string; label: string }> = {
-  CHECKIN:          { color: "#34C759", bg: "#12261C", label: "Check-in" },
-  CHECKOUT:         { color: "#0A84FF", bg: "#0A1A30", label: "Check-out" },
-  EXTEND:           { color: "#F59E0B", bg: "#2A1F0A", label: "Extension" },
-  OVERSTAY_START:   { color: "#DC2626", bg: "#2C1810", label: "Overstay" },
-  OVERSTAY_PAYMENT: { color: "#EF4444", bg: "#2C1810", label: "Overstay paid" },
-  GATE_OPEN:        { color: "#8E8E93", bg: "#2C2C2E", label: "Gate" },
-  SPOT_FREED:       { color: "#F59E0B", bg: "#2A1F0A", label: "Override" },
-  REMINDER_SENT:    { color: "#14B8A6", bg: "#0A2421", label: "Reminder" },
-  OVERSTAY_ALERT:   { color: "#F87171", bg: "#2C1810", label: "Alert" },
-  SUSPICIOUS_ENTRY: { color: "#FBBF24", bg: "#2A1F0A", label: "Suspicious" },
-  GATE_DENIED:      { color: "#F87171", bg: "#2C1810", label: "Denied" },
-  ALLOWLIST_ENTRY:  { color: "#60A5FA", bg: "#0A1A30", label: "Allow list" },
+  CHECKIN:          { color: "#166534", bg: "#DCFCE7", label: "Check-in" },
+  CHECKOUT:         { color: "#1D4ED8", bg: "#DBEAFE", label: "Check-out" },
+  EXTEND:           { color: "#92400E", bg: "#FEF3C7", label: "Extension" },
+  OVERSTAY_START:   { color: "#991B1B", bg: "#FEE2E2", label: "Overstay" },
+  OVERSTAY_PAYMENT: { color: "#991B1B", bg: "#FEE2E2", label: "Overstay paid" },
+  GATE_OPEN:        { color: "#636366", bg: "#F2F2F7", label: "Gate" },
+  SPOT_FREED:       { color: "#92400E", bg: "#FEF3C7", label: "Override" },
+  REMINDER_SENT:    { color: "#115E59", bg: "#CCFBF1", label: "Reminder" },
+  OVERSTAY_ALERT:   { color: "#991B1B", bg: "#FEE2E2", label: "Alert" },
+  SUSPICIOUS_ENTRY: { color: "#78350F", bg: "#FEF3C7", label: "Suspicious" },
+  GATE_DENIED:      { color: "#991B1B", bg: "#FEE2E2", label: "Denied" },
+  ALLOWLIST_ENTRY:  { color: "#1D4ED8", bg: "#DBEAFE", label: "Allow list" },
 };
 
 const STATUS_STYLE: Record<string, { color: string; bg: string }> = {
-  ACTIVE:    { color: "#2D7A4A", bg: "#12261C" },
-  COMPLETED: { color: "#636366", bg: "#2C2C2E" },
-  OVERSTAY:  { color: "#DC2626", bg: "#2C1810" },
+  ACTIVE:    { color: "#166534", bg: "#DCFCE7" },
+  COMPLETED: { color: "#636366", bg: "#F2F2F7" },
+  OVERSTAY:  { color: "#991B1B", bg: "#FEE2E2" },
+  CANCELLED: { color: "#6B21A8", bg: "#F3E8FF" },
+};
+
+const BILLING_STATUS_STYLE: Record<string, { color: string; bg: string; label: string } | undefined> = {
+  CURRENT:        undefined,                                           // no badge — normal state
+  PAYMENT_FAILED: { color: "#92400E", bg: "#FEF3C7", label: "Payment Failed" },
+  DELINQUENT:     { color: "#7F1D1D", bg: "#FEE2E2", label: "Delinquent" },
 };
 
 // ---------------------------------------------------------------------------
@@ -96,8 +107,8 @@ function calcDuration(start: string, end: string | null): string {
   return `${mins}m`;
 }
 
-function sumPayments(payments: { amount: number }[]): number {
-  return payments.reduce((s, p) => s + p.amount, 0);
+function sumPayments(payments: { amount: number; refundedAmount: number }[]): number {
+  return payments.reduce((s, p) => s + Math.max(0, p.amount - p.refundedAmount), 0);
 }
 
 /**
@@ -113,31 +124,79 @@ const QB_BASE = process.env.NODE_ENV !== "production"
 const qbLinks = {
   invoice: (id: string) => `${QB_BASE}/app/invoice?txnId=${id}`,
   payment: (id: string) => `${QB_BASE}/app/recvpayment?txnId=${id}`,
+  salesReceipt: (id: string) => `${QB_BASE}/app/salesreceipt?txnId=${id}`,
   customer: (id: string) => `${QB_BASE}/app/customerdetail?nameId=${id}`,
   refundReceipt: (id: string) => `${QB_BASE}/app/refundreceipt?txnId=${id}`,
   creditMemo: (customerId: string) => `${QB_BASE}/app/creditmemo/create?customerId=${customerId}`,
   dashboard: () => `${QB_BASE}/app/homepage`,
 };
 
-function isRealPayment(externalId: string): boolean {
-  return !!(externalId && !externalId.startsWith("free_") && !externalId.startsWith("pi_test"));
+// Stripe dashboard deep links. Uses the live dashboard; for test mode the
+// URL pattern is the same but the route is /test/... — harmless in practice
+// because Stripe serves the right mode based on the API key used.
+const STRIPE_DASHBOARD = "https://dashboard.stripe.com";
+const stripeLinks = {
+  paymentIntent: (id: string) => `${STRIPE_DASHBOARD}/payments/${id}`,
+  charge: (id: string) => `${STRIPE_DASHBOARD}/payments/${id}`,
+  customer: (id: string) => `${STRIPE_DASHBOARD}/customers/${id}`,
+  subscription: (id: string) => `${STRIPE_DASHBOARD}/subscriptions/${id}`,
+  refund: (id: string) => `${STRIPE_DASHBOARD}/refunds/${id}`,
+};
+
+/**
+ * A "real" payment is one where actual money moved — either through Stripe
+ * (any stripe* ID present) or via a legacy QB invoice/charge. Rows flagged
+ * `free_*` in legacyQbReference are payments-disabled dev sessions.
+ */
+type PaymentRowRefs = {
+  stripePaymentIntentId: string | null;
+  stripeChargeId: string | null;
+  stripeSubscriptionId: string | null;
+  legacyQbReference: string | null;
+};
+function isRealPayment(p: PaymentRowRefs): boolean {
+  if (p.stripePaymentIntentId || p.stripeChargeId || p.stripeSubscriptionId) return true;
+  const legacy = p.legacyQbReference;
+  return !!(legacy && !legacy.startsWith("free_") && !legacy.startsWith("dev_seed_"));
+}
+
+/** Canonical Stripe deep link for a payment row, if any Stripe IDs are set. */
+function stripeDashboardUrl(p: PaymentRowRefs, testMode = false): string | null {
+  const base = testMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
+  if (p.stripePaymentIntentId) return `${base}/payments/${p.stripePaymentIntentId}`;
+  if (p.stripeChargeId) return `${base}/payments/${p.stripeChargeId}`;
+  if (p.stripeSubscriptionId) return `${base}/subscriptions/${p.stripeSubscriptionId}`;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
-// Shared inline style constants
+// Shared inline style constants — light theme
 // ---------------------------------------------------------------------------
-const DARK_BG = "#1C1C1E";
-const CARD_BG = "#2C2C2E";
-const BORDER = "#3A3A3C";
-const FG = "#F5F5F7";
-const FG_MUTED = "#8E8E93";
-const FG_DIM = "#636366";
+const DARK_BG = "#F2F2F7";
+/** Returns "Monthly (X/N)" progress label for a monthly payment within its session's billing cycle. */
+function monthlyLabel(
+  allPayments: { id: string; type: string; createdAt: string }[],
+  currentId: string,
+): string {
+  const monthly = allPayments
+    .filter(p => p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL")
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const idx = monthly.findIndex(p => p.id === currentId);
+  if (idx < 0) return "Monthly";
+  return `Monthly (${idx + 1} of ${monthly.length})`;
+}
+
+const CARD_BG = "#FFFFFF";
+const BORDER = "#E5E5EA";
+const FG = "#1C1C1E";
+const FG_MUTED = "#636366";
+const FG_DIM = "#8E8E93";
 const ACCENT = "#2D7A4A";
 const RADIUS = 12;
 
 const chip = (active: boolean, mobile: boolean): React.CSSProperties => ({
   padding: mobile ? "10px 16px" : "6px 14px", borderRadius: 20,
-  border: active ? "1px solid #F5F5F740" : `1px solid ${BORDER}`,
+  border: active ? "1px solid transparent" : `1px solid ${BORDER}`,
   background: active ? BORDER : "transparent",
   color: active ? FG : FG_MUTED,
   fontSize: mobile ? 13 : 12, fontWeight: 600,
@@ -152,7 +211,7 @@ const inputStyle: React.CSSProperties = {
 const paginationBtn = (disabled: boolean, mobile: boolean): React.CSSProperties => ({
   padding: mobile ? "10px 18px" : "6px 16px", borderRadius: 6, border: `1px solid ${BORDER}`,
   background: disabled ? "transparent" : CARD_BG,
-  color: disabled ? "#48484A" : FG,
+  color: disabled ? "#AEAEB2" : FG,
   fontSize: mobile ? 13 : 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
 });
 
@@ -164,9 +223,34 @@ export default function AdminDashboard() {
   const [spots, setSpots] = useState<Spot[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [settingsForm, setSettingsForm] = useState<Settings | null>(null);
-  const [tab, setTab] = useState<"overview" | "sessions" | "payments" | "drivers" | "log" | "settings">("overview");
+  const [tab, setTab] = useState<"overview" | "sessions" | "payments" | "reconcile" | "drivers" | "log" | "settings">("overview");
+  const [paymentsInitialSearch, setPaymentsInitialSearch] = useState("");
   const [overrideSpotId, setOverrideSpotId] = useState<string | null>(null);
   const [overrideReason, setOverrideReason] = useState("");
+
+  // Read ?tab and ?q URL params on mount so deep-links (e.g. "View in Payments") work
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const t = params.get("tab");
+    const validTabs = ["overview", "sessions", "payments", "drivers", "log", "settings"] as const;
+    if (t && (validTabs as readonly string[]).includes(t)) {
+      setTab(t as typeof tab);
+    }
+    const q = params.get("q");
+    if (q) setPaymentsInitialSearch(q);
+    if (t || q) window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+  useEffect(() => {
+    document.body.style.background = DARK_BG;
+    document.body.style.color = FG;
+    document.body.style.fontFamily = "system-ui, sans-serif";
+    return () => {
+      document.body.style.background = "";
+      document.body.style.color = "";
+      document.body.style.fontFamily = "";
+    };
+  }, []);
 
   // ── Drivers tab state ──
   type DriverRow = {
@@ -188,30 +272,42 @@ export default function AdminDashboard() {
   const [editErrors, setEditErrors] = useState<{ name?: string; email?: string; phone?: string }>({});
   const DRIVERS_LIMIT = 30;
 
+  // ── Toast notifications (money-movement events) ──
+  type AdminToast = { id: number; message: string; status: "success" | "error" };
+  const [toasts, setToasts] = useState<AdminToast[]>([]);
+  function pushToast(message: string, status: "success" | "error") {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, status }]);
+    if (status === "success") {
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 5000);
+    }
+  }
+  function dismissToast(id: number) {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }
+
   // ── Session actions state ──
-  const [sessionAction, setSessionAction] = useState<{ id: string; type: "extend" | "cancel" | "close" } | null>(null);
-  const [sessionActionHours, setSessionActionHours] = useState(4);
-  const [sessionActionReason, setSessionActionReason] = useState("");
-  const [sessionActionEndedAt, setSessionActionEndedAt] = useState("");
-  const [sessionActionLoading, setSessionActionLoading] = useState(false);
+  const [manageSession, setManageSession] = useState<SessionRow | null>(null);
 
   // ── New session modal ────────────────────────────────────────────────────
   type NsForm = {
     name: string; phone: string; email: string;
     vehicleType: "BOBTAIL" | "TRUCK_TRAILER";
     licensePlate: string; unitNumber: string; nickname: string;
-    durationType: "HOURLY" | "MONTHLY";
-    hours: number; months: number;
+    startImmediately: boolean; startDate: string; startTime: string;
+    durationType: "DAILY" | "MONTHLY";
+    days: number; months: number;
     spotMode: "auto" | "manual"; spotId: string;
-    invoiceId: string;
+    stripeId: string; qbReceiptId: string;
   };
   const NS_DEFAULT: NsForm = {
     name: "", phone: "", email: "",
     vehicleType: "TRUCK_TRAILER",
     licensePlate: "", unitNumber: "", nickname: "",
-    durationType: "HOURLY", hours: 4, months: 1,
+    startImmediately: true, startDate: "", startTime: "",
+    durationType: "DAILY", days: 1, months: 1,
     spotMode: "auto", spotId: "",
-    invoiceId: "",
+    stripeId: "", qbReceiptId: "",
   };
   const [nsOpen, setNsOpen] = useState(false);
   const [nsForm, setNsForm] = useState<NsForm>(NS_DEFAULT);
@@ -263,12 +359,27 @@ export default function AdminDashboard() {
     return p.toString();
   }, [sessSearch, sessStatus, sessOffset]);
 
+  const skipSessionSync = useRef(false);
+
   const loadSessions = useCallback(() => {
     setSessionsLoading(true);
     apiFetch<SessionsResponse>(`/api/sessions/history?${sessQueryStr}`)
-      .then((d) => setSessionsData(d))
+      .then((d) => {
+        setSessionsData(d);
+        if (skipSessionSync.current) { skipSessionSync.current = false; return; }
+        const ids = d.sessions.flatMap((s) => s.payments.map((p) => p.id));
+        if (!ids.length) return;
+        fetch("/api/admin/payments/sync-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paymentIds: ids }),
+        }).then((r) => r.json()).then((res) => {
+          if (res.synced > 0) { skipSessionSync.current = true; loadSessions(); }
+        }).catch(() => {/* silent */});
+      })
       .catch(() => setSessionsData(null))
       .finally(() => setSessionsLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessQueryStr]);
 
   const driversQueryStr = useMemo(() => {
@@ -380,6 +491,15 @@ export default function AdminDashboard() {
     else alert(d.error || "Failed to clear data");
   }
 
+  async function handleSandboxReset() {
+    if (!confirm("This will wipe ALL local DB history (drivers, vehicles, sessions, payments, audit log). Continue?")) return;
+    const res = await fetch("/api/dev/clear", { method: "POST" });
+    if (!res.ok) { alert("DB wipe failed"); return; }
+    loadData();
+    window.open("https://dashboard.stripe.com/test/developers", "_blank");
+    window.open("https://developer.intuit.com/app/developer/sandbox", "_blank");
+  }
+
   async function handleOverride(spotId: string) {
     if (!overrideReason.trim()) { alert("Provide a reason for the override."); return; }
     const res = await fetch("/api/admin/spots/override", {
@@ -411,12 +531,12 @@ export default function AdminDashboard() {
   // ── New session handlers ────────────────────────────────────────────────
   function nsSetField<K extends keyof NsForm>(k: K, v: NsForm[K]) {
     setNsForm((f) => ({ ...f, [k]: v }));
-    if (k === "invoiceId") setNsInvoice({ status: "idle", message: "" });
+    if (k === "stripeId") setNsInvoice({ status: "idle", message: "" });
     setNsErrors((e) => { const next = { ...e }; delete next[k]; return next; });
   }
 
   async function handleVerifyInvoice() {
-    const id = nsForm.invoiceId.trim();
+    const id = nsForm.stripeId.trim();
     if (!id) return;
     setNsInvoice({ status: "checking", message: "" });
     try {
@@ -447,13 +567,13 @@ export default function AdminDashboard() {
     if (digits.length !== 10) errs.phone = "Must be 10 digits";
     if (nsForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nsForm.email)) errs.email = "Invalid email";
     if (!nsForm.licensePlate.trim() && !nsForm.unitNumber.trim()) errs.licensePlate = "Provide plate or unit number";
-    if (nsForm.durationType === "HOURLY" && (nsForm.hours < 1 || nsForm.hours > 72)) errs.hours = "1–72 hours";
+    if (nsForm.durationType === "DAILY" && (nsForm.days < 1 || nsForm.days > 30)) errs.days = "1–30 days";
     if (nsForm.durationType === "MONTHLY" && (nsForm.months < 1 || nsForm.months > 12)) errs.months = "1–12 months";
     if (nsForm.spotMode === "manual" && !nsForm.spotId) errs.spotId = "Select a spot";
     // Invoice only required when payments are enabled
     if (nsPaymentRequired) {
-      if (!nsForm.invoiceId.trim()) errs.invoiceId = "Required";
-      else if (nsInvoice.status !== "ok") errs.invoiceId = "Must be verified before submitting";
+      if (!nsForm.stripeId.trim()) errs.stripeId = "Required";
+      else if (nsInvoice.status !== "ok") errs.stripeId = "Must be verified before submitting";
     }
     setNsErrors(errs);
     return Object.keys(errs).length === 0;
@@ -473,10 +593,10 @@ export default function AdminDashboard() {
         unitNumber: nsForm.unitNumber.trim() || undefined,
         nickname: nsForm.nickname.trim() || undefined,
         durationType: nsForm.durationType,
-        hours: nsForm.durationType === "HOURLY" ? nsForm.hours : undefined,
+        days: nsForm.durationType === "DAILY" ? nsForm.days : undefined,
         months: nsForm.durationType === "MONTHLY" ? nsForm.months : undefined,
         spotId: nsForm.spotMode === "manual" ? nsForm.spotId : undefined,
-        invoiceId: nsPaymentRequired ? nsForm.invoiceId.trim() : undefined,
+        stripeId: nsPaymentRequired ? nsForm.stripeId.trim() : undefined,
       });
       setNsOpen(false);
       setNsForm(NS_DEFAULT);
@@ -487,38 +607,6 @@ export default function AdminDashboard() {
     } finally {
       setNsSubmitting(false);
     }
-  }
-
-  // ── Session actions ──
-  async function handleSessionAction() {
-    if (!sessionAction) return;
-    setSessionActionLoading(true);
-    try {
-      const payload: Record<string, unknown> = {
-        sessionId: sessionAction.id,
-        action: sessionAction.type,
-      };
-      if (sessionAction.type === "extend") {
-        payload.hours = sessionActionHours;
-      } else {
-        payload.reason = sessionActionReason;
-      }
-      if (sessionAction.type === "close" && sessionActionEndedAt) {
-        payload.endedAt = new Date(sessionActionEndedAt).toISOString();
-      }
-      await fetch("/api/admin/sessions", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      setSessionAction(null);
-      setSessionActionHours(4);
-      setSessionActionReason("");
-      setSessionActionEndedAt("");
-      loadSessions();
-      loadData();
-    } catch { /* silent */ }
-    finally { setSessionActionLoading(false); }
   }
 
   // ── Driver update ──
@@ -554,13 +642,15 @@ export default function AdminDashboard() {
     { key: "overview", label: "Overview" },
     { key: "sessions", label: "Sessions" },
     { key: "payments", label: "Payments" },
+    { key: "reconcile", label: "Reconcile" },
     { key: "drivers", label: "Drivers" },
     { key: "log", label: "Log" },
     { key: "settings", label: "Settings" },
   ];
 
   return (
-    <div style={{ background: DARK_BG, minHeight: "100vh", color: FG, fontFamily: "system-ui, sans-serif" }}>
+    <ToastProvider>
+    <>
       {/* Header */}
       <div style={{ padding: mobile ? "16px 16px 0" : "20px 24px 0", borderBottom: `1px solid ${BORDER}` }}>
         <h1 style={{ fontSize: mobile ? 17 : 20, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 12 }}>
@@ -589,7 +679,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      <div style={{ padding: mobile ? "16px 16px 32px" : "24px 24px 40px" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: tab === "reconcile" ? 0 : mobile ? "16px 16px 32px" : "24px 24px 40px" }}>
 
         {/* ═══ OVERVIEW (Lot Map) ═══ */}
         {tab === "overview" && (
@@ -647,7 +737,7 @@ export default function AdminDashboard() {
           <div>
             {/* Filters */}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-              {(["", "ACTIVE", "OVERSTAY", "COMPLETED"] as StatusFilter[]).map((s) => {
+              {(["", "ACTIVE", "OVERSTAY", "COMPLETED", "CANCELLED"] as StatusFilter[]).map((s) => {
                 const active = sessStatus === s;
                 const label = s || "All";
                 return (
@@ -708,7 +798,7 @@ export default function AdminDashboard() {
                             gap: mobile ? 8 : 12,
                             alignItems: "center",
                             padding: mobile ? "12px 14px" : "14px 16px",
-                            background: isExpanded ? "#343436" : CARD_BG,
+                            background: isExpanded ? "#F4F4F5" : CARD_BG,
                             borderRadius: isExpanded ? `${RADIUS}px ${RADIUS}px 0 0` : RADIUS,
                             cursor: "pointer",
                             transition: "background 0.1s",
@@ -724,8 +814,15 @@ export default function AdminDashboard() {
 
                           {/* Driver + vehicle */}
                           <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {s.driver.name}
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {s.driver.name}
+                              </div>
+                              {s.payments.some(p => p.type === "MONTHLY_CHECKIN") && (
+                                <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", padding: "2px 6px", borderRadius: 4, background: "#EDE9FE", color: "#5B21B6", whiteSpace: "nowrap", flexShrink: 0 }}>
+                                  Monthly
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: 12, color: FG_DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {mobile ? (s.vehicle.licensePlate || vLabel) : vLabel}
@@ -745,14 +842,28 @@ export default function AdminDashboard() {
                             </div>
                           )}
 
-                          {/* Status badge */}
-                          <span style={{
-                            fontSize: mobile ? 9 : 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
-                            padding: mobile ? "3px 8px" : "4px 10px", borderRadius: 4, background: st.bg, color: st.color,
-                            whiteSpace: "nowrap",
-                          }}>
-                            {s.status}
-                          </span>
+                          {/* Status + billing badges */}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
+                            <span style={{
+                              fontSize: mobile ? 9 : 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                              padding: mobile ? "3px 8px" : "4px 10px", borderRadius: 4, background: st.bg, color: st.color,
+                              whiteSpace: "nowrap",
+                            }}>
+                              {s.status}
+                            </span>
+                            {(() => {
+                              const bs = BILLING_STATUS_STYLE[s.billingStatus];
+                              return bs ? (
+                                <span style={{
+                                  fontSize: mobile ? 8 : 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
+                                  padding: mobile ? "2px 6px" : "3px 8px", borderRadius: 4, background: bs.bg, color: bs.color,
+                                  whiteSpace: "nowrap",
+                                }}>
+                                  {bs.label}
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
 
                           {/* Total — desktop only */}
                           {!mobile && (
@@ -765,7 +876,7 @@ export default function AdminDashboard() {
                         {/* Expanded detail */}
                         {isExpanded && (
                           <div style={{
-                            background: "#343436", borderRadius: `0 0 ${RADIUS}px ${RADIUS}px`,
+                            background: "#F4F4F5", borderRadius: `0 0 ${RADIUS}px ${RADIUS}px`,
                             padding: mobile ? "12px 14px 14px" : "0 16px 16px",
                             display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr 1fr", gap: mobile ? 16 : 20,
                           }}>
@@ -785,22 +896,66 @@ export default function AdminDashboard() {
                             </DetailCol>
 
                             {/* Timing */}
-                            <DetailCol title="Timing">
-                              <DetailRow label="Started" value={fmtDate(s.startedAt)} />
-                              <DetailRow label="Expected" value={fmtDate(s.expectedEnd)} />
-                              <DetailRow label="Ended" value={fmtDate(s.endedAt)} />
-                              <DetailRow label="Duration" value={calcDuration(s.startedAt, s.endedAt)} />
-                            </DetailCol>
+                            {(() => {
+                              const isMonthlySession = s.payments.some(p => p.type === "MONTHLY_CHECKIN");
+                              const billingBadge = BILLING_STATUS_STYLE[s.billingStatus];
+                              return (
+                                <DetailCol title="Timing">
+                                  <DetailRow label="Started" value={fmtDate(s.startedAt)} />
+                                  <DetailRow label="Expected end" value={fmtDate(s.expectedEnd)} />
+                                  <DetailRow label="Ended" value={fmtDate(s.endedAt)} />
+                                  <DetailRow label="Duration" value={calcDuration(s.startedAt, s.endedAt)} />
+                                  {isMonthlySession && (
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                                      <span style={{ fontSize: 11, color: FG_MUTED }}>Billing</span>
+                                      {billingBadge ? (
+                                        <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "2px 8px", borderRadius: 4, background: billingBadge.bg, color: billingBadge.color }}>
+                                          {billingBadge.label}
+                                        </span>
+                                      ) : (
+                                        <span style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", padding: "2px 8px", borderRadius: 4, background: "#DCFCE7", color: "#166534" }}>
+                                          Current
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </DetailCol>
+                              );
+                            })()}
 
                             {/* Payments */}
                             <DetailCol title="Payments">
+                              {(() => {
+                                const subId = s.payments.find(p => p.stripeSubscriptionId)?.stripeSubscriptionId;
+                                if (!subId) return null;
+                                const stripeBase = settings?.stripeTestMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
+                                return (
+                                  <a
+                                    href={`${stripeBase}/subscriptions/${subId}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ fontSize: 11, color: "#6366F1", textDecoration: "none", display: "block", marginBottom: 8, fontWeight: 600 }}
+                                  >
+                                    Stripe Subscription ↗
+                                  </a>
+                                );
+                              })()}
                               {s.payments.map((p) => (
                                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
                                   <span style={{ color: p.type === "OVERSTAY" ? "#DC2626" : FG_MUTED }}>
-                                    {p.type === "CHECKIN" || p.type === "MONTHLY_CHECKIN" ? "Check-in" : p.type === "EXTENSION" ? "Extension" : "Overstay"}
-                                    {p.hours ? ` (${p.hours}h)` : ""}
+                                    {p.type === "CHECKIN" ? "Daily"
+                                      : p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL" ? monthlyLabel(s.payments, p.id)
+                                      : p.type === "EXTENSION" ? "Extension" : "Overstay"}
+                                    {p.days ? ` (${p.days}d)` : ""}
                                   </span>
-                                  <span style={{ color: FG, fontVariantNumeric: "tabular-nums" }}>${p.amount.toFixed(2)}</span>
+                                  {p.refundedAmount > 0 ? (
+                                    <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                                      <span style={{ color: "#9CA3AF", textDecoration: "line-through", marginRight: 4 }}>${p.amount.toFixed(2)}</span>
+                                      <span style={{ color: "#B45309", fontWeight: 600 }}>${(p.amount - p.refundedAmount).toFixed(2)}</span>
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: FG, fontVariantNumeric: "tabular-nums" }}>${p.amount.toFixed(2)}</span>
+                                  )}
                                 </div>
                               ))}
                               <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 6, paddingTop: 6, display: "flex", justifyContent: "space-between", fontSize: 12 }}>
@@ -813,82 +968,21 @@ export default function AdminDashboard() {
                             <div style={{ gridColumn: mobile ? undefined : "1 / -1", display: "flex", gap: 8, marginTop: 4 }}>
                               <a
                                 href={`/admin?tab=payments&q=${encodeURIComponent(s.driver.name)}`}
-                                style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none" }}
+                                style={{ fontSize: 11, color: "#2563EB", textDecoration: "none" }}
                               >
                                 View in Payments →
                               </a>
                             </div>
 
                             {/* Admin actions */}
-                            {s.status !== "COMPLETED" && (
+                            {s.status !== "COMPLETED" && s.status !== "CANCELLED" && (
                               <div style={{ gridColumn: mobile ? undefined : "1 / -1", borderTop: `1px solid ${BORDER}`, paddingTop: 12, marginTop: 4 }}>
-                                {sessionAction?.id === s.id ? (
-                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                                    {sessionAction.type === "extend" && (
-                                      <>
-                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Add hours:</span>
-                                        <input type="number" min={1} max={720} value={sessionActionHours} onChange={(e) => setSessionActionHours(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
-                                      </>
-                                    )}
-                                    {sessionAction.type === "cancel" && (
-                                      <>
-                                        <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
-                                        <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="Required" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-                                      </>
-                                    )}
-                                    {sessionAction.type === "close" && (() => {
-                                      const started = new Date(s.startedAt);
-                                      const minDt = started.toISOString().slice(0, 16);
-                                      const maxDt = new Date().toISOString().slice(0, 16);
-                                      return (
-                                        <>
-                                          <span style={{ fontSize: 12, color: FG_MUTED }}>Driver left on:</span>
-                                          <input
-                                            type="datetime-local"
-                                            value={sessionActionEndedAt}
-                                            onChange={(e) => setSessionActionEndedAt(e.target.value)}
-                                            min={minDt}
-                                            max={maxDt}
-                                            style={{ ...inputStyle, width: mobile ? "100%" : 220 }}
-                                          />
-                                          <span style={{ fontSize: 10, color: FG_DIM, width: "100%" }}>
-                                            Between {started.toLocaleString()} and now
-                                          </span>
-                                          <span style={{ fontSize: 12, color: FG_MUTED }}>Reason:</span>
-                                          <input type="text" value={sessionActionReason} onChange={(e) => setSessionActionReason(e.target.value)} placeholder="e.g. Driver called — left last Tuesday" style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
-                                          <div style={{ width: "100%", fontSize: 11, color: "#F59E0B", marginTop: 2 }}>
-                                            Overstay payments after this date will be removed.
-                                          </div>
-                                        </>
-                                      );
-                                    })()}
-                                    <button
-                                      onClick={handleSessionAction}
-                                      disabled={sessionActionLoading}
-                                      style={{
-                                        padding: "6px 14px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "#fff",
-                                        background: sessionAction.type === "cancel" ? "#DC2626" : sessionAction.type === "close" ? "#F59E0B" : "#2D7A4A",
-                                      }}
-                                    >
-                                      {sessionActionLoading ? "..." : sessionAction.type === "extend" ? "Extend" : sessionAction.type === "close" ? "Close & Backdate" : "Cancel Session"}
-                                    </button>
-                                    <button onClick={() => { setSessionAction(null); setSessionActionEndedAt(""); setSessionActionReason(""); }} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG_MUTED, fontSize: 12, cursor: "pointer" }}>
-                                      Back
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "extend" })} style={{ padding: "6px 14px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Extend Time
-                                    </button>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "close" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #F59E0B40", background: "transparent", color: "#F59E0B", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Close &amp; Backdate
-                                    </button>
-                                    <button onClick={() => setSessionAction({ id: s.id, type: "cancel" })} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #DC262640", background: "transparent", color: "#DC2626", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                      Cancel Session
-                                    </button>
-                                  </div>
-                                )}
+                                <button
+                                  onClick={() => setManageSession(s)}
+                                  style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #2D7A4A", background: "transparent", color: "#2D7A4A", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                                >
+                                  Manage
+                                </button>
                               </div>
                             )}
                           </div>
@@ -918,7 +1012,8 @@ export default function AdminDashboard() {
         )}
 
         {/* ═══ PAYMENTS ═══ */}
-        {tab === "payments" && <PaymentsTab mobile={mobile} />}
+        {tab === "payments" && <PaymentsTab mobile={mobile} initialSearch={paymentsInitialSearch} />}
+        {tab === "reconcile" && <ReconcileView mobile={mobile} />}
 
         {/* ═══ DRIVERS ═══ */}
         {tab === "drivers" && (
@@ -1021,7 +1116,7 @@ export default function AdminDashboard() {
                         {/* Status */}
                         {!mobile && (
                           activeSession ? (
-                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A", whiteSpace: "nowrap" }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "4px 10px", borderRadius: 4, background: "#DCFCE7", color: "#166534", whiteSpace: "nowrap" }}>
                               Active · {activeSession.spot.label}
                             </span>
                           ) : (
@@ -1137,7 +1232,7 @@ export default function AdminDashboard() {
                     id="paymentRequired"
                     checked={settingsForm.paymentRequired ?? true}
                     onChange={(e) => setSettingsForm({ ...settingsForm, paymentRequired: e.target.checked })}
-                    style={{ width: 16, height: 16, accentColor: FG }}
+                    style={{ width: 16, height: 16, accentColor: ACCENT }}
                   />
                   <label htmlFor="paymentRequired" style={{ fontSize: 12, color: FG_MUTED, cursor: "pointer" }}>
                     Require payment at check-in (disable for testing)
@@ -1147,17 +1242,17 @@ export default function AdminDashboard() {
               <SettingsGroup title="QuickBooks Connection">
                 <QBConnectionStatus />
               </SettingsGroup>
-              <SettingsGroup title="Hourly Rates">
-                <SettingsField label="Bobtail ($/hr)" value={settingsForm.hourlyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateBobtail: v })} step="0.01" />
-                <SettingsField label="Truck/Trailer ($/hr)" value={settingsForm.hourlyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, hourlyRateTruck: v })} step="0.01" />
+              <SettingsGroup title="Daily Rates">
+                <SettingsField label="Bobtail ($/day)" value={settingsForm.dailyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, dailyRateBobtail: v })} step="0.01" />
+                <SettingsField label="Truck/Trailer ($/day)" value={settingsForm.dailyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, dailyRateTruck: v })} step="0.01" />
               </SettingsGroup>
               <SettingsGroup title="Monthly Rates">
                 <SettingsField label="Bobtail ($/month)" value={settingsForm.monthlyRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, monthlyRateBobtail: v })} step="0.01" />
                 <SettingsField label="Truck/Trailer ($/month)" value={settingsForm.monthlyRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, monthlyRateTruck: v })} step="0.01" />
               </SettingsGroup>
               <SettingsGroup title="Overstay Rates (Premium)">
-                <SettingsField label="Bobtail ($/hr)" value={settingsForm.overstayRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateBobtail: v })} step="0.01" />
-                <SettingsField label="Truck/Trailer ($/hr)" value={settingsForm.overstayRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateTruck: v })} step="0.01" />
+                <SettingsField label="Bobtail ($/day)" value={settingsForm.overstayRateBobtail} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateBobtail: v })} step="0.01" />
+                <SettingsField label="Truck/Trailer ($/day)" value={settingsForm.overstayRateTruck} onChange={(v) => setSettingsForm({ ...settingsForm, overstayRateTruck: v })} step="0.01" />
               </SettingsGroup>
               <SettingsGroup title="Notifications">
                 <SettingsField label="Reminder before expiry (min)" value={settingsForm.reminderMinutesBefore} onChange={(v) => setSettingsForm({ ...settingsForm, reminderMinutesBefore: v })} />
@@ -1180,7 +1275,7 @@ export default function AdminDashboard() {
                     id="bobtailOverflow"
                     checked={settingsForm.bobtailOverflow ?? true}
                     onChange={(e) => setSettingsForm({ ...settingsForm, bobtailOverflow: e.target.checked })}
-                    style={{ width: 16, height: 16, accentColor: FG }}
+                    style={{ width: 16, height: 16, accentColor: ACCENT }}
                   />
                   <label htmlFor="bobtailOverflow" style={{ fontSize: 12, color: FG_MUTED, cursor: "pointer" }}>
                     Allow bobtails in truck spots when bobtail spots are full
@@ -1210,19 +1305,56 @@ export default function AdminDashboard() {
                     style={{ ...inputStyle, minHeight: 220, fontFamily: "inherit", resize: "vertical" as const, lineHeight: 1.5 }}
                     placeholder="Enter the terms drivers must accept to check in..."
                   />
-                  <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 6 }}>
+                  <div style={{ fontSize: 10, color: "#92400E", marginTop: 6 }}>
                     ⚠ Have a Texas attorney review this text before production. Clickwrap consent is only enforceable if the terms are clear and the driver actively agrees.
                   </div>
                 </div>
               </SettingsGroup>
 
-              <button type="submit" style={{ padding: "12px 24px", background: FG, color: DARK_BG, border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", alignSelf: "flex-start" }}>
+              <button type="submit" style={{ padding: "12px 24px", background: ACCENT, color: "#fff", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer", alignSelf: "flex-start" }}>
                 Save Settings
               </button>
             </form>
 
             {/* Allow list management */}
             <AllowListManager mobile={mobile} />
+
+            {/* Sandbox reset — visible only when Stripe test keys are active */}
+            {settings?.stripeTestMode && (
+              <div style={{ marginTop: 40, padding: "20px 24px", background: "#1C1010", border: "1px solid #7F1D1D", borderRadius: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#FCA5A5", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+                  Sandbox Reset
+                </div>
+                <p style={{ fontSize: 13, color: "#FCA5A5", opacity: 0.75, margin: "0 0 16px" }}>
+                  Wipes all local history (drivers, sessions, payments, audit log) and opens the Stripe and QuickBooks sandbox reset pages in new tabs. Spots, rates, and settings are preserved.
+                </p>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={handleSandboxReset}
+                    style={{ padding: "10px 20px", background: "#7F1D1D", border: "1px solid #DC2626", borderRadius: 7, color: "#FCA5A5", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    Wipe Local DB + Open Reset Pages
+                  </button>
+                  <a
+                    href="https://dashboard.stripe.com/test/developers"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ padding: "10px 20px", background: "transparent", border: "1px solid #555", borderRadius: 7, color: "#999", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none" }}
+                  >
+                    Stripe Dashboard ↗
+                  </a>
+                  <a
+                    href="https://developer.intuit.com/app/developer/sandbox"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ padding: "10px 20px", background: "transparent", border: "1px solid #555", borderRadius: 7, color: "#999", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none" }}
+                  >
+                    QB Developer Portal ↗
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1370,11 +1502,49 @@ export default function AdminDashboard() {
 
               <div style={{ height: 1, background: BORDER }} />
 
+              {/* ── Start ── */}
+              <div>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Start</p>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={nsForm.startImmediately}
+                    onChange={(e) => nsSetField("startImmediately", e.target.checked)}
+                    style={{ width: 15, height: 15, accentColor: ACCENT, cursor: "pointer" }}
+                  />
+                  <span style={{ fontSize: 13, color: FG }}>Start immediately</span>
+                </label>
+                {!nsForm.startImmediately && (
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Date <span style={{ color: "#EF4444" }}>*</span></label>
+                      <input
+                        type="date"
+                        value={nsForm.startDate}
+                        onChange={(e) => nsSetField("startDate", e.target.value)}
+                        style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Time <span style={{ color: "#EF4444" }}>*</span></label>
+                      <input
+                        type="time"
+                        value={nsForm.startTime}
+                        onChange={(e) => nsSetField("startTime", e.target.value)}
+                        style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ height: 1, background: BORDER }} />
+
               {/* ── Duration ── */}
               <div>
                 <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Duration</p>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  {(["HOURLY", "MONTHLY"] as const).map((t) => (
+                  {(["DAILY", "MONTHLY"] as const).map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -1386,27 +1556,27 @@ export default function AdminDashboard() {
                         color: nsForm.durationType === t ? ACCENT : FG_DIM,
                       }}
                     >
-                      {t === "HOURLY" ? "Hourly (1–72h)" : "Monthly (1–12mo)"}
+                      {t === "DAILY" ? "Daily (1–30d)" : "Monthly (1–12mo)"}
                     </button>
                   ))}
                 </div>
-                {nsForm.durationType === "HOURLY" ? (
+                {nsForm.durationType === "DAILY" ? (
                   <div>
-                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Hours <span style={{ color: "#EF4444" }}>*</span></label>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>Days <span style={{ color: "#EF4444" }}>*</span></label>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <button type="button" onClick={() => nsSetField("hours", Math.max(1, nsForm.hours - 1))}
+                      <button type="button" onClick={() => nsSetField("days", Math.max(1, nsForm.days - 1))}
                         style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>−</button>
                       <input
-                        type="number" min={1} max={72}
-                        value={nsForm.hours}
-                        onChange={(e) => nsSetField("hours", Math.min(72, Math.max(1, Number(e.target.value) || 1)))}
+                        type="number" min={1} max={30}
+                        value={nsForm.days}
+                        onChange={(e) => nsSetField("days", Math.min(30, Math.max(1, Number(e.target.value) || 1)))}
                         style={{ ...inputStyle, width: 70, textAlign: "center" }}
                       />
-                      <button type="button" onClick={() => nsSetField("hours", Math.min(72, nsForm.hours + 1))}
+                      <button type="button" onClick={() => nsSetField("days", Math.min(30, nsForm.days + 1))}
                         style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${BORDER}`, background: "transparent", color: FG, fontSize: 18, cursor: "pointer" }}>+</button>
-                      <span style={{ fontSize: 13, color: FG_DIM }}>hours</span>
+                      <span style={{ fontSize: 13, color: FG_DIM }}>days</span>
                     </div>
-                    {nsErrors.hours && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 4 }}>{nsErrors.hours}</p>}
+                    {nsErrors.days && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 4 }}>{nsErrors.days}</p>}
                   </div>
                 ) : (
                   <div>
@@ -1474,7 +1644,7 @@ export default function AdminDashboard() {
                     </select>
                     {nsErrors.spotId && <p style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>{nsErrors.spotId}</p>}
                     {availableSpots.length === 0 && (
-                      <p style={{ fontSize: 11, color: "#F59E0B", marginTop: 4 }}>No available spots — all spots occupied.</p>
+                      <p style={{ fontSize: 11, color: "#92400E", marginTop: 4 }}>No available spots — all spots occupied.</p>
                     )}
                   </div>
                 )}
@@ -1482,51 +1652,41 @@ export default function AdminDashboard() {
 
               <div style={{ height: 1, background: BORDER }} />
 
-              {/* ── QB Invoice ── */}
+              {/* ── Payment Reference ── */}
               <div>
-                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 4 }}>QuickBooks Invoice</p>
+                <p style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 12 }}>Payment Reference</p>
                 {!nsPaymentRequired && (
-                  <p style={{ fontSize: 11, color: "#F59E0B", marginBottom: 12 }}>
-                    Payments are disabled — invoice is optional. A free session will be created.
+                  <p style={{ fontSize: 11, color: "#92400E", marginBottom: 12 }}>
+                    Payments are disabled — fields are optional. A free session will be created.
                   </p>
                 )}
-                {nsPaymentRequired && (
-                  <p style={{ fontSize: 11, color: FG_DIM, marginBottom: 12 }}>
-                    The invoice must exist and be fully paid in QB before submitting. Verify it here first.
-                  </p>
-                )}
-                <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  <input
-                    type="text"
-                    value={nsForm.invoiceId}
-                    onChange={(e) => nsSetField("invoiceId", e.target.value.trim())}
-                    placeholder="QB invoice ID (e.g. 150)"
-                    style={{ ...inputStyle, flex: 1, ...(nsErrors.invoiceId ? { borderColor: "#EF4444" } : {}) }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleVerifyInvoice}
-                    disabled={!nsForm.invoiceId.trim() || nsInvoice.status === "checking"}
-                    style={{
-                      padding: "0 18px", borderRadius: 8, border: `1px solid ${BORDER}`,
-                      background: "transparent", color: FG, fontSize: 13, fontWeight: 600,
-                      cursor: !nsForm.invoiceId.trim() || nsInvoice.status === "checking" ? "default" : "pointer",
-                      opacity: !nsForm.invoiceId.trim() ? 0.5 : 1,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {nsInvoice.status === "checking" ? "Checking…" : "Verify"}
-                  </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>
+                      Stripe ID{nsPaymentRequired && <span style={{ color: "#EF4444" }}> *</span>}
+                    </label>
+                    <input
+                      type="text"
+                      value={nsForm.stripeId}
+                      onChange={(e) => nsSetField("stripeId", e.target.value.trim())}
+                      placeholder="pi_xxx, in_xxx, ch_xxx…"
+                      style={{ ...inputStyle, width: "100%", boxSizing: "border-box", ...(nsErrors.stripeId ? { borderColor: "#EF4444" } : {}) }}
+                    />
+                    {nsErrors.stripeId && (
+                      <p style={{ fontSize: 11, color: "#EF4444", marginTop: 2 }}>{nsErrors.stripeId}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: FG_DIM, display: "block", marginBottom: 4 }}>QB Receipt #</label>
+                    <input
+                      type="text"
+                      value={nsForm.qbReceiptId}
+                      onChange={(e) => nsSetField("qbReceiptId", e.target.value.trim())}
+                      placeholder="e.g. 4521"
+                      style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+                    />
+                  </div>
                 </div>
-                {nsInvoice.status === "ok" && (
-                  <p style={{ fontSize: 12, color: "#30D158", fontWeight: 600 }}>✓ {nsInvoice.message}</p>
-                )}
-                {nsInvoice.status === "error" && (
-                  <p style={{ fontSize: 12, color: "#EF4444" }}>✕ {nsInvoice.message}</p>
-                )}
-                {nsErrors.invoiceId && nsInvoice.status !== "ok" && (
-                  <p style={{ fontSize: 11, color: "#EF4444", marginTop: 2 }}>{nsErrors.invoiceId}</p>
-                )}
               </div>
 
               {/* ── Submit ── */}
@@ -1563,9 +1723,52 @@ export default function AdminDashboard() {
         </div>
       )}
 
+    {manageSession && (
+      <ManageSessionModal
+        session={manageSession}
+        settings={settings}
+        onClose={() => setManageSession(null)}
+        onSuccess={() => loadSessions()}
+      />
+    )}
+
+    {/* Toast notifications — top-right, money-movement events */}
+    <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none" }}>
+      {toasts.map(t => (
+        <div
+          key={t.id}
+          style={{
+            pointerEvents: "all",
+            background: t.status === "success" ? "#14532D" : "#7F1D1D",
+            border: `1px solid ${t.status === "success" ? "#16A34A" : "#DC2626"}`,
+            color: "#fff",
+            borderRadius: 10,
+            padding: "12px 14px",
+            maxWidth: 380,
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-start",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+            animation: "slideInRight 0.2s ease",
+          }}
+        >
+          <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>{t.status === "success" ? "✓" : "⚠"}</span>
+          <span style={{ flex: 1, fontSize: 13, lineHeight: 1.45 }}>{t.message}</span>
+          <button
+            onClick={() => dismissToast(t.id)}
+            style={{ background: "none", border: "none", color: "rgba(255,255,255,0.6)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0 }}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
     </div>
+    <style>{`@keyframes slideInRight { from { transform: translateX(32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`}</style>
+    </>
+    </ToastProvider>
   );
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Sub-components
@@ -1586,47 +1789,337 @@ type PaymentSummary = {
 type QBPaymentRecord = { id: string; date: string; amount: number; customerName: string; memo: string; method: string };
 type QBProfitLoss = { totalIncome: number; totalExpenses: number; netIncome: number } | null;
 
-function PaymentsTab({ mobile }: { mobile: boolean }) {
+type StripeRefundRow = { id: string; amount: number; createdAt: string; status: string | null; reason: string | null };
+type DbRefundRow = { stripeRefundId: string; qbRefundReceiptId: string | null };
+
+function TransactionDetailsPopup({ payment, siblingPayments, onClose, stripeTestMode }: { payment: PaymentRow; siblingPayments: PaymentRow[]; onClose: () => void; stripeTestMode: boolean }) {
+  const stripeBase = stripeTestMode ? "https://dashboard.stripe.com/test" : "https://dashboard.stripe.com";
+
+  const [stripeRefunds, setStripeRefunds] = useState<StripeRefundRow[]>([]);
+  const [dbRefunds, setDbRefunds] = useState<DbRefundRow[]>(payment.refunds.map(r => ({ stripeRefundId: r.stripeRefundId, qbRefundReceiptId: r.qbRefundReceiptId })));
+  const [loadingRefunds, setLoadingRefunds] = useState(!!payment.stripeChargeId);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [qbSalesReceiptId, setQbSalesReceiptId] = useState<string | null>(payment.qbSalesReceiptId);
+
+  const fetchRefunds = () => {
+    if (!payment.stripePaymentIntentId && !payment.stripeChargeId) return;
+    fetch(`/api/admin/payments/${payment.id}/stripe-charges`)
+      .then(r => r.json())
+      .then(data => {
+        setStripeRefunds(data.stripeRefunds ?? []);
+        setDbRefunds(data.dbRefunds ?? []);
+      })
+      .catch(() => {
+        setStripeRefunds(payment.refunds.map(r => ({ id: r.stripeRefundId, amount: r.amount, createdAt: r.createdAt, status: null, reason: null })));
+      })
+      .finally(() => setLoadingRefunds(false));
+  };
+
+  useEffect(() => {
+    fetchRefunds();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payment.id, payment.stripeChargeId]);
+
+  const syncToQB = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const [receiptData, refundsData] = await Promise.all([
+        fetch(`/api/admin/payments/${payment.id}/sync-receipt`, { method: "POST" }).then(r => r.json()),
+        fetch(`/api/admin/payments/${payment.id}/sync-refunds`, { method: "POST" }).then(r => r.json()),
+      ]);
+      if (receiptData.ok) setQbSalesReceiptId(receiptData.qbSalesReceiptId);
+      if (refundsData.ok) fetchRefunds();
+      const errors = [
+        !receiptData.ok ? (receiptData.error ?? "Receipt sync failed") : null,
+        !refundsData.ok ? (refundsData.error ?? "Refund sync failed") : null,
+      ].filter(Boolean);
+      if (errors.length) {
+        setSyncMsg(errors.join(" · "));
+      } else {
+        const parts = [
+          !receiptData.alreadySynced ? "Receipt written" : null,
+          (refundsData.refundedAmount ?? 0) > 0 ? `Refunds: $${(refundsData.refundedAmount as number).toFixed(2)}` : null,
+        ].filter(Boolean);
+        setSyncMsg(parts.length ? parts.join(" · ") : "Already up to date");
+      }
+    } catch {
+      setSyncMsg("Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const isStripePayment = !!(payment.stripeChargeId || payment.stripePaymentIntentId || payment.stripeSubscriptionId);
+  const paymentMissingQb = isStripePayment && !qbSalesReceiptId;
+
+  // Position-aware label for monthly payments: "Check-in (1/3)", "Renewal (2/3)", etc.
+  const monthlyPayments = siblingPayments
+    .filter(p => p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL")
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const isMonthly = payment.type === "MONTHLY_CHECKIN" || payment.type === "MONTHLY_RENEWAL";
+  const monthlyTotal = monthlyPayments.length;
+  const monthlyIndex = isMonthly ? monthlyPayments.findIndex(p => p.id === payment.id) : -1;
+
+  const baseTypeLabel: Record<string, string> = {
+    CHECKIN: "Daily",
+    EXTENSION: "Extension",
+    OVERSTAY: "Overstay",
+  };
+
+  const typeLabel = isMonthly && monthlyIndex >= 0
+    ? monthlyLabel(siblingPayments, payment.id)
+    : (baseTypeLabel[payment.type] ?? payment.type);
+
+  const sessionStatus = payment.session?.status;
+  const spotLabel = payment.session?.spot?.label ?? null;
+
+  const truncId = (id: string) => id.length > 10 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id;
+  const stripeLabel = (id: string) => {
+    if (id.startsWith("ch_"))  return "View Charge ↗";
+    if (id.startsWith("re_"))  return "View Refund ↗";
+    if (id.startsWith("in_"))  return "View Invoice ↗";
+    if (id.startsWith("sub_")) return "View Subscription ↗";
+    return "View Payment ↗";
+  };
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) +
+      " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  };
+
+  const thStyle: React.CSSProperties = { textAlign: "left", fontSize: 11, fontWeight: 600, color: "#6B7280", textTransform: "uppercase", letterSpacing: 0.5, padding: "0 12px 10px 0", borderBottom: "1px solid #E5E7EB" };
+  const tdStyle: React.CSSProperties = { padding: "10px 12px 10px 0", verticalAlign: "top", fontSize: 13, color: "#111827", borderBottom: "1px solid #F3F4F6" };
+  const tdLast: React.CSSProperties = { ...tdStyle, borderBottom: "none" };
+
+  const hasRows = stripeRefunds.length > 0;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: "#FFFFFF", borderRadius: 12, boxShadow: "0 20px 60px rgba(0,0,0,0.25)", padding: "24px 28px", width: "min(95vw, 720px)", maxHeight: "90vh", overflowY: "auto", position: "relative" }}
+      >
+        <button
+          onClick={onClose}
+          style={{ position: "absolute", top: 14, right: 16, background: "none", border: "none", color: "#9CA3AF", fontSize: 22, cursor: "pointer", lineHeight: 1, padding: 4 }}
+        >×</button>
+
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#111827", marginBottom: 2 }}>Transaction Details</div>
+        <div style={{ fontSize: 12, color: "#6B7280", marginBottom: payment.stripeSubscriptionId ? 10 : 20 }}>
+          {payment.session?.driver?.name ?? "Unknown driver"}
+          {spotLabel ? ` · Spot ${spotLabel}` : ""}
+        </div>
+
+        {payment.stripeSubscriptionId && (
+          <div style={{ marginBottom: 16 }}>
+            <a
+              href={`${stripeBase}/subscriptions/${payment.stripeSubscriptionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 12, color: "#6366F1", textDecoration: "none", fontWeight: 600 }}
+            >
+              View subscription in Stripe ↗
+            </a>
+          </div>
+        )}
+
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Date & Time</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Amount</th>
+              <th style={thStyle}>Type</th>
+              <th style={thStyle}>Stripe</th>
+              <th style={thStyle}>QuickBooks</th>
+            </tr>
+          </thead>
+          <tbody>
+            {/* Payment row */}
+            <tr>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {fmtDate(payment.createdAt)}
+              </td>
+              <td style={{ ...(hasRows ? tdStyle : tdLast), textAlign: "right", fontWeight: 600, color: "#059669" }}>
+                +${payment.amount.toFixed(2)}
+                {payment.days ? <div style={{ fontSize: 11, fontWeight: 400, color: "#6B7280" }}>{payment.days}d</div> : null}
+              </td>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {typeLabel}
+              </td>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {payment.stripePaymentIntentId && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: "#6366F1", textDecoration: "none" }}>
+                      {stripeLabel(payment.stripePaymentIntentId)}
+                    </a>
+                    <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>{truncId(payment.stripePaymentIntentId)}</span>
+                  </div>
+                )}
+                {payment.legacyQbReference && !payment.stripePaymentIntentId && (
+                  <span style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{payment.legacyQbReference}</span>
+                )}
+                {!payment.stripePaymentIntentId && !payment.legacyQbReference && (
+                  <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
+                )}
+              </td>
+              <td style={hasRows ? tdStyle : tdLast}>
+                {qbSalesReceiptId ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <a href={qbLinks.salesReceipt(qbSalesReceiptId)} target="_blank" rel="noopener noreferrer"
+                      style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
+                      View Receipt ↗
+                    </a>
+                    <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>#{qbSalesReceiptId}</span>
+                  </div>
+                ) : paymentMissingQb ? (
+                  <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
+                ) : (
+                  <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
+                )}
+              </td>
+            </tr>
+
+            {/* Refund rows — sourced from Stripe live fetch */}
+            {loadingRefunds ? (
+              <tr>
+                <td colSpan={5} style={{ ...tdLast, color: "#9CA3AF", fontSize: 12, paddingTop: 12 }}>
+                  Loading refunds from Stripe…
+                </td>
+              </tr>
+            ) : [...stripeRefunds].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()).map((r, i) => {
+              const isLast = i === stripeRefunds.length - 1;
+              const db = dbRefunds.find(d => d.stripeRefundId === r.id);
+              const qbRefundReceiptId = db?.qbRefundReceiptId ?? null;
+              return (
+                <tr key={r.id}>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    {fmtDate(r.createdAt)}
+                  </td>
+                  <td style={{ ...(isLast ? tdLast : tdStyle), textAlign: "right", fontWeight: 600, color: "#DC2626" }}>
+                    −${r.amount.toFixed(2)}
+                  </td>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    Refund
+                  </td>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    {payment.stripePaymentIntentId ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <a href={`${stripeBase}/payments/${payment.stripePaymentIntentId}`} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 11, color: "#6366F1", textDecoration: "none" }}>
+                          {stripeLabel(r.id)}
+                        </a>
+                        <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>{truncId(r.id)}</span>
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#9CA3AF" }}>—</span>
+                    )}
+                    {r.status && r.status !== "succeeded" && (
+                      <div style={{ fontSize: 11, color: "#F59E0B" }}>{r.status}</div>
+                    )}
+                  </td>
+                  <td style={isLast ? tdLast : tdStyle}>
+                    {qbRefundReceiptId ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <a href={qbLinks.refundReceipt(qbRefundReceiptId)} target="_blank" rel="noopener noreferrer"
+                          style={{ fontSize: 11, color: "#16A34A", textDecoration: "none", fontFamily: "monospace" }}>
+                          View Receipt ↗
+                        </a>
+                        <span style={{ fontSize: 10, color: "#9CA3AF", fontFamily: "monospace" }}>#{qbRefundReceiptId}</span>
+                      </div>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#DC2626", fontWeight: 500 }}>⚠ No receipt</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+
+        {/* Current status footer */}
+        <div style={{ marginTop: 16, padding: "10px 14px", background: "#F9FAFB", borderRadius: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "#6B7280" }}>Current status:</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#111827", flex: 1 }}>
+            {sessionStatus === "ACTIVE" ? "Active" : sessionStatus === "OVERSTAY" ? "Overstay" : sessionStatus === "COMPLETED" ? "Completed" : sessionStatus === "CANCELLED" ? "Cancelled" : (sessionStatus ?? "—")}
+            {spotLabel ? ` · Spot ${spotLabel}` : ""}
+          </span>
+          {isStripePayment && (() => {
+            const allSynced = !!qbSalesReceiptId && dbRefunds.every(r => r.qbRefundReceiptId);
+            return (
+              <button
+                onClick={syncToQB}
+                disabled={syncing || allSynced}
+                title={allSynced ? "All receipts already generated" : undefined}
+                style={{ fontSize: 11, padding: "3px 10px", borderRadius: 5, border: `1px solid ${allSynced ? "#E5E7EB" : "#D1FAE5"}`, background: allSynced ? "#F9FAFB" : "#ECFDF5", color: allSynced ? "#9CA3AF" : "#065F46", cursor: (syncing || allSynced) ? "default" : "pointer", opacity: syncing ? 0.6 : 1 }}
+              >
+                {syncing ? "Syncing…" : "Generate Receipts"}
+              </button>
+            );
+          })()}
+          {syncMsg && <span style={{ fontSize: 11, color: syncMsg.startsWith("Sync failed") || syncMsg.includes("failed") ? "#DC2626" : "#16A34A" }}>{syncMsg}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialSearch?: string }) {
   const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
   const [dailyRevenue, setDailyRevenue] = useState<{ date: string; amount: number }[]>([]);
+  const [divergentCount, setDivergentCount] = useState(0);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
   const [loading, setLoading] = useState(true);
+  const [selectedPayment, setSelectedPayment] = useState<PaymentRow | null>(null);
+
+  const skipPaymentsSync = useRef(false);
+  const [stripeTestMode, setStripeTestMode] = useState(false);
   const LIMIT = 30;
 
-  // QB data
+  // Stripe reconciliation (read-only divergence check — never mutates DB)
   const [qbPayments, setQbPayments] = useState<QBPaymentRecord[]>([]);
   const [qbPL, setQbPL] = useState<QBProfitLoss>(null);
   const [qbConnected, setQbConnected] = useState(false);
   const [qbLoading, setQbLoading] = useState(true);
+  const [lastStripeWebhookAt, setLastStripeWebhookAt] = useState<string | null>(null);
+  const [flaggedStripeIds, setFlaggedStripeIds] = useState<string[]>([]);
 
-  // QB reconciliation
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<{
-    checked: number;
-    updated: number;
-    errors: { paymentId: string; error: string }[];
+    stripeChargesChecked: number;
+    dbPaymentsChecked: number;
+    inStripeNotDb: string[];
+    inDbNotStripe: string[];
+    flaggedCount: number;
   } | null>(null);
-  const [syncKey, setSyncKey] = useState(0);
 
   const syncWithQB = useCallback(() => {
     setSyncing(true);
     setSyncResult(null);
-    fetch("/api/admin/qb-reconcile", { method: "POST" })
+    fetch("/api/admin/stripe-reconcile", { method: "POST" })
       .then((r) => r.json())
-      .then((d) => {
-        setSyncResult({ checked: d.checked, updated: d.updated, errors: d.errors ?? [] });
-        if (d.updated > 0) setSyncKey((k) => k + 1); // refresh payment list
-      })
-      .catch(() => setSyncResult({ checked: 0, updated: 0, errors: [{ paymentId: "", error: "Sync failed — QB may not be connected" }] }))
+      .then((d) => setSyncResult(d))
+      .catch(() => setSyncResult({
+        stripeChargesChecked: 0,
+        dbPaymentsChecked: 0,
+        inStripeNotDb: [],
+        inDbNotStripe: [],
+        flaggedCount: -1,
+      }))
       .finally(() => setSyncing(false));
   }, []);
 
   // Load internal payments
-  useEffect(() => {
+  const loadPaymentsData = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams({ limit: String(LIMIT), offset: String(offset) });
     if (typeFilter) params.set("type", typeFilter);
@@ -1638,40 +2131,75 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
         setSummary(d.summary ?? null);
         setTotal(d.total ?? 0);
         if (d.dailyRevenue) setDailyRevenue(d.dailyRevenue);
+        if (typeof d.divergentCount === "number") setDivergentCount(d.divergentCount);
+        if (skipPaymentsSync.current) { skipPaymentsSync.current = false; return; }
+        const ids = (d.payments ?? []).map((p: { id: string }) => p.id);
+        if (!ids.length) return;
+        fetch("/api/admin/payments/sync-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paymentIds: ids }),
+        }).then((r) => r.json()).then((res) => {
+          if (res.synced > 0) { skipPaymentsSync.current = true; loadPaymentsData(); }
+        }).catch(() => {/* silent */});
       })
       .finally(() => setLoading(false));
-  }, [offset, typeFilter, search, syncKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offset, typeFilter, search]);
 
-  // Load QB data
+  useEffect(() => { loadPaymentsData(); }, [loadPaymentsData]);
+
+  // Surface QB connection + Stripe webhook status (Sales Receipt writes
+  // depend on QB; reconciliation status depends on webhook heartbeat).
   useEffect(() => {
     setQbLoading(true);
-    fetch("/api/admin/qb-data")
+    fetch("/api/settings")
       .then((r) => r.json())
       .then((d) => {
-        setQbConnected(d.connected);
-        setQbPayments(d.qbPayments ?? []);
-        setQbPL(d.profitLoss ?? null);
+        setQbConnected(!!d.settings?.qbConnected);
+        setLastStripeWebhookAt(d.settings?.lastStripeWebhookAt ?? null);
+        setFlaggedStripeIds(d.settings?.stripeReconcileFlaggedIds ?? []);
+        setStripeTestMode(!!d.settings?.stripeTestMode);
+        setQbPayments([]);
+        setQbPL(null);
       })
       .catch(() => setQbConnected(false))
       .finally(() => setQbLoading(false));
-  }, []);
+  }, [syncResult]);
+
+  const stripeWebhookStatus = lastStripeWebhookAt
+    ? `Last Stripe webhook: ${new Date(lastStripeWebhookAt).toLocaleString()}`
+    : "No Stripe webhooks received yet";
 
   // Reset offset on filter change
   useEffect(() => { setOffset(0); }, [typeFilter, search]);
 
-  // Reconciliation — find QB payments not in our system
-  const internalPaymentIds = new Set(payments.map((p) => p.externalPaymentId));
-  const unmatchedQB = qbPayments.filter((qb) => !internalPaymentIds.has(qb.id));
+  // Legacy QB reconciliation is retired — Stripe is the source of truth.
+  // A Stripe divergence check runs from the Sync button (see task #36).
+  // These two references are kept to avoid breaking the unused old UI
+  // fragments below; they produce an empty set.
+  const internalPaymentIds = new Set<string>();
+  const unmatchedQB: typeof qbPayments = [];
 
   const typeLabels: Record<string, string> = {
-    CHECKIN: "Check-in",
+    CHECKIN: "Daily",
     MONTHLY_CHECKIN: "Monthly",
+    MONTHLY_RENEWAL: "Monthly",
     EXTENSION: "Extension",
     OVERSTAY: "Overstay",
   };
 
   return (
     <div>
+      {selectedPayment && (
+        <TransactionDetailsPopup
+          payment={selectedPayment}
+          siblingPayments={payments.filter(p => p.session?.id && p.session.id === selectedPayment.session?.id)}
+          onClose={() => setSelectedPayment(null)}
+          stripeTestMode={stripeTestMode}
+        />
+      )}
+
       {/* Summary cards */}
       {summary && (
         <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(5, 1fr)", gap: 10, marginBottom: 20 }}>
@@ -1692,7 +2220,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
 
       {/* QB quick link */}
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-        <a href={qbLinks.dashboard()} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#60A5FA", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
+        <a href={qbLinks.dashboard()} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#2563EB", textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}>
           Open QuickBooks ↗
         </a>
       </div>
@@ -1725,7 +2253,7 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
                       width={0.8}
                       height={h}
                       rx={0.2}
-                      fill={d.amount === 0 ? `${BORDER}` : isToday ? "#2D7A4A" : "#2D7A4A80"}
+                      fill={d.amount === 0 ? "#D1D5DB" : isToday ? "#2D7A4A" : "#2D7A4A80"}
                     />
                     {/* Show amount on hover via title */}
                     <title>{`${d.date}: $${d.amount.toFixed(2)}`}</title>
@@ -1748,50 +2276,44 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, color: FG_DIM, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
-                QuickBooks Reconciliation
+                Stripe Reconciliation
               </div>
-              {qbPL && (
-                <div style={{ fontSize: 13, color: FG_MUTED }}>
-                  QB Income: <strong style={{ color: FG }}>${qbPL.totalIncome.toFixed(2)}</strong>
-                  {" · "}Expenses: <strong style={{ color: FG }}>${qbPL.totalExpenses.toFixed(2)}</strong>
-                  {" · "}Net: <strong style={{ color: qbPL.netIncome >= 0 ? "#2D7A4A" : "#DC2626" }}>${qbPL.netIncome.toFixed(2)}</strong>
-                </div>
-              )}
+              <div style={{ fontSize: 12, color: FG_MUTED }}>
+                {stripeWebhookStatus}
+              </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {unmatchedQB.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#2A1F0A", color: "#F59E0B" }}>
-                  {unmatchedQB.length} unmatched QB payment{unmatchedQB.length !== 1 ? "s" : ""}
+              {flaggedStripeIds.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#FEF3C7", color: "#92400E" }}>
+                  {flaggedStripeIds.length} flagged
                 </span>
               )}
-              {unmatchedQB.length === 0 && qbPayments.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 4, background: "#12261C", color: "#2D7A4A" }}>
-                  All matched
-                </span>
-              )}
-              {/* Sync internal payment statuses with QB ground truth */}
               <button
                 onClick={syncWithQB}
                 disabled={syncing}
                 style={{ fontSize: 12, fontWeight: 600, padding: "5px 12px", borderRadius: 6, border: `1px solid ${BORDER}`, background: "transparent", color: syncing ? FG_DIM : FG_MUTED, cursor: syncing ? "default" : "pointer" }}
               >
-                {syncing ? "Syncing…" : "Sync with QB"}
+                {syncing ? "Checking…" : "Run Stripe reconcile"}
               </button>
             </div>
           </div>
-          {/* Sync result summary */}
+          {/* Reconcile result summary */}
           {syncResult && (
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${BORDER}`, fontSize: 12 }}>
-              {syncResult.errors.length > 0 && syncResult.updated === 0 ? (
+              {syncResult.flaggedCount < 0 ? (
                 <span style={{ color: "#DC2626" }}>
-                  Sync error: {syncResult.errors[0]?.error ?? "Unknown error"}
+                  Stripe reconcile failed — check that STRIPE_SECRET_KEY is set.
+                </span>
+              ) : syncResult.flaggedCount === 0 ? (
+                <span style={{ color: "#2D7A4A" }}>
+                  All {syncResult.stripeChargesChecked} Stripe charge{syncResult.stripeChargesChecked !== 1 ? "s" : ""} in last 90 days match our DB.
                 </span>
               ) : (
-                <span style={{ color: syncResult.updated > 0 ? "#F59E0B" : "#2D7A4A" }}>
-                  {syncResult.updated > 0
-                    ? `Updated ${syncResult.updated} payment${syncResult.updated !== 1 ? "s" : ""} (checked ${syncResult.checked})`
-                    : `All ${syncResult.checked} payment${syncResult.checked !== 1 ? "s" : ""} in sync`}
-                  {syncResult.errors.length > 0 && ` · ${syncResult.errors.length} error(s)`}
+                <span style={{ color: "#92400E" }}>
+                  {syncResult.inStripeNotDb.length} in Stripe but not our DB
+                  {" · "}
+                  {syncResult.inDbNotStripe.length} in our DB but not Stripe
+                  {" · "}check logs + reach out to support if this persists
                 </span>
               )}
             </div>
@@ -1800,13 +2322,26 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
       )}
       {!qbConnected && !qbLoading && (
         <div style={{ fontSize: 12, color: FG_DIM, marginBottom: 16, padding: "10px 14px", background: CARD_BG, borderRadius: 8, border: `1px solid ${BORDER}` }}>
-          QuickBooks not connected. Go to Settings → QuickBooks Connection to enable reconciliation.
+          QuickBooks not connected — Sales Receipts won't be written to QB.
+          Stripe continues to work for payments; once QB is connected (Settings → QuickBooks Connection), new charges will mirror to QB automatically.
+        </div>
+      )}
+
+      {/* Divergence warning bar */}
+      {divergentCount > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#2C1810", border: "1px solid #DC2626", borderRadius: 8, marginBottom: 16, fontSize: 13, color: "#FCA5A5" }}>
+          <span style={{ fontSize: 16 }}>⚠</span>
+          <span>
+            <strong>{divergentCount} QB accounting {divergentCount === 1 ? "gap" : "gaps"} detected</strong>
+            {" "}— {divergentCount === 1 ? "a payment or refund is" : "some payments or refunds are"} missing a matching QB receipt.
+            Click <strong>Details</strong> on flagged rows to see which side is missing.
+          </span>
         </div>
       )}
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-        {["", "CHECKIN", "MONTHLY_CHECKIN", "EXTENSION", "OVERSTAY"].map((t) => (
+        {["", "CHECKIN", "MONTHLY_CHECKIN", "MONTHLY_RENEWAL", "EXTENSION", "OVERSTAY"].map((t) => (
           <button key={t || "ALL"} onClick={() => setTypeFilter(t)} style={chip(typeFilter === t, mobile)}>
             {t ? typeLabels[t] : "All"}
           </button>
@@ -1816,154 +2351,206 @@ function PaymentsTab({ mobile }: { mobile: boolean }) {
         </div>
       </div>
 
-      {/* Payment list */}
+      {/* Payment ledger */}
       {loading ? (
         <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>Loading…</p>
       ) : payments.length === 0 ? (
         <p style={{ color: FG_DIM, textAlign: "center", padding: 40 }}>No payments found.</p>
       ) : (
         <>
-          <div style={{ fontSize: 11, color: FG_DIM, marginBottom: 10 }}>
-            {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} payments
+          <div style={{ fontSize: 11, color: FG_DIM, marginBottom: 8 }}>
+            Showing {offset + 1}–{Math.min(offset + LIMIT, total)} of {total} transactions
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            {payments.map((p) => {
-              const real = isRealPayment(p.externalPaymentId);
-              const custId = p.session?.driver?.qbCustomerId;
-              const isRefunded = p.status === "REFUNDED";
-              const statusColor = isRefunded ? "#F59E0B" : p.status === "VOIDED" ? "#DC2626" : p.status === "DISPUTED" ? "#EF4444" : undefined;
 
-              return (
-                <div key={p.id} style={{
-                  background: CARD_BG, borderRadius: 8, padding: mobile ? "10px 12px" : "12px 16px",
-                  opacity: isRefunded ? 0.7 : 1,
-                }}>
-                  {/* Main row */}
-                  <div style={{
-                    display: "grid",
-                    gridTemplateColumns: mobile ? "1fr auto" : "auto 1fr auto auto",
-                    gap: mobile ? 6 : 12,
-                    alignItems: "center",
-                  }}>
-                    {/* Type badge + status */}
-                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em",
-                        padding: "3px 8px", borderRadius: 4, whiteSpace: "nowrap",
-                        background: p.type === "OVERSTAY" ? "#2C1810" : p.type === "MONTHLY_CHECKIN" ? "#0A1A30" : "#12261C",
-                        color: p.type === "OVERSTAY" ? "#DC2626" : p.type === "MONTHLY_CHECKIN" ? "#60A5FA" : "#2D7A4A",
-                      }}>
-                        {typeLabels[p.type] ?? p.type}
-                      </span>
-                      {statusColor && (
-                        <span style={{ fontSize: 9, fontWeight: 700, color: statusColor, textTransform: "uppercase" }}>
-                          {p.status}
+          {/* Table */}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "#F1F5F9", borderBottom: `2px solid ${BORDER}` }}>
+                  {[
+                    { label: "Date",         align: "left"  },
+                    { label: "Type",         align: "left"  },
+                    { label: "Driver",       align: "left"  },
+                    { label: "Plate · Spot", align: "left",  hide: mobile },
+                    { label: "Hrs",          align: "right", hide: mobile },
+                    { label: "Amount",       align: "right" },
+                    { label: "Payment",      align: "center"},
+                    { label: "Session",      align: "center"},
+                    { label: "Links",        align: "right" },
+                  ].filter(c => !c.hide).map(c => (
+                    <th key={c.label} style={{
+                      padding: "8px 10px", textAlign: c.align as "left"|"right"|"center",
+                      fontWeight: 700, fontSize: 10, textTransform: "uppercase",
+                      letterSpacing: "0.07em", color: FG_DIM, whiteSpace: "nowrap",
+                    }}>
+                      {c.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {payments.map((p, idx) => {
+                  const real = isRealPayment(p);
+                  const stripeUrl = stripeDashboardUrl(p, stripeTestMode);
+                  const stripeCustId = p.session?.driver?.stripeCustomerId;
+                  const qbCustId = (p.session?.driver as { qbCustomerId?: string } | undefined)?.qbCustomerId;
+                  const isRefunded         = p.status === "REFUNDED";
+                  const isPartiallyRefunded = p.status === "PARTIALLY_REFUNDED";
+                  const isDisputed         = p.status === "DISPUTED";
+                  const rowBg = idx % 2 === 0 ? CARD_BG : "#F8FAFC";
+
+                  const typeBadgeStyle: React.CSSProperties = {
+                    display: "inline-block",
+                    fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+                    padding: "2px 6px", borderRadius: 3, whiteSpace: "nowrap",
+                    background: p.type === "OVERSTAY" ? "#FEE2E2"
+                              : (p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL") ? "#DBEAFE"
+                              : "#DCFCE7",
+                    color:      p.type === "OVERSTAY" ? "#DC2626"
+                              : (p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL") ? "#2563EB"
+                              : "#2D7A4A",
+                  };
+
+                  const cell: React.CSSProperties = {
+                    padding: "9px 10px", borderBottom: `1px solid ${BORDER}`, verticalAlign: "middle",
+                  };
+
+                  return (
+                    <tr key={p.id} style={{ background: rowBg }}>
+                      {/* Date */}
+                      <td style={{ ...cell, whiteSpace: "nowrap", color: FG_DIM, minWidth: 90 }}>
+                        {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        <div style={{ fontSize: 10, color: "#4B5563" }}>
+                          {new Date(p.createdAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+                        </div>
+                      </td>
+
+                      {/* Type */}
+                      <td style={{ ...cell }}>
+                        <span style={typeBadgeStyle}>
+                          {(p.type === "MONTHLY_CHECKIN" || p.type === "MONTHLY_RENEWAL")
+                            ? monthlyLabel(payments.filter(q => q.session?.id && q.session.id === p.session?.id), p.id)
+                            : (typeLabels[p.type] ?? p.type)}
                         </span>
+                      </td>
+
+                      {/* Driver */}
+                      <td style={{ ...cell, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ fontWeight: 600, color: FG }}>{p.session?.driver?.name ?? "—"}</span>
+                        {mobile && (
+                          <div style={{ fontSize: 10, color: FG_DIM }}>
+                            {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Plate · Spot (desktop) */}
+                      {!mobile && (
+                        <td style={{ ...cell, color: FG_DIM, whiteSpace: "nowrap" }}>
+                          {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"}
+                        </td>
                       )}
-                    </div>
 
-                    {/* Driver + vehicle + date */}
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: FG, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {p.session?.driver?.name ?? "—"}
-                      </div>
-                      <div style={{ fontSize: 11, color: FG_DIM }}>
-                        {p.session?.vehicle?.licensePlate ?? "—"} · {p.session?.spot?.label ?? "—"} · {fmtDate(p.createdAt)}
-                      </div>
-                    </div>
+                      {/* Days (desktop) */}
+                      {!mobile && (
+                        <td style={{ ...cell, textAlign: "right", color: FG_DIM, whiteSpace: "nowrap" }}>
+                          {p.days ? `${p.days}d` : "—"}
+                        </td>
+                      )}
 
-                    {/* QB actions — desktop */}
-                    {!mobile && (
-                      <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 10 }}>
-                        {real && (
-                          <a href={qbLinks.invoice(p.externalPaymentId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Invoice ↗
-                          </a>
-                        )}
-                        {real && custId && (
-                          <a href={qbLinks.customer(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Customer ↗
-                          </a>
-                        )}
-                        {real && !isRefunded && custId && (
-                          <a href={qbLinks.creditMemo(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            Refund ↗
-                          </a>
-                        )}
-                        {real && p.refundExternalId && (
-                          <a href={qbLinks.refundReceipt(p.refundExternalId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none", whiteSpace: "nowrap" }}>
-                            View Refund ↗
-                          </a>
-                        )}
-                        {!real && (
-                          <span style={{ color: FG_DIM }}>
-                            {p.externalPaymentId.startsWith("free_") ? "Free" : "Test"}
+                      {/* Amount */}
+                      <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>
+                        {p.refundedAmount > 0 ? (
+                          <>
+                            <div style={{ fontSize: 11, color: "#9CA3AF", textDecoration: "line-through", fontVariantNumeric: "tabular-nums" }}>
+                              ${p.amount.toFixed(2)}
+                            </div>
+                            <div style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: isRefunded ? "#92400E" : "#B45309" }}>
+                              ${(p.amount - p.refundedAmount).toFixed(2)}
+                            </div>
+                          </>
+                        ) : (
+                          <span style={{
+                            fontWeight: 700, fontVariantNumeric: "tabular-nums",
+                            color: isDisputed ? "#EF4444" : FG,
+                            textDecoration: undefined,
+                          }}>
+                            ${p.amount.toFixed(2)}
                           </span>
                         )}
-                      </div>
-                    )}
+                      </td>
 
-                    {/* Amount */}
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{
-                        fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums",
-                        color: isRefunded ? "#F59E0B" : p.type === "OVERSTAY" ? "#DC2626" : FG,
-                        textDecoration: isRefunded ? "line-through" : undefined,
-                      }}>
-                        ${p.amount.toFixed(2)}
-                      </div>
-                      {p.refundedAmount > 0 && (
-                        <div style={{ fontSize: 10, color: "#F59E0B" }}>
-                          -${p.refundedAmount.toFixed(2)} refunded
+                      {/* Payment status */}
+                      <td style={{ ...cell, textAlign: "center", whiteSpace: "nowrap" }}>
+                        {isRefunded          && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>REFUNDED</span>}
+                        {isPartiallyRefunded && <span style={{ fontSize: 9, fontWeight: 700, color: "#B45309", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>PARTIAL REFUND</span>}
+                        {isDisputed          && <span style={{ fontSize: 9, fontWeight: 700, color: "#EF4444", background: "#FEE2E2", padding: "2px 6px", borderRadius: 3 }}>DISPUTED</span>}
+                        {!isRefunded && !isPartiallyRefunded && !isDisputed && (
+                          <span style={{ fontSize: 9, color: "#2D7A4A", fontWeight: 600 }}>PAID</span>
+                        )}
+                      </td>
+
+                      {/* Session status */}
+                      <td style={{ ...cell, textAlign: "center", whiteSpace: "nowrap" }}>
+                        {p.session?.status === "ACTIVE"    && <span style={{ fontSize: 9, fontWeight: 700, color: "#2D7A4A", background: "#DCFCE7", padding: "2px 6px", borderRadius: 3 }}>ACTIVE</span>}
+                        {p.session?.status === "OVERSTAY"  && <span style={{ fontSize: 9, fontWeight: 700, color: "#92400E", background: "#FEF3C7", padding: "2px 6px", borderRadius: 3 }}>OVERSTAY</span>}
+                        {p.session?.status === "COMPLETED" && <span style={{ fontSize: 9, fontWeight: 700, color: "#636366", background: "#F2F2F7", padding: "2px 6px", borderRadius: 3 }}>COMPLETED</span>}
+                        {p.session?.status === "CANCELLED" && <span style={{ fontSize: 9, fontWeight: 700, color: "#6B21A8", background: "#F3E8FF", padding: "2px 6px", borderRadius: 3 }}>CANCELLED</span>}
+                        {!p.session && <span style={{ fontSize: 9, color: "#C7C7CC" }}>—</span>}
+                      </td>
+
+                      {/* Links */}
+                      <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>
+                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", alignItems: "center" }}>
+                          {real && stripeUrl && (
+                            <a href={stripeUrl} target="_blank" rel="noopener noreferrer"
+                               style={{ fontSize: 11, color: "#635BFF", textDecoration: "none", fontWeight: 500 }}>
+                              Stripe ↗
+                            </a>
+                          )}
+                          <button
+                            onClick={() => setSelectedPayment(p)}
+                            style={{ fontSize: 11, color: "#6366F1", background: "none", border: "1px solid #6366F1", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontWeight: 500 }}
+                          >
+                            Details
+                          </button>
+                          {!real && (
+                            <span style={{ fontSize: 10, color: FG_DIM }}>
+                              {p.legacyQbReference?.startsWith("free_") ? "Free" : "Test"}
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Mobile actions row */}
-                  {mobile && real && (
-                    <div style={{ display: "flex", gap: 10, marginTop: 6, fontSize: 10 }}>
-                      <a href={qbLinks.invoice(p.externalPaymentId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none" }}>Invoice ↗</a>
-                      {custId && <a href={qbLinks.customer(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#60A5FA", textDecoration: "none" }}>Customer ↗</a>}
-                      {!isRefunded && custId && <a href={qbLinks.creditMemo(custId)} target="_blank" rel="noopener noreferrer" style={{ color: "#F59E0B", textDecoration: "none" }}>Refund ↗</a>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           {/* Unmatched QB payments */}
           {unmatchedQB.length > 0 && (
-            <div style={{ marginTop: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#F59E0B", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+            <div style={{ marginTop: 24 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#92400E", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
                 Unmatched QuickBooks Payments
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                {unmatchedQB.map((qb) => (
-                  <div key={qb.id} style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "10px 14px", background: "#2A1F0A", borderRadius: 8, border: "1px solid #F59E0B30",
-                    gap: 12,
-                  }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, color: "#F59E0B", fontWeight: 600 }}>{qb.customerName}</div>
-                      <div style={{ fontSize: 11, color: FG_DIM }}>{qb.date} · {qb.method}</div>
-                    </div>
-                    <a
-                      href={qbLinks.payment(qb.id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: 11, color: "#60A5FA", textDecoration: "none", whiteSpace: "nowrap" }}
-                    >
-                      View in QB ↗
-                    </a>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#F59E0B", fontVariantNumeric: "tabular-nums" }}>
-                      ${qb.amount.toFixed(2)}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <tbody>
+                  {unmatchedQB.map((qb, idx) => (
+                    <tr key={qb.id} style={{ background: idx % 2 === 0 ? "#FEF3C7" : "#FFFBEB", borderBottom: `1px solid #D97706` }}>
+                      <td style={{ padding: "8px 10px", color: "#92400E", fontWeight: 600 }}>{qb.customerName}</td>
+                      <td style={{ padding: "8px 10px", color: FG_DIM }}>{qb.date} · {qb.method}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: "#92400E", fontVariantNumeric: "tabular-nums" }}>${qb.amount.toFixed(2)}</td>
+                      <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                        <a href={qbLinks.payment(qb.id)} target="_blank" rel="noopener noreferrer"
+                           style={{ fontSize: 11, color: "#2563EB", textDecoration: "none" }}>
+                          QB ↗
+                        </a>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 
@@ -2025,7 +2612,7 @@ function QBConnectionStatus() {
           Company ID: {realmId}
         </div>
         {tokenExpiringSoon && (
-          <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "#3D2800", border: "1px solid #C07000", fontSize: 12, color: "#FFAB00" }}>
+          <div style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, background: "#FEF3C7", border: "1px solid #D97706", fontSize: 12, color: "#92400E" }}>
             ⚠ QB token expires within 14 days — reconnect soon to avoid payment failures.
           </div>
         )}
@@ -2142,7 +2729,7 @@ function AllowListManager({ mobile }: { mobile: boolean }) {
       </div>
 
       {feedback && (
-        <p style={{ fontSize: 12, color: feedback.ok ? "#30D158" : "#EF4444", marginBottom: 12 }}>
+        <p style={{ fontSize: 12, color: feedback.ok ? "#16A34A" : "#EF4444", marginBottom: 12 }}>
           {feedback.msg}
         </p>
       )}

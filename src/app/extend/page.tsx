@@ -34,13 +34,14 @@ function ExtendContent() {
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [driverId, setDriverId] = useState<string | null>(null);
-  const [hours, setHours] = useState(1);
-  const [hourlyRate, setHourlyRate] = useState(0);
+  const [days, setDays] = useState(1);
+  const [dailyRate, setDailyRate] = useState(0);
   const [currentEnd, setCurrentEnd] = useState<Date | null>(null);
   const [spotLabel, setSpotLabel] = useState("");
   const [driverName, setDriverName] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [isMonthly, setIsMonthly] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -62,9 +63,10 @@ function ExtendContent() {
           vehicle?: { type: string };
           spot?: { label: string };
           driver?: { name: string };
+          payments?: { type: string }[];
         } | null;
       }>(`/api/sessions?driverId=${saved.id}`),
-      apiFetch<{ settings: { hourlyRateBobtail: number; hourlyRateTruck: number } }>(
+      apiFetch<{ settings: { dailyRateBobtail: number; dailyRateTruck: number } }>(
         "/api/settings"
       ),
     ])
@@ -74,15 +76,20 @@ function ExtendContent() {
             router.replace(`/exit`);
             return;
           }
+          if (sessionData.session.payments?.some((p) => p.type === "MONTHLY_CHECKIN")) {
+            setIsMonthly(true);
+            setLoading(false);
+            return;
+          }
           setSessionId(sessionData.session.id);
           setCurrentEnd(new Date(sessionData.session.expectedEnd));
           setSpotLabel(sessionData.session.spot?.label ?? "");
           setDriverName(sessionData.session.driver?.name ?? "");
           const rate =
             sessionData.session.vehicle?.type === "BOBTAIL"
-              ? settingsData.settings.hourlyRateBobtail
-              : settingsData.settings.hourlyRateTruck;
-          setHourlyRate(rate);
+              ? settingsData.settings.dailyRateBobtail
+              : settingsData.settings.dailyRateTruck;
+          setDailyRate(rate);
         } else {
           setLoadError("No active session found.");
         }
@@ -94,9 +101,9 @@ function ExtendContent() {
       });
   }, [router]);
 
-  const totalAmount = hourlyRate * hours;
+  const totalAmount = dailyRate * days;
   const newEnd = currentEnd
-    ? new Date(currentEnd.getTime() + hours * 60 * 60 * 1000)
+    ? new Date(currentEnd.getTime() + days * 24 * 60 * 60 * 1000)
     : null;
 
   async function handleExtend(e: React.FormEvent) {
@@ -106,22 +113,28 @@ function ExtendContent() {
     setError("");
 
     try {
-      const payData = await apiPost<{ paymentIntentId: string }>(
-        "/api/payments/create-intent",
-        { amount: totalAmount, description: `Parking extension: ${hours}h` }
-      );
-
-      await apiPost("/api/sessions/extend", {
-        sessionId,
-        driverId,
-        hours,
-        paymentId: payData.paymentIntentId,
+      // Redirect to Stripe Checkout. The webhook (handleExtension) updates
+      // the session expectedEnd and writes the Payment row; /payment-complete
+      // then redirects to /welcome.
+      const checkoutRes = await fetch("/api/payments/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driverId,
+          sessionId,
+          sessionPurpose: "EXTENSION",
+          days,
+        }),
       });
-
-      router.replace(`/confirmation`);
+      const checkoutData = await checkoutRes.json();
+      if (!checkoutRes.ok || !checkoutData.checkoutUrl) {
+        setError(checkoutData.error ?? "Could not start payment. Please try again.");
+        setSubmitting(false);
+        return;
+      }
+      window.location.href = checkoutData.checkoutUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
-    } finally {
       setSubmitting(false);
     }
   }
@@ -130,6 +143,28 @@ function ExtendContent() {
     return (
       <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <p style={{ color: "var(--fg-subtle)", fontFamily: "var(--font-display)" }}>Loading session…</p>
+      </div>
+    );
+  }
+
+  if (isMonthly) {
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ textAlign: "center", maxWidth: 360 }}>
+          <div style={{ width: 52, height: 52, borderRadius: "50%", background: "#DCFCE7", border: "2px solid var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, margin: "0 auto 20px" }}>
+            ↻
+          </div>
+          <p style={{ fontSize: 18, fontWeight: 700, color: "var(--fg)", marginBottom: 10 }}>Monthly subscription active</p>
+          <p style={{ fontSize: 14, color: "var(--fg-subtle)", marginBottom: 28, lineHeight: 1.6 }}>
+            Your parking renews automatically each month — no action needed. If you have questions about your subscription, please contact the lot manager.
+          </p>
+          <button
+            onClick={() => router.replace("/welcome")}
+            style={{ padding: "12px 24px", background: "var(--accent)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 15, cursor: "pointer" }}
+          >
+            Back to home
+          </button>
+        </div>
       </div>
     );
   }
@@ -307,7 +342,7 @@ function ExtendContent() {
               textAlign: "center",
             }}
           >
-            Additional Hours · <span style={{ fontWeight: 400 }}>Horas adicionales</span>
+            Additional Days · <span style={{ fontWeight: 400 }}>Días adicionales</span>
           </p>
           <div
             style={{
@@ -319,19 +354,19 @@ function ExtendContent() {
           >
             <button
               type="button"
-              onClick={() => setHours((h) => Math.max(1, h - 1))}
-              disabled={hours <= 1}
-              aria-label="Decrease hours"
+              onClick={() => setDays((d) => Math.max(1, d - 1))}
+              disabled={days <= 1}
+              aria-label="Decrease days"
               style={{
                 width: 54,
                 height: 54,
                 borderRadius: "50%",
                 border: "2px solid var(--border)",
-                background: hours <= 1 ? "var(--border)" : "var(--input-bg)",
-                color: hours <= 1 ? "var(--fg-subtle)" : "var(--fg)",
+                background: days <= 1 ? "var(--border)" : "var(--input-bg)",
+                color: days <= 1 ? "var(--fg-subtle)" : "var(--fg)",
                 fontSize: 28,
                 fontWeight: 700,
-                cursor: hours <= 1 ? "default" : "pointer",
+                cursor: days <= 1 ? "default" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -353,28 +388,28 @@ function ExtendContent() {
                   display: "block",
                 }}
               >
-                {hours}
+                {days}
               </span>
               <p style={{ fontSize: 13, color: "var(--fg-subtle)", marginTop: 4, fontWeight: 500 }}>
-                {hours === 1 ? "hour" : "hours"}
+                {days === 1 ? "day" : "days"}
               </p>
             </div>
 
             <button
               type="button"
-              onClick={() => setHours((h) => Math.min(72, h + 1))}
-              disabled={hours >= 72}
-              aria-label="Increase hours"
+              onClick={() => setDays((d) => Math.min(30, d + 1))}
+              disabled={days >= 30}
+              aria-label="Increase days"
               style={{
                 width: 54,
                 height: 54,
                 borderRadius: "50%",
                 border: "none",
-                background: hours >= 72 ? "var(--border)" : "var(--accent)",
-                color: hours >= 72 ? "var(--fg-subtle)" : "#fff",
+                background: days >= 30 ? "var(--border)" : "var(--accent)",
+                color: days >= 30 ? "var(--fg-subtle)" : "#fff",
                 fontSize: 28,
                 fontWeight: 700,
-                cursor: hours >= 72 ? "default" : "pointer",
+                cursor: days >= 30 ? "default" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",

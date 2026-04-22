@@ -85,7 +85,7 @@ export async function POST() {
   const pickedBobtail = bobtailSpots.filter((_, i) => i % 4 === 0); // ~5 spots
 
   const now = Date.now();
-  const hour = 60 * 60 * 1000;
+  const day = 24 * 60 * 60 * 1000;
 
   // Session definitions: [spotId, driverIdx, vehicleIdx, expectedEndOffset, status, paymentAmount]
   type SessionDef = {
@@ -95,25 +95,25 @@ export async function POST() {
     expectedEnd: Date;
     status: "ACTIVE" | "OVERSTAY";
     amount: number;
-    hours: number;
+    days: number;
     paymentType: "CHECKIN" | "MONTHLY_CHECKIN";
   };
 
   const sessionDefs: SessionDef[] = [
     // Active truck sessions — various time remaining
-    { spot: pickedTruck[0], driverIdx: 0, vehicleIdx: 0, expectedEnd: new Date(now + 6 * hour),   status: "ACTIVE"   as const, amount: 90,  hours: 6,  paymentType: "CHECKIN"        as const },
-    { spot: pickedTruck[1], driverIdx: 1, vehicleIdx: 1, expectedEnd: new Date(now + 12 * hour),  status: "ACTIVE"   as const, amount: 180, hours: 12, paymentType: "CHECKIN"        as const },
-    { spot: pickedTruck[2], driverIdx: 3, vehicleIdx: 3, expectedEnd: new Date(now + 2 * hour),   status: "ACTIVE"   as const, amount: 30,  hours: 2,  paymentType: "CHECKIN"        as const },
-    { spot: pickedTruck[3], driverIdx: 0, vehicleIdx: 0, expectedEnd: new Date(now + 24 * hour),  status: "ACTIVE"   as const, amount: 360, hours: 24, paymentType: "CHECKIN"        as const },
-    { spot: pickedTruck[4], driverIdx: 1, vehicleIdx: 1, expectedEnd: new Date(now + 48 * hour),  status: "ACTIVE"   as const, amount: 720, hours: 48, paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[0], driverIdx: 0, vehicleIdx: 0, expectedEnd: new Date(now + 1 * day),    status: "ACTIVE"   as const, amount: 30,   days: 1,  paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[1], driverIdx: 1, vehicleIdx: 1, expectedEnd: new Date(now + 2 * day),    status: "ACTIVE"   as const, amount: 60,   days: 2,  paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[2], driverIdx: 3, vehicleIdx: 3, expectedEnd: new Date(now + 3 * day),    status: "ACTIVE"   as const, amount: 90,   days: 3,  paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[3], driverIdx: 0, vehicleIdx: 0, expectedEnd: new Date(now + 7 * day),    status: "ACTIVE"   as const, amount: 210,  days: 7,  paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[4], driverIdx: 1, vehicleIdx: 1, expectedEnd: new Date(now + 14 * day),   status: "ACTIVE"   as const, amount: 420,  days: 14, paymentType: "CHECKIN"        as const },
     // Overstay truck sessions — expectedEnd in the past
-    { spot: pickedTruck[5], driverIdx: 3, vehicleIdx: 3, expectedEnd: new Date(now - 3 * hour),   status: "OVERSTAY" as const, amount: 120, hours: 8,  paymentType: "CHECKIN"        as const },
-    { spot: pickedTruck[6], driverIdx: 1, vehicleIdx: 1, expectedEnd: new Date(now - 1 * hour),   status: "OVERSTAY" as const, amount: 60,  hours: 4,  paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[5], driverIdx: 3, vehicleIdx: 3, expectedEnd: new Date(now - 3 * day),    status: "OVERSTAY" as const, amount: 90,   days: 3,  paymentType: "CHECKIN"        as const },
+    { spot: pickedTruck[6], driverIdx: 1, vehicleIdx: 1, expectedEnd: new Date(now - 1 * day),    status: "OVERSTAY" as const, amount: 30,   days: 1,  paymentType: "CHECKIN"        as const },
     // Active bobtail sessions
-    { spot: pickedBobtail[0], driverIdx: 2, vehicleIdx: 2, expectedEnd: new Date(now + 8 * hour), status: "ACTIVE"   as const, amount: 60,  hours: 8,  paymentType: "CHECKIN"        as const },
-    { spot: pickedBobtail[1], driverIdx: 4, vehicleIdx: 4, expectedEnd: new Date(now + 4 * hour), status: "ACTIVE"   as const, amount: 30,  hours: 4,  paymentType: "CHECKIN"        as const },
+    { spot: pickedBobtail[0], driverIdx: 2, vehicleIdx: 2, expectedEnd: new Date(now + 2 * day),  status: "ACTIVE"   as const, amount: 60,   days: 2,  paymentType: "CHECKIN"        as const },
+    { spot: pickedBobtail[1], driverIdx: 4, vehicleIdx: 4, expectedEnd: new Date(now + 1 * day),  status: "ACTIVE"   as const, amount: 30,   days: 1,  paymentType: "CHECKIN"        as const },
     // Monthly active
-    { spot: pickedTruck[7], driverIdx: 4, vehicleIdx: 3, expectedEnd: new Date(now + 30 * 24 * hour), status: "ACTIVE" as const, amount: 1200, hours: 720, paymentType: "MONTHLY_CHECKIN" as const },
+    { spot: pickedTruck[7], driverIdx: 4, vehicleIdx: 3, expectedEnd: new Date(now + 30 * day),   status: "ACTIVE"   as const, amount: 1200, days: 30, paymentType: "MONTHLY_CHECKIN" as const },
   ].filter((s) => s.spot !== undefined);
 
   const created: { spot: string; driver: string; status: string }[] = [];
@@ -124,7 +124,7 @@ export async function POST() {
         driverId: drivers[def.driverIdx].id,
         vehicleId: vehicles[def.vehicleIdx].id,
         spotId: def.spot.id,
-        startedAt: new Date(def.expectedEnd.getTime() - def.hours * hour),
+        startedAt: new Date(def.expectedEnd.getTime() - def.days * day),
         expectedEnd: def.expectedEnd,
         status: def.status,
         termsVersion: "1.0",
@@ -135,9 +135,9 @@ export async function POST() {
       data: {
         sessionId: session.id,
         type: def.paymentType,
-        externalPaymentId: `dev_seed_${session.id}`,
+        legacyQbReference: `dev_seed_${session.id}`,
         amount: def.amount,
-        hours: def.paymentType === "CHECKIN" ? def.hours : undefined,
+        days: def.paymentType === "CHECKIN" ? def.days : undefined,
         status: "COMPLETED",
       },
     });
