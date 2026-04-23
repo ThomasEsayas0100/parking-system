@@ -12,6 +12,7 @@ import SpotDetailPanel from "@/app/lot/SpotDetailPanel";
 import PhoneInput, { digitsOnly } from "@/components/PhoneInput";
 import ManageSessionModal from "@/app/admin/ManageSessionModal";
 import ReconcileView from "@/app/admin/ReconcileView";
+import type { PendingPaymentItem } from "@/app/api/admin/payments/pending/route";
 import { ToastProvider } from "@/app/admin/ToastContext";
 
 type Spot = ApiSpotWithSessions;
@@ -2085,6 +2086,11 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
   const [stripeTestMode, setStripeTestMode] = useState(false);
   const LIMIT = 30;
 
+  // Past-due / failed subscription invoices
+  const [pendingItems, setPendingItems] = useState<PendingPaymentItem[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(true);
+  const [expandedPending, setExpandedPending] = useState<Set<string>>(new Set());
+
   // Stripe reconciliation (read-only divergence check — never mutates DB)
   const [qbPayments, setQbPayments] = useState<QBPaymentRecord[]>([]);
   const [qbPL, setQbPL] = useState<QBProfitLoss>(null);
@@ -2149,6 +2155,16 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
 
   useEffect(() => { loadPaymentsData(); }, [loadPaymentsData]);
 
+  // Past-due subscription invoices
+  useEffect(() => {
+    setPendingLoading(true);
+    fetch("/api/admin/payments/pending")
+      .then((r) => r.json())
+      .then((d) => setPendingItems(d.items ?? []))
+      .catch(() => {/* silent */})
+      .finally(() => setPendingLoading(false));
+  }, []);
+
   // Surface QB connection + Stripe webhook status (Sales Receipt writes
   // depend on QB; reconciliation status depends on webhook heartbeat).
   useEffect(() => {
@@ -2198,6 +2214,142 @@ function PaymentsTab({ mobile, initialSearch = "" }: { mobile: boolean; initialS
           onClose={() => setSelectedPayment(null)}
           stripeTestMode={stripeTestMode}
         />
+      )}
+
+      {/* Past-due subscription invoices */}
+      {!pendingLoading && pendingItems.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#F59E0B" }}>⚠️ Pending Payments</span>
+            <span style={{ fontSize: 11, color: FG_DIM, background: "#1C1C1E", border: "1px solid #333", borderRadius: 10, padding: "1px 7px" }}>{pendingItems.length}</span>
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ color: FG_DIM, textAlign: "left" }}>
+                <th style={{ paddingBottom: 6, fontWeight: 500 }}>Driver</th>
+                <th style={{ paddingBottom: 6, fontWeight: 500 }}>Type</th>
+                <th style={{ paddingBottom: 6, fontWeight: 500 }}>Period</th>
+                <th style={{ paddingBottom: 6, fontWeight: 500, textAlign: "right" }}>Amount</th>
+                <th style={{ paddingBottom: 6, fontWeight: 500 }}>Status</th>
+                <th style={{ paddingBottom: 6, fontWeight: 500 }} />
+              </tr>
+            </thead>
+            <tbody>
+              {pendingItems.map((item) => {
+                const isExpanded = expandedPending.has(item.sessionId);
+                const isPastDue = item.billingStatus === "PAYMENT_FAILED";
+                const statusColor = isPastDue ? "#F59E0B" : "#DC2626";
+                const statusLabel = isPastDue ? "⚠️ Past Due" : "🔴 Delinquent";
+                const stripeBase = stripeTestMode
+                  ? "https://dashboard.stripe.com/test"
+                  : "https://dashboard.stripe.com";
+                const invoiceUrl = item.invoiceId
+                  ? `${stripeBase}/invoices/${item.invoiceId}`
+                  : item.stripeSubscriptionId
+                  ? `${stripeBase}/subscriptions/${item.stripeSubscriptionId}`
+                  : null;
+                const periodLabel = item.periodStart
+                  ? new Date(item.periodStart).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+                  : "—";
+                const truncInvoice = item.invoiceId
+                  ? `${item.invoiceId.slice(0, 6)}…${item.invoiceId.slice(-4)}`
+                  : null;
+
+                return (
+                  <>
+                    <tr
+                      key={item.sessionId}
+                      style={{ borderTop: "1px solid #2A2A2A", cursor: "pointer" }}
+                      onClick={() =>
+                        setExpandedPending((prev) => {
+                          const next = new Set(prev);
+                          next.has(item.sessionId) ? next.delete(item.sessionId) : next.add(item.sessionId);
+                          return next;
+                        })
+                      }
+                    >
+                      <td style={{ padding: "8px 0" }}>
+                        <div style={{ fontWeight: 500 }}>{item.driver.name}</div>
+                        {item.vehicle?.licensePlate && (
+                          <div style={{ fontSize: 10, color: FG_DIM }}>{item.vehicle.licensePlate}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px 8px 8px 0", color: FG_DIM }}>Monthly</td>
+                      <td style={{ padding: "8px 8px 8px 0", color: FG_DIM }}>{periodLabel}</td>
+                      <td style={{ padding: "8px 8px 8px 0", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                        {item.invoiceAmount != null ? `$${item.invoiceAmount.toFixed(2)}` : "—"}
+                      </td>
+                      <td style={{ padding: "8px 8px 8px 0", color: statusColor, fontWeight: 500 }}>{statusLabel}</td>
+                      <td style={{ padding: "8px 0", textAlign: "right" }}>
+                        {invoiceUrl && (
+                          <a
+                            href={invoiceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ color: "#60A5FA", textDecoration: "none", fontSize: 11 }}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            View in Stripe ↗
+                          </a>
+                        )}
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr key={`${item.sessionId}-detail`}>
+                        <td colSpan={6} style={{ paddingBottom: 12, paddingLeft: 0 }}>
+                          <div style={{
+                            background: "#161616",
+                            border: "1px solid #2A2A2A",
+                            borderRadius: 6,
+                            padding: "10px 14px",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 5,
+                            fontSize: 11,
+                            color: FG_DIM,
+                          }}>
+                            {truncInvoice && (
+                              <div>
+                                Stripe invoice{" "}
+                                <span style={{ fontFamily: "monospace", color: FG }}>{truncInvoice}</span>
+                              </div>
+                            )}
+                            {item.lastAttemptAt && (
+                              <div>
+                                Last attempt failed{" "}
+                                {new Date(item.lastAttemptAt).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                })}
+                              </div>
+                            )}
+                            {item.nextRetryAt ? (
+                              <div>
+                                Stripe retrying{" "}
+                                {new Date(item.nextRetryAt).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                })}
+                              </div>
+                            ) : item.billingStatus === "DELINQUENT" ? (
+                              <div style={{ color: "#DC2626" }}>All retries exhausted — subscription canceled</div>
+                            ) : null}
+                            {item.attemptCount > 0 && (
+                              <div>Attempt {item.attemptCount} of 4</div>
+                            )}
+                            {item.spot && (
+                              <div>Spot {item.spot.label}</div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {/* Summary cards */}
